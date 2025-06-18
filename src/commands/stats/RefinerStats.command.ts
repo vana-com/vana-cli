@@ -39,10 +39,11 @@ export class RefinerStatsCommand extends Command {
       Requires cryptographic authentication using your wallet private key.
     `,
     examples: [
-      ['Get stats for refiner ID 45', 'vana stats refiner --id 45 --endpoint https://query-engine.api.com'],
-      ['Get stats with private key override', 'vana stats refiner --id 45 --private-key 63... --endpoint https://query-engine.api.com'],
-      ['Get stats in JSON format', 'vana stats refiner --id 45 --endpoint https://query-engine.api.com --json'],
-      ['Get verbose stats with raw response', 'vana stats refiner --id 45 --endpoint https://query-engine.api.com --verbose --include-raw']
+      ['Get stats for refiner ID 45', 'vana stats refiner --id 45'],
+      ['Get stats with custom endpoint', 'vana stats refiner --id 45 --endpoint https://query-engine.api.com'],
+      ['Get stats with private key override', 'vana stats refiner --id 45 --private-key 63...'],
+      ['Get stats in JSON format', 'vana stats refiner --id 45 --json'],
+      ['Get verbose stats with raw response', 'vana stats refiner --id 45 --verbose --include-raw']
     ]
   });
 
@@ -56,7 +57,7 @@ export class RefinerStatsCommand extends Command {
   });
 
   endpoint = Option.String('--endpoint,-e', {
-    description: 'Query Engine API URL (required - stats come from Query Engine, not RPC)'
+    description: 'Query Engine API URL (optional if configured via config)'
   });
 
   json = Option.Boolean('--json,-j', false, {
@@ -151,14 +152,22 @@ export class RefinerStatsCommand extends Command {
       return { privateKey: null, apiUrl: null };
     }
 
-    // Get Query Engine API URL (from option only - no config fallback)
+    // Get Query Engine API URL (from option or config)
     let apiUrl = this.endpoint;
+    if (!apiUrl) {
+      try {
+        apiUrl = await configManager.getConfigValue('query_engine_endpoint');
+      } catch (error) {
+        // Config value not found
+      }
+    }
 
     if (!apiUrl) {
       msg.error('Query Engine API URL is required for refiner stats.');
       msg.info('Refiner stats are retrieved from the Query Engine API, not on-chain RPC.');
-      msg.write(Output.examples('Provide Query Engine API URL with', [
-        'vana stats refiner --id 45 --endpoint https://query-engine.api.com'
+      msg.write(Output.examples('Set Query Engine API URL with', [
+        'vana config set query_engine_endpoint https://query-engine.api.com',
+        'or use --endpoint option'
       ]));
       return { privateKey: null, apiUrl: null };
     }

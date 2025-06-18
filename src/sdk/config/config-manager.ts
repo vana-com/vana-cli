@@ -9,6 +9,7 @@ import keytar from 'keytar';
 export interface UnprotectedConfig {
   network: 'vana' | 'moksha';
   rpc_endpoint: string;
+  query_engine_endpoint: string;
 }
 
 /**
@@ -28,7 +29,8 @@ export interface VanaConfig extends UnprotectedConfig, ProtectedConfig {}
  */
 const DEFAULT_CONFIG: UnprotectedConfig = {
   network: 'moksha',
-  rpc_endpoint: 'https://rpc.moksha.vana.org'
+  rpc_endpoint: 'https://rpc.moksha.vana.org',
+  query_engine_endpoint: 'https://54531900daaa8493797db8d07d6bfbfc77f75b4b-8000.dstack-prod5.phala.network'
 };
 
 const KEYRING_SERVICE = 'vana';
@@ -205,7 +207,7 @@ export class ConfigManager {
           const cleanKey = key.trim();
           const cleanValue = valueParts.join('=').trim().replace(/['"]/g, '');
           
-          if (cleanKey === 'network' || cleanKey === 'rpc_endpoint') {
+          if (cleanKey === 'network' || cleanKey === 'rpc_endpoint' || cleanKey === 'query_engine_endpoint') {
             config[cleanKey] = cleanValue as any;
           }
         }
@@ -229,6 +231,7 @@ export class ConfigManager {
 
 network = "${config.network}"
 rpc_endpoint = "${config.rpc_endpoint}"
+query_engine_endpoint = "${config.query_engine_endpoint}"
 `;
   }
 
@@ -240,7 +243,7 @@ rpc_endpoint = "${config.rpc_endpoint}"
     protected: (keyof ProtectedConfig)[];
   } {
     return {
-      unprotected: ['network', 'rpc_endpoint'],
+      unprotected: ['network', 'rpc_endpoint', 'query_engine_endpoint'],
       protected: ['wallet_private_key']
     };
   }

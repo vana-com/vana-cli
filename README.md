@@ -63,6 +63,7 @@ The CLI stores configuration in:
 
 - `network` - Network to connect to (vana|moksha)
 - `rpc_endpoint` - RPC endpoint URL
+- `query_engine_endpoint` - Query Engine API URL for stats commands
 - `wallet_private_key` - Your wallet private key (stored securely in keyring)
 
 ## Examples
@@ -77,6 +78,12 @@ vana config set network moksha
 # Set custom RPC endpoint
 vana config set rpc_endpoint https://rpc.moksha.vana.org
 
+# Set Query Engine endpoint for stats commands
+vana config set query_engine_endpoint https://query.moksha.vana.org
+
+# Get refiner stats (uses configured endpoint)
+vana stats refiner --id 45
+
 # Get refiner stats with verbose output
 vana stats refiner --id 45 --verbose
 
@@ -89,7 +96,7 @@ vana stats refiner --id 45 --endpoint https://custom.api.com
 
 ## Development
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for development setup and contribution guidelines.
+See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for development setup and contribution guidelines.
 
 ## License
 

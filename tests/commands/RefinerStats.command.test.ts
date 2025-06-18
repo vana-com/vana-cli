@@ -168,7 +168,10 @@ describe('RefinerStatsCommand', () => {
       Object.defineProperty(command, 'json', { value: false, writable: true });
       Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
       
-      mockConfigManager.getConfigValue.mockResolvedValue('0xabcdef1234567890');
+      mockConfigManager.getConfigValue.mockImplementation((key: string) => {
+        if (key === 'wallet_private_key') return Promise.resolve('0xabcdef1234567890');
+        return Promise.reject(new Error('Config not found'));
+      });
       mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockStatsResponse);
       
       const result = await command.execute();
@@ -193,6 +196,26 @@ describe('RefinerStatsCommand', () => {
       expect(QueryEngineClient).toHaveBeenCalledWith('https://query-engine.api.com');
     });
 
+    it('should use configured endpoint when option not provided', async () => {
+      Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
+      Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
+      Object.defineProperty(command, 'endpoint', { value: undefined, writable: true });
+      Object.defineProperty(command, 'verbose', { value: false, writable: true });
+      Object.defineProperty(command, 'json', { value: false, writable: true });
+      Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
+      
+      mockConfigManager.getConfigValue.mockImplementation((key: string) => {
+        if (key === 'query_engine_endpoint') return Promise.resolve('https://config.api.com');
+        return Promise.reject(new Error('Config not found'));
+      });
+      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockStatsResponse);
+      
+      const result = await command.execute();
+      
+      expect(result).toBe(0);
+      expect(QueryEngineClient).toHaveBeenCalledWith('https://config.api.com');
+    });
+
     it('should fail when no query engine endpoint is provided', async () => {
       Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
       Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
@@ -200,6 +223,8 @@ describe('RefinerStatsCommand', () => {
       Object.defineProperty(command, 'verbose', { value: false, writable: true });
       Object.defineProperty(command, 'json', { value: false, writable: true });
       Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
+      
+      mockConfigManager.getConfigValue.mockRejectedValue(new Error('Config not found'));
       
       const result = await command.execute();
       
