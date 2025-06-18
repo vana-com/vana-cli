@@ -44,6 +44,9 @@
     "url": "https://github.com/vana-com/vana-cli/issues"
   },
   "homepage": "https://github.com/vana-com/vana-cli#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "chalk": "^5.4.1",
     "clipanion": "^4.0.0-rc.4",
