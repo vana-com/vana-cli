@@ -1,0 +1,50 @@
+{
+  "name": "vana-cli",
+  "version": "1.0.0",
+  "description": "Vana CLI for interacting with the Vana L1 network and related services",
+  "main": "dist/cli.js",
+  "bin": {
+    "vana": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --dts --minify",
+    "dev": "npm run build && npm link",
+    "unlink": "npm unlink -g",
+    "lint": "biome lint src",
+    "format": "biome format src --write",
+    "check": "biome check .",
+    "precommit": "biome lint --apply",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vana-com/vana-cli.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/vana-com/vana-cli/issues"
+  },
+  "homepage": "https://github.com/vana-com/vana-cli#readme",
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "clipanion": "^4.0.0-rc.4",
+    "ethers": "^6.14.4",
+    "keytar": "^7.9.0",
+    "ora": "^8.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
+    "@types/node": "^24.0.3",
+    "@vitest/coverage-v8": "^3.2.4",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
