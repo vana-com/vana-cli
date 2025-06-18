@@ -31,9 +31,14 @@ npx vana-cli --help
    vana config init
    ```
 
-2. **Set your wallet private key**:
+2. **Configure your wallet private key**:
    ```bash
    vana config set wallet_private_key 63...
+   ```
+
+3. **Configure the targeted Query Engine endpoint**:
+   ```bash
+   vana config set query_engine_endpoint https://...
    ```
 
 3. **Get refiner statistics**:
