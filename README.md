@@ -13,13 +13,13 @@ A command-line interface for interacting with the Vana L1 network and related se
 Install globally via npm:
 
 ```bash
-npm install -g @vana/cli
+npm install -g vana-cli
 ```
 
 Or use directly with npx:
 
 ```bash
-npx @vana/cli --help
+npx vana-cli --help
 ```
 
 ## Quick Start

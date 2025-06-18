@@ -332,7 +332,7 @@ npm publish
 ### Local Testing of Published Package
 ```bash
 # Install from npm
-npm install -g @vana/cli
+npm install -g vana-cli
 
 # Test commands
 vana --help
