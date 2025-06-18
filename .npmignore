@@ -1,0 +1,47 @@
+# Configuration files
+.eslintrc.*
+.prettierrc*
+.gitignore
+.gitattributes
+biome.json
+tsconfig.json
+
+# CI/CD
+.github/
+.circleci/
+.gitlab-ci.yml
+.travis.yml
+
+# Development files
+node_modules/
+coverage/
+.nyc_output/
+*.log
+.DS_Store
+.env
+.env.*
+
+# Editor directories and files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Source files (only ship compiled dist)
+src/
+
+# Documentation that's not needed in package
+DEVELOPMENT.md
+CONFIG.md
+
+# Test files
+test/
+tests/
+__tests__/
+*.test.js
+*.test.ts
+*.spec.js
+*.spec.ts 

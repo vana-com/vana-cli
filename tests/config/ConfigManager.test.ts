@@ -11,7 +11,7 @@ describe('ConfigManager', () => {
 
   beforeEach(async () => {
     // Create a temporary directory for testing
-    testConfigDir = join(tmpdir(), `vana-cli-test-${Date.now()}`);
+    testConfigDir = join(tmpdir(), `@vana-cli-test-${Date.now()}`);
     await fs.mkdir(testConfigDir, { recursive: true });
     
     // Mock the config directory

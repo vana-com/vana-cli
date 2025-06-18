@@ -177,24 +177,23 @@ describe('RefinerStatsCommand', () => {
       expect(mockQueryClient.getRefinerIngestionStats).toHaveBeenCalledWith(45, '0xabcdef1234567890');
     });
 
-    it('should use endpoint from config when not provided', async () => {
+    it('should use provided endpoint successfully', async () => {
       Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
       Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
-      Object.defineProperty(command, 'endpoint', { value: undefined, writable: true });
+      Object.defineProperty(command, 'endpoint', { value: 'https://query-engine.api.com', writable: true });
       Object.defineProperty(command, 'verbose', { value: false, writable: true });
       Object.defineProperty(command, 'json', { value: false, writable: true });
       Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
       
-      mockConfigManager.getConfigValue.mockResolvedValue('https://config.api.com');
       mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockStatsResponse);
       
       const result = await command.execute();
       
       expect(result).toBe(0);
-      expect(QueryEngineClient).toHaveBeenCalledWith('https://config.api.com');
+      expect(QueryEngineClient).toHaveBeenCalledWith('https://query-engine.api.com');
     });
 
-    it('should use default endpoint when config fails', async () => {
+    it('should fail when no query engine endpoint is provided', async () => {
       Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
       Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
       Object.defineProperty(command, 'endpoint', { value: undefined, writable: true });
@@ -202,13 +201,11 @@ describe('RefinerStatsCommand', () => {
       Object.defineProperty(command, 'json', { value: false, writable: true });
       Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
       
-      mockConfigManager.getConfigValue.mockRejectedValue(new Error('Config not found'));
-      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockStatsResponse);
-      
       const result = await command.execute();
       
-      expect(result).toBe(0);
-      expect(QueryEngineClient).toHaveBeenCalledWith('https://rpc.moksha.vana.org');
+      expect(result).toBe(1);
+      expect(mockMessageHandler.error).toHaveBeenCalledWith('Query Engine API URL is required for refiner stats.');
+      expect(mockMessageHandler.info).toHaveBeenCalledWith('Refiner stats are retrieved from the Query Engine API, not on-chain RPC.');
     });
 
     it('should fail when no private key is available', async () => {

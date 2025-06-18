@@ -71,6 +71,7 @@ export class ConfigInitCommand extends Command {
           
           if (!this.quiet) {
             msg.success(SuccessMessages.configInitialized());
+            msg.warning('⚠️  This is alpha software - only use for testing/development');
           }
         } catch (error) {
           spinner.fail();
