@@ -2,11 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RefinerStatsCommand } from '../../src/commands/stats/RefinerStats.command.js';
 import { ConfigManager } from '../../src/sdk/config/config-manager.js';
 import { QueryEngineClient } from '../../src/sdk/query/query-engine-client.js';
+import { RefinementServiceClient } from '../../src/sdk/refine/refinement-service-client.js';
 import { RefinerIngestionStatsResponse } from '../../src/sdk/query/dto/refiner-ingestion-stats-response.js';
+import { RefinerExecutionStatsResponse } from '../../src/sdk/refine/dto/refiner-execution-stats-response.js';
 
 // Mock external dependencies
 vi.mock('../../src/sdk/config/config-manager.js');
 vi.mock('../../src/sdk/query/query-engine-client.js');
+vi.mock('../../src/sdk/refine/refinement-service-client.js');
 vi.mock('ora', () => ({
   default: vi.fn(() => ({
     start: vi.fn().mockReturnThis(),
@@ -62,6 +65,9 @@ vi.mock('../../src/utils/messaging.js', () => ({
   },
   SuccessMessages: {
     operationComplete: (operation: string) => `${operation} completed successfully`
+  },
+  InfoMessages: {
+    refinerStatsApiNote: () => 'Refiner stats are retrieved from the Query Engine API, not on-chain RPC.'
   }
 }));
 
@@ -69,9 +75,10 @@ describe('RefinerStatsCommand', () => {
   let command: RefinerStatsCommand;
   let mockConfigManager: any;
   let mockQueryClient: any;
+  let mockRefinementClient: any;
   let mockMessageHandler: any;
 
-  const mockStatsResponse: RefinerIngestionStatsResponse = {
+  const mockIngestionStatsResponse: RefinerIngestionStatsResponse = {
     refiner_id: 45,
     total_file_contributions: 234,
     total_data_rows: 15420,
@@ -95,6 +102,37 @@ describe('RefinerStatsCommand', () => {
     last_processed_block: 2945678
   };
 
+  const mockExecutionStatsResponse: RefinerExecutionStatsResponse = {
+    refiner_id: 45,
+    total_jobs: 150,
+    successful_jobs: 142,
+    failed_jobs: 8,
+    processing_jobs: 0,
+    submitted_jobs: 2,
+    first_job_at: "2024-01-10T08:00:00Z",
+    last_job_at: "2024-01-25T16:30:00Z",
+    average_processing_time_seconds: 45.2,
+    success_rate: 0.947,
+    jobs_per_hour: 4.1,
+    processing_period_days: 15.35,
+    error_types: {
+      "CONTAINER_EXECUTION_ERROR": 5,
+      "FILE_DOWNLOAD_FAILED": 3
+    },
+    recent_errors: [
+      {
+        error: "Container execution failed",
+        timestamp: "2024-01-25T15:00:00Z",
+        job_id: "job_123"
+      },
+      {
+        error: "File download timeout",
+        timestamp: "2024-01-25T14:30:00Z",
+        job_id: "job_124"
+      }
+    ]
+  };
+
   beforeEach(async () => {
     // Reset mocks
     vi.clearAllMocks();
@@ -112,6 +150,12 @@ describe('RefinerStatsCommand', () => {
       getRefinerIngestionStats: vi.fn()
     };
     vi.mocked(QueryEngineClient).mockImplementation(() => mockQueryClient);
+
+    // Setup RefinementServiceClient mock
+    mockRefinementClient = {
+      getRefinerExecutionStats: vi.fn()
+    };
+    vi.mocked(RefinementServiceClient).mockImplementation(() => mockRefinementClient);
 
     // Setup message handler mock
     mockMessageHandler = {
@@ -162,7 +206,8 @@ describe('RefinerStatsCommand', () => {
   describe('Configuration Integration', () => {
     it('should use private key from config when not provided', async () => {
       Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
-      Object.defineProperty(command, 'endpoint', { value: 'https://api.example.com', writable: true });
+      Object.defineProperty(command, 'queryEndpoint', { value: 'https://query.api.com', writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: 'https://refine.api.com', writable: true });
       Object.defineProperty(command, 'privateKey', { value: undefined, writable: true });
       Object.defineProperty(command, 'verbose', { value: false, writable: true });
       Object.defineProperty(command, 'json', { value: false, writable: true });
@@ -172,70 +217,95 @@ describe('RefinerStatsCommand', () => {
         if (key === 'wallet_private_key') return Promise.resolve('0xabcdef1234567890');
         return Promise.reject(new Error('Config not found'));
       });
-      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockStatsResponse);
+      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockIngestionStatsResponse);
+      mockRefinementClient.getRefinerExecutionStats.mockResolvedValue(mockExecutionStatsResponse);
       
       const result = await command.execute();
       
       expect(result).toBe(0);
       expect(mockQueryClient.getRefinerIngestionStats).toHaveBeenCalledWith(45, '0xabcdef1234567890');
+      expect(mockRefinementClient.getRefinerExecutionStats).toHaveBeenCalledWith(45, '0xabcdef1234567890');
     });
 
-    it('should use provided endpoint successfully', async () => {
+    it('should use configured endpoints when options not provided', async () => {
       Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
       Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
-      Object.defineProperty(command, 'endpoint', { value: 'https://query-engine.api.com', writable: true });
-      Object.defineProperty(command, 'verbose', { value: false, writable: true });
-      Object.defineProperty(command, 'json', { value: false, writable: true });
-      Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
-      
-      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockStatsResponse);
-      
-      const result = await command.execute();
-      
-      expect(result).toBe(0);
-      expect(QueryEngineClient).toHaveBeenCalledWith('https://query-engine.api.com');
-    });
-
-    it('should use configured endpoint when option not provided', async () => {
-      Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
-      Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
-      Object.defineProperty(command, 'endpoint', { value: undefined, writable: true });
+      Object.defineProperty(command, 'queryEndpoint', { value: undefined, writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: undefined, writable: true });
       Object.defineProperty(command, 'verbose', { value: false, writable: true });
       Object.defineProperty(command, 'json', { value: false, writable: true });
       Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
       
       mockConfigManager.getConfigValue.mockImplementation((key: string) => {
-        if (key === 'query_engine_endpoint') return Promise.resolve('https://config.api.com');
+        if (key === 'query_engine_endpoint') return Promise.resolve('https://query-config.api.com');
+        if (key === 'refinement_service_endpoint') return Promise.resolve('https://refine-config.api.com');
         return Promise.reject(new Error('Config not found'));
       });
-      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockStatsResponse);
+      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockIngestionStatsResponse);
+      mockRefinementClient.getRefinerExecutionStats.mockResolvedValue(mockExecutionStatsResponse);
       
       const result = await command.execute();
       
       expect(result).toBe(0);
-      expect(QueryEngineClient).toHaveBeenCalledWith('https://config.api.com');
+      expect(QueryEngineClient).toHaveBeenCalledWith('https://query-config.api.com');
+      expect(RefinementServiceClient).toHaveBeenCalledWith('https://refine-config.api.com');
     });
 
-    it('should fail when no query engine endpoint is provided', async () => {
+    it('should work with only query engine endpoint', async () => {
       Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
       Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
-      Object.defineProperty(command, 'endpoint', { value: undefined, writable: true });
+      Object.defineProperty(command, 'queryEndpoint', { value: 'https://query.api.com', writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: undefined, writable: true });
       Object.defineProperty(command, 'verbose', { value: false, writable: true });
       Object.defineProperty(command, 'json', { value: false, writable: true });
       Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
+      
+      mockConfigManager.getConfigValue.mockRejectedValue(new Error('Config not found'));
+      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockIngestionStatsResponse);
+      
+      const result = await command.execute();
+      
+      expect(result).toBe(0);
+      expect(QueryEngineClient).toHaveBeenCalledWith('https://query.api.com');
+      expect(RefinementServiceClient).not.toHaveBeenCalled();
+    });
+
+    it('should work with only refinement service endpoint', async () => {
+      Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
+      Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
+      Object.defineProperty(command, 'queryEndpoint', { value: undefined, writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: 'https://refine.api.com', writable: true });
+      Object.defineProperty(command, 'verbose', { value: false, writable: true });
+      Object.defineProperty(command, 'json', { value: false, writable: true });
+      Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
+      
+      mockConfigManager.getConfigValue.mockRejectedValue(new Error('Config not found'));
+      mockRefinementClient.getRefinerExecutionStats.mockResolvedValue(mockExecutionStatsResponse);
+      
+      const result = await command.execute();
+      
+      expect(result).toBe(0);
+      expect(RefinementServiceClient).toHaveBeenCalledWith('https://refine.api.com');
+      expect(QueryEngineClient).not.toHaveBeenCalled();
+    });
+
+    it('should fail when no endpoints are provided', async () => {
+      Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
+      Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
+      Object.defineProperty(command, 'queryEndpoint', { value: undefined, writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: undefined, writable: true });
       
       mockConfigManager.getConfigValue.mockRejectedValue(new Error('Config not found'));
       
       const result = await command.execute();
       
       expect(result).toBe(1);
-      expect(mockMessageHandler.error).toHaveBeenCalledWith('Query Engine API URL is required for refiner stats.');
-      expect(mockMessageHandler.info).toHaveBeenCalledWith('Refiner stats are retrieved from the Query Engine API, not on-chain RPC.');
+      expect(mockMessageHandler.error).toHaveBeenCalledWith('At least one API endpoint is required (Query Engine or Refinement Service).');
     });
 
     it('should fail when no private key is available', async () => {
       Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
-      Object.defineProperty(command, 'endpoint', { value: 'https://api.example.com', writable: true });
+      Object.defineProperty(command, 'queryEndpoint', { value: 'https://query.api.com', writable: true });
       Object.defineProperty(command, 'privateKey', { value: undefined, writable: true });
       
       mockConfigManager.getConfigValue.mockRejectedValue(new Error('Config not found'));
@@ -244,7 +314,51 @@ describe('RefinerStatsCommand', () => {
       
       expect(result).toBe(1);
       expect(mockMessageHandler.error).toHaveBeenCalledWith('No private key provided.');
-      expect(mockMessageHandler.write).toHaveBeenCalledWith(expect.stringContaining('Set private key with'));
+    });
+  });
+
+  describe('Combined Stats Functionality', () => {
+    beforeEach(() => {
+      Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
+      Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
+      Object.defineProperty(command, 'queryEndpoint', { value: 'https://query.api.com', writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: 'https://refine.api.com', writable: true });
+      Object.defineProperty(command, 'verbose', { value: false, writable: true });
+      Object.defineProperty(command, 'json', { value: false, writable: true });
+      Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
+    });
+
+    it('should successfully fetch both ingestion and execution stats', async () => {
+      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockIngestionStatsResponse);
+      mockRefinementClient.getRefinerExecutionStats.mockResolvedValue(mockExecutionStatsResponse);
+      
+      const result = await command.execute();
+      
+      expect(result).toBe(0);
+      expect(mockQueryClient.getRefinerIngestionStats).toHaveBeenCalledWith(45, '0x1234567890abcdef');
+      expect(mockRefinementClient.getRefinerExecutionStats).toHaveBeenCalledWith(45, '0x1234567890abcdef');
+      expect(mockMessageHandler.success).toHaveBeenCalledWith('Refiner stats retrieved completed successfully');
+    });
+
+    it('should handle partial failures gracefully', async () => {
+      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockIngestionStatsResponse);
+      mockRefinementClient.getRefinerExecutionStats.mockRejectedValue(new Error('Service unavailable'));
+      
+      const result = await command.execute();
+      
+      expect(result).toBe(0);
+      expect(mockMessageHandler.warning).toHaveBeenCalledWith('Refinement Service: Service unavailable');
+      expect(mockMessageHandler.success).toHaveBeenCalledWith('Refiner stats retrieved completed successfully');
+    });
+
+    it('should handle no data from either service', async () => {
+      mockQueryClient.getRefinerIngestionStats.mockRejectedValue(new Error('No data found'));
+      mockRefinementClient.getRefinerExecutionStats.mockRejectedValue(new Error('No data found'));
+      
+      const result = await command.execute();
+      
+      expect(result).toBe(0);
+      expect(mockMessageHandler.warning).toHaveBeenCalledWith('No data found for this refiner in either service');
     });
   });
 
@@ -252,10 +366,12 @@ describe('RefinerStatsCommand', () => {
     beforeEach(() => {
       Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
       Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
-      Object.defineProperty(command, 'endpoint', { value: 'https://api.example.com', writable: true });
+      Object.defineProperty(command, 'queryEndpoint', { value: 'https://query.api.com', writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: 'https://refine.api.com', writable: true });
       Object.defineProperty(command, 'verbose', { value: false, writable: true });
       Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
-      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockStatsResponse);
+      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockIngestionStatsResponse);
+      mockRefinementClient.getRefinerExecutionStats.mockResolvedValue(mockExecutionStatsResponse);
     });
 
     it('should output JSON when --json flag is set', async () => {
@@ -264,8 +380,15 @@ describe('RefinerStatsCommand', () => {
       const result = await command.execute();
       
       expect(result).toBe(0);
+      // Check that JSON output is written
       expect(mockMessageHandler.write).toHaveBeenCalledWith(
-        expect.stringContaining(JSON.stringify(mockStatsResponse, null, 2))
+        expect.stringContaining('"refiner_id": 45')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('"ingestion_stats"')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('"execution_stats"')
       );
     });
 
@@ -276,49 +399,109 @@ describe('RefinerStatsCommand', () => {
       
       expect(result).toBe(0);
       expect(mockMessageHandler.write).toHaveBeenCalledWith(
-        expect.stringContaining('📊 Refiner 45 - Ingestion Statistics')
+        expect.stringContaining('📊 Refiner 45 - Comprehensive Statistics')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('⚙️  Refiner Execution (Refinement Service)')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('📁 Data Ingestion')
       );
     });
-  });
 
-  describe('API Integration', () => {
-    beforeEach(() => {
-      Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
-      Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
-      Object.defineProperty(command, 'endpoint', { value: 'https://api.example.com', writable: true });
-      Object.defineProperty(command, 'verbose', { value: false, writable: true });
+    it('should include raw response when --include-raw flag is set', async () => {
+      Object.defineProperty(command, 'includeRaw', { value: true, writable: true });
       Object.defineProperty(command, 'json', { value: false, writable: true });
-      Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
-    });
-
-    it('should successfully fetch and display stats', async () => {
-      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockStatsResponse);
       
       const result = await command.execute();
       
       expect(result).toBe(0);
-      expect(mockQueryClient.getRefinerIngestionStats).toHaveBeenCalledWith(45, '0x1234567890abcdef');
-      expect(mockMessageHandler.success).toHaveBeenCalledWith('Refiner stats retrieved completed successfully');
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('📄 Raw API Responses')
+      );
     });
+  });
 
-    it('should handle API errors gracefully', async () => {
-      const apiError = new Error('Network timeout');
-      mockQueryClient.getRefinerIngestionStats.mockRejectedValue(apiError);
+  describe('Execution Stats Display', () => {
+    it('should display execution stats correctly', async () => {
+      Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
+      Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: 'https://refine.api.com', writable: true });
+      Object.defineProperty(command, 'verbose', { value: false, writable: true });
+      Object.defineProperty(command, 'json', { value: false, writable: true });
+      Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
+      
+      mockRefinementClient.getRefinerExecutionStats.mockResolvedValue(mockExecutionStatsResponse);
       
       const result = await command.execute();
       
-      expect(result).toBe(1);
-      expect(mockMessageHandler.error).toHaveBeenCalledWith('Failed to fetch refiner stats: Network timeout');
+      expect(result).toBe(0);
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('⚙️  Refiner Execution (Refinement Service)')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('Total Jobs: 150')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('Successful: 142')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('Failed: 8')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('Success Rate: 94.7%')
+      );
     });
 
-    it('should provide troubleshooting tips on error', async () => {
-      mockQueryClient.getRefinerIngestionStats.mockRejectedValue(new Error('API Error'));
+    it('should display execution error types', async () => {
+      Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
+      Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: 'https://refine.api.com', writable: true });
+      Object.defineProperty(command, 'verbose', { value: false, writable: true });
+      Object.defineProperty(command, 'json', { value: false, writable: true });
+      Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
+      
+      mockRefinementClient.getRefinerExecutionStats.mockResolvedValue(mockExecutionStatsResponse);
       
       const result = await command.execute();
       
-      expect(result).toBe(1);
-      expect(mockMessageHandler.write).toHaveBeenCalledWith(expect.stringContaining('Troubleshooting:'));
-      expect(mockMessageHandler.write).toHaveBeenCalledWith(expect.stringContaining('Verify the refiner ID exists'));
+      expect(result).toBe(0);
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('❌ Error Analysis')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('Execution Errors:')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('CONTAINER_EXECUTION_ERROR: 5')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('FILE_DOWNLOAD_FAILED: 3')
+      );
+    });
+
+    it('should display recent execution errors', async () => {
+      Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
+      Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef', writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: 'https://refine.api.com', writable: true });
+      Object.defineProperty(command, 'verbose', { value: false, writable: true });
+      Object.defineProperty(command, 'json', { value: false, writable: true });
+      Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
+      
+      mockRefinementClient.getRefinerExecutionStats.mockResolvedValue(mockExecutionStatsResponse);
+      
+      const result = await command.execute();
+      
+      expect(result).toBe(0);
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('Recent Execution Errors:')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('Container execution failed')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('job_123')
+      );
     });
   });
 
@@ -326,19 +509,30 @@ describe('RefinerStatsCommand', () => {
     it('should display verbose information when --verbose flag is set', async () => {
       Object.defineProperty(command, 'refinerId', { value: '45', writable: true });
       Object.defineProperty(command, 'privateKey', { value: '0x1234567890abcdef123456', writable: true });
-      Object.defineProperty(command, 'endpoint', { value: 'https://api.example.com', writable: true });
+      Object.defineProperty(command, 'queryEndpoint', { value: 'https://query.api.com', writable: true });
+      Object.defineProperty(command, 'refineEndpoint', { value: 'https://refine.api.com', writable: true });
       Object.defineProperty(command, 'verbose', { value: true, writable: true });
       Object.defineProperty(command, 'json', { value: false, writable: true });
       Object.defineProperty(command, 'includeRaw', { value: false, writable: true });
       
-      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockStatsResponse);
+      mockQueryClient.getRefinerIngestionStats.mockResolvedValue(mockIngestionStatsResponse);
+      mockRefinementClient.getRefinerExecutionStats.mockResolvedValue(mockExecutionStatsResponse);
       
       const result = await command.execute();
       
       expect(result).toBe(0);
-      expect(mockMessageHandler.write).toHaveBeenCalledWith(expect.stringContaining('🔍 Refiner Ingestion Stats'));
-      expect(mockMessageHandler.write).toHaveBeenCalledWith(expect.stringContaining('Refiner ID: 45'));
-      expect(mockMessageHandler.write).toHaveBeenCalledWith(expect.stringContaining('Private Key: 0x1234...3456'));
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('🔍 Comprehensive Refiner Statistics')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('Refiner ID: 45')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('Private Key: 0x1234...3456')
+      );
+      expect(mockMessageHandler.write).toHaveBeenCalledWith(
+        expect.stringContaining('🔧 Technical Details')
+      );
     });
   });
 
@@ -349,7 +543,7 @@ describe('RefinerStatsCommand', () => {
 
     it('should have proper usage information', () => {
       expect(RefinerStatsCommand.usage).toBeDefined();
-      expect(RefinerStatsCommand.usage.description).toContain('ingestion statistics');
+      expect(RefinerStatsCommand.usage.description).toContain('comprehensive statistics');
     });
   });
 }); 
