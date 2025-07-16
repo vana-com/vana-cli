@@ -10,6 +10,7 @@ export interface UnprotectedConfig {
   network: 'vana' | 'moksha';
   rpc_endpoint: string;
   query_engine_endpoint: string;
+  refinement_service_endpoint?: string;
 }
 
 /**
@@ -30,7 +31,8 @@ export interface VanaConfig extends UnprotectedConfig, ProtectedConfig {}
 const DEFAULT_CONFIG: UnprotectedConfig = {
   network: 'moksha',
   rpc_endpoint: 'https://rpc.moksha.vana.org',
-  query_engine_endpoint: 'https://54531900daaa8493797db8d07d6bfbfc77f75b4b-8000.dstack-prod5.phala.network'
+  query_engine_endpoint: 'https://54531900daaa8493797db8d07d6bfbfc77f75b4b-8000.dstack-prod5.phala.network',
+  refinement_service_endpoint: 'https://a7df0ae43df690b889c1201546d7058ceb04d21b-8000.dstack-prod5.phala.network'
 };
 
 const KEYRING_SERVICE = 'vana';
