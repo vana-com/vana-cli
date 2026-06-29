@@ -6,6 +6,8 @@ import { privateKeyToAccount } from "viem/accounts";
 const TEST_PRIVATE_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
 const TEST_ADDRESS = privateKeyToAccount(TEST_PRIVATE_KEY).address;
+const EMPTY_BODY_HASH =
+  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 describe("createRequestSigner", () => {
   it("produces a Web3Signed header with correct format", async () => {
@@ -112,7 +114,7 @@ describe("createRequestSigner", () => {
     const payloadJson = Buffer.from(payloadBase64, "base64").toString("utf-8");
     const payload = JSON.parse(payloadJson);
 
-    expect(payload.bodyHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(payload.bodyHash).toMatch(/^sha256:[0-9a-f]{64}$/);
     // Should not be empty (non-empty body)
     expect(payload.bodyHash).not.toBe("");
   });
@@ -129,7 +131,7 @@ describe("createRequestSigner", () => {
     const payloadJson = Buffer.from(payloadBase64, "base64").toString("utf-8");
     const payload = JSON.parse(payloadJson);
 
-    expect(payload.bodyHash).toBe("");
+    expect(payload.bodyHash).toBe(EMPTY_BODY_HASH);
   });
 
   it("canonicalizes body before hashing (key order does not matter)", async () => {

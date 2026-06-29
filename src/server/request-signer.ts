@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import type { RequestSignerConfig } from "../core/types.js";
 
+const EMPTY_BODY_HASH =
+  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 function base64urlEncode(input: string): string {
   return Buffer.from(input, "utf-8")
     .toString("base64")
@@ -23,12 +26,12 @@ function canonicalizeJson(obj: unknown): unknown {
 
 function computeBodyHash(body?: string): string {
   if (!body || body.length === 0) {
-    return "";
+    return EMPTY_BODY_HASH;
   }
   const parsed = JSON.parse(body);
   const canonical = canonicalizeJson(parsed);
   const canonicalStr = JSON.stringify(canonical);
-  return createHash("sha256").update(canonicalStr).digest("hex");
+  return `sha256:${createHash("sha256").update(canonicalStr).digest("hex")}`;
 }
 
 /**
