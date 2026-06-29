@@ -59,9 +59,9 @@ export async function checkForUpdate(
     }
     case "installer": {
       const res = await fetch(
-        "https://api.github.com/repos/vana-com/vana-connect/releases/latest",
+        "https://api.github.com/repos/vana-com/vana-cli/releases/latest",
         {
-          headers: { "User-Agent": "@opendatalabs/connect" },
+          headers: { "User-Agent": "vana-cli" },
           signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
         },
       );
@@ -72,10 +72,9 @@ export async function checkForUpdate(
       break;
     }
     default: {
-      const res = await fetch(
-        "https://registry.npmjs.org/@opendatalabs/connect/latest",
-        { signal: AbortSignal.timeout(CHECK_TIMEOUT_MS) },
-      );
+      const res = await fetch("https://registry.npmjs.org/vana-cli/latest", {
+        signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+      });
       if (res.ok) {
         const data = (await res.json()) as { version?: string };
         latestVersion = data.version ?? null;

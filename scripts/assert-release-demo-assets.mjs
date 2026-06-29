@@ -47,7 +47,7 @@ function getArgMap(argv) {
 
 function main() {
   const args = getArgMap(process.argv);
-  const repo = args.get("repo") ?? "vana-com/vana-connect";
+  const repo = args.get("repo") ?? "vana-com/vana-cli";
   const tag = args.get("tag");
 
   if (!tag) {

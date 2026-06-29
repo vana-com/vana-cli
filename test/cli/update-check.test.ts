@@ -169,9 +169,9 @@ describe("update-check", () => {
       await checkForUpdate("1.0.0", "installer");
 
       expect(mockFetch).toHaveBeenCalledWith(
-        "https://api.github.com/repos/vana-com/vana-connect/releases/latest",
+        "https://api.github.com/repos/vana-com/vana-cli/releases/latest",
         expect.objectContaining({
-          headers: { "User-Agent": "@opendatalabs/connect" },
+          headers: { "User-Agent": "vana-cli" },
           signal: expect.any(AbortSignal),
         }),
       );

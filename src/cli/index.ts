@@ -4543,7 +4543,7 @@ export function getLifecycleCommands(
       if (process.platform === "win32") {
         return {
           upgrade:
-            'powershell -Command "irm https://raw.githubusercontent.com/vana-com/vana-connect/main/install/install.ps1 | iex"',
+            'powershell -Command "irm https://raw.githubusercontent.com/vana-com/vana-cli/main/install/install.ps1 | iex"',
           uninstall:
             'powershell -Command "Remove-Item $env:LOCALAPPDATA\\Vana -Recurse -Force; Remove-Item $env:USERPROFILE\\.vana -Recurse -Force"',
         };
@@ -4551,8 +4551,8 @@ export function getLifecycleCommands(
       return {
         upgrade:
           channel === "canary"
-            ? "curl -fsSL https://raw.githubusercontent.com/vana-com/vana-connect/feat/connect-cli-v1/install/install.sh | sh -s -- --version canary-feat-connect-cli-v1"
-            : "curl -fsSL https://raw.githubusercontent.com/vana-com/vana-connect/main/install/install.sh | sh",
+            ? "curl -fsSL https://raw.githubusercontent.com/vana-com/vana-cli/feat/connect-cli-v1/install/install.sh | sh -s -- --version canary-feat-connect-cli-v1"
+            : "curl -fsSL https://raw.githubusercontent.com/vana-com/vana-cli/main/install/install.sh | sh",
         uninstall:
           "rm -f ~/.local/bin/vana && rm -rf ~/.local/share/vana ~/.vana",
       };

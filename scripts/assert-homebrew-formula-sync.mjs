@@ -3,7 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { execFileSync } from "node:child_process";
 
-const DEFAULT_RELEASE_REPO = "vana-com/vana-connect";
+const DEFAULT_RELEASE_REPO = "vana-com/vana-cli";
 const DEFAULT_TAP_PATH = "/home/tnunamak/code/homebrew-vana/Formula/vana.rb";
 
 function parseArgs(argv) {

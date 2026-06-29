@@ -4,13 +4,13 @@
   "type": "module",
   "scripts": {
     "dev": "next dev --port 3001",
-    "build": "pnpm --filter @opendatalabs/connect build && next build"
+    "build": "pnpm --filter vana-cli build && next build"
   },
   "dependencies": {
-    "@opendatalabs/connect": "workspace:*",
     "next": "^15.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "vana-cli": "workspace:*",
     "viem": "^2.0.0"
   },
   "devDependencies": {

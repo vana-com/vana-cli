@@ -22,7 +22,7 @@ export interface VanaConfig {
  *
  * @example
  * ```typescript
- * import { createVanaConfig } from "@opendatalabs/connect/server";
+ * import { createVanaConfig } from "vana-cli/server";
  *
  * const config = createVanaConfig({
  *   privateKey: process.env.VANA_PRIVATE_KEY as `0x${string}`,

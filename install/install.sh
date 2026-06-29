@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${VANA_RELEASE_REPO:-vana-com/vana-connect}"
+REPO="${VANA_RELEASE_REPO:-vana-com/vana-cli}"
 VERSION="${VANA_VERSION:-}"
 BIN_DIR="${VANA_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 INSTALL_ROOT="${VANA_INSTALL_ROOT:-$HOME/.local/share/vana}"

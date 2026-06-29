@@ -317,7 +317,7 @@ Skills now install to `~/.agents/skills/` (cross-agent standard) and
 `~/.claude/skills/` (if Claude Code detected). `vana skills install`
 handles multi-target installation. First successful connect prompts to
 install skills (ask-once, stored in state). Also publishable via
-`npx skills add vana-com/vana-connect` (skills.sh compatible).
+`npx skills add vana-com/vana-cli` (skills.sh compatible).
 
 ---
 
@@ -413,7 +413,7 @@ already has that version.
 - [x] ~~Bundled skills / agent doc installation~~ — skills install to
       `~/.agents/skills/` (cross-agent) + `~/.claude/skills/` (if detected).
       `vana skills` shows guided fuzzy picker. First connect prompts to install.
-      skills.sh compatible via `npx skills add vana-com/vana-connect`
+      skills.sh compatible via `npx skills add vana-com/vana-cli`
 
 ---
 

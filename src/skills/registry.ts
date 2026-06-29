@@ -8,9 +8,9 @@ import {
 } from "./paths.js";
 
 const SKILLS_REGISTRY_URL =
-  "https://raw.githubusercontent.com/vana-com/vana-connect/main/skills/registry.json";
+  "https://raw.githubusercontent.com/vana-com/vana-cli/main/skills/registry.json";
 const SKILLS_BASE_URL =
-  "https://raw.githubusercontent.com/vana-com/vana-connect/main/skills";
+  "https://raw.githubusercontent.com/vana-com/vana-cli/main/skills";
 
 export interface SkillRegistryEntry {
   id: string;
@@ -210,7 +210,7 @@ async function loadSkillsRegistry(skillsDir?: string): Promise<SkillsRegistry> {
   }
 
   const response = await fetch(SKILLS_REGISTRY_URL, {
-    headers: { "User-Agent": "@opendatalabs/connect" },
+    headers: { "User-Agent": "vana-cli" },
   });
   if (!response.ok) {
     throw new Error(`Failed to load skills registry: ${response.status}`);
@@ -238,7 +238,7 @@ async function copyOrFetchSkillFile(
   }
 
   const response = await fetch(`${SKILLS_BASE_URL}/${relativePath}`, {
-    headers: { "User-Agent": "@opendatalabs/connect" },
+    headers: { "User-Agent": "vana-cli" },
   });
   if (!response.ok) {
     throw new Error(`Failed to download ${relativePath}: ${response.status}`);

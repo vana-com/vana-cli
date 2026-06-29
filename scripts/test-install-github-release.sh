@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${VANA_RELEASE_REPO:-vana-com/vana-connect}"
+REPO="${VANA_RELEASE_REPO:-vana-com/vana-cli}"
 BRANCH="${VANA_INSTALLER_BRANCH:-main}"
 VERSION="${VANA_VERSION:-}"
 SOURCE="${VANA_CONNECT_SOURCE:-github}"

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-const DEFAULT_REPO = "vana-com/vana-connect";
+const DEFAULT_REPO = "vana-com/vana-cli";
 const DEFAULT_TAP_REPO = "vana-com/homebrew-vana";
 const DEFAULT_TAP_WORKFLOW = "sync-formula.yml";
 const DEFAULT_TAP_LOCAL_PATH = "/home/tnunamak/code/homebrew-vana";

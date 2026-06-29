@@ -70,7 +70,7 @@ export interface UseVanaDataResult {
  *
  * @example
  * ```tsx
- * import { useVanaData } from "@opendatalabs/connect/react";
+ * import { useVanaData } from "vana-cli/react";
  *
  * function MyComponent() {
  *   const { status, data, deepLinkUrl, initConnect, isLoading } = useVanaData();

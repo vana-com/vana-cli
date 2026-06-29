@@ -294,7 +294,7 @@ async function loadRegistry(
   }
 
   const response = await fetch(REGISTRY_URL, {
-    headers: { "User-Agent": "@opendatalabs/connect" },
+    headers: { "User-Agent": "vana-cli" },
   });
   if (!response.ok) {
     throw new Error(`Failed to load connector registry: ${response.status}`);
@@ -322,7 +322,7 @@ async function copyOrFetchFile(
   }
 
   const response = await fetch(`${BASE_URL}/${relativePath}`, {
-    headers: { "User-Agent": "@opendatalabs/connect" },
+    headers: { "User-Agent": "vana-cli" },
   });
   if (!response.ok) {
     throw new Error(`Failed to download ${relativePath}: ${response.status}`);
@@ -434,7 +434,7 @@ export async function readCachedConnectorMetadata(
 async function fetchIcon(url: string, destination: string): Promise<void> {
   await fs.mkdir(path.dirname(destination), { recursive: true });
   const response = await fetch(url, {
-    headers: { "User-Agent": "@opendatalabs/connect" },
+    headers: { "User-Agent": "vana-cli" },
   });
   if (!response.ok) {
     throw new Error(`Failed to download icon: ${response.status}`);

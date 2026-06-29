@@ -5,7 +5,7 @@
  *
  * @example
  * ```typescript
- * import { ConnectError, ConnectErrorCode } from "@opendatalabs/connect/core";
+ * import { ConnectError, ConnectErrorCode } from "vana-cli/core";
  *
  * try {
  *   await getData({ privateKey, grant });

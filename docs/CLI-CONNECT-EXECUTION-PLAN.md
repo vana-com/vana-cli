@@ -155,7 +155,7 @@ After connect is transformed, audit other commands for consistency:
 - Commit as one coherent batch
 - Push to feat/connect-cli-v1
 - Verify canary release
-- Test via `pnpm dlx @opendatalabs/connect@canary connect github`
+- Test via `pnpm dlx vana-cli@canary connect github`
 
 ## What NOT to change
 

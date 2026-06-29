@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$Repo = if ($env:VANA_RELEASE_REPO) { $env:VANA_RELEASE_REPO } else { "vana-com/vana-connect" }
+$Repo = if ($env:VANA_RELEASE_REPO) { $env:VANA_RELEASE_REPO } else { "vana-com/vana-cli" }
 $Version = if ($env:VANA_VERSION) { $env:VANA_VERSION } else { "" }
 $BinDir = if ($env:VANA_INSTALL_BIN_DIR) { $env:VANA_INSTALL_BIN_DIR } else { Join-Path $HOME "AppData\Local\Microsoft\WinGet\Links" }
 $InstallRoot = if ($env:VANA_INSTALL_ROOT) { $env:VANA_INSTALL_ROOT } else { Join-Path $HOME "AppData\Local\Vana" }

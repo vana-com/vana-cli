@@ -23,7 +23,7 @@ for (let index = 2; index < process.argv.length; index += 1) {
 
 const releaseTag = args.get("release-tag");
 const packageVersion = args.get("package-version");
-const releaseRepo = args.get("release-repo") ?? "vana-com/vana-connect";
+const releaseRepo = args.get("release-repo") ?? "vana-com/vana-cli";
 const artifactsDir = path.resolve(
   repoRoot,
   args.get("artifacts-dir") ?? "artifacts/release",

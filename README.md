@@ -1,6 +1,6 @@
 # OpenDataLabs Context Gateway JavaScript SDK
 
-`@opendatalabs/connect` is the JavaScript client SDK for
+`vana-cli` is the JavaScript client SDK for
 [OpenDataLabs Context Gateway](https://www.opendatalabs.com/context-gateway).
 Use it to let users connect their own data to your app.
 
@@ -19,12 +19,12 @@ vana status
 Or use the hosted prerelease installer on macOS/Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vana-com/vana-connect/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vana-com/vana-cli/main/install/install.sh | sh
 ```
 
 Branch prerelease:
 
-- `https://github.com/vana-com/vana-connect/releases/tag/canary-feat-connect-cli-v1`
+- `https://github.com/vana-com/vana-cli/releases/tag/canary-feat-connect-cli-v1`
 
 Once installed:
 
@@ -65,7 +65,7 @@ The [Data Portability Protocol](https://docs.vana.org/) defines how users collec
 The fastest way to get up and running is with the `examples/nextjs-starter` — a complete working app which uses the development environment and has full flow of data portability wired up:
 
 ```bash
-git clone https://github.com/vana-com/vana-connect.git
+git clone https://github.com/vana-com/vana-cli.git
 cd vana-connect/examples/nextjs-starter
 cp .env.local.example .env.local
 ```
@@ -122,8 +122,8 @@ It produces a platform-specific release directory plus a release archive and mat
 If you are building an app surface like DataConnect Desktop or a hosted orchestration layer, use the SDK modules instead of shelling out to the CLI where possible.
 
 ```ts
-import { ManagedPlaywrightRuntime } from "@opendatalabs/connect/runtime";
-import { listAvailableSources } from "@opendatalabs/connect/connectors";
+import { ManagedPlaywrightRuntime } from "vana-cli/runtime";
+import { listAvailableSources } from "vana-cli/connectors";
 ```
 
 Intended split:
@@ -135,7 +135,7 @@ Intended split:
 ### Installation
 
 ```bash
-pnpm add @opendatalabs/connect
+pnpm add vana-cli
 ```
 
 ### Package manager
@@ -151,7 +151,7 @@ First, register your app in the [Developer Portal](https://vana-developers.repli
 #### 1. Create a session (server)
 
 ```typescript
-import { connect } from "@opendatalabs/connect/server";
+import { connect } from "vana-cli/server";
 
 const session = await connect({
   privateKey: process.env.VANA_APP_PRIVATE_KEY as `0x${string}`,
@@ -169,7 +169,7 @@ const session = await connect({
 #### 2. Poll for user approval (client)
 
 ```tsx
-import { useVanaConnect } from "@opendatalabs/connect/react";
+import { useVanaConnect } from "vana-cli/react";
 
 function ConnectData({ sessionId }: { sessionId: string }) {
   const { connect, status, grant, connectUrl } = useVanaConnect();
@@ -192,7 +192,7 @@ function ConnectData({ sessionId }: { sessionId: string }) {
 Or use the pre-built button:
 
 ```tsx
-import { ConnectButton } from "@opendatalabs/connect/react";
+import { ConnectButton } from "vana-cli/react";
 
 <ConnectButton
   sessionId={sessionId}
@@ -204,7 +204,7 @@ import { ConnectButton } from "@opendatalabs/connect/react";
 #### 3. Fetch user data (server)
 
 ```typescript
-import { getData } from "@opendatalabs/connect/server";
+import { getData } from "vana-cli/server";
 
 const data = await getData({
   privateKey: process.env.VANA_APP_PRIVATE_KEY as `0x${string}`,
@@ -220,7 +220,7 @@ const conversations = data["chatgpt.conversations"];
 The DataConnect App verifies your identity by fetching your manifest. Use `signVanaManifest()` to generate it:
 
 ```typescript
-import { signVanaManifest } from "@opendatalabs/connect/server";
+import { signVanaManifest } from "vana-cli/server";
 
 // In your manifest route handler (e.g. Next.js /manifest.json/route.ts):
 const vanaBlock = await signVanaManifest({
@@ -252,11 +252,11 @@ Available data connectors and their scopes (schema definitions):
 
 ### Entrypoints
 
-| Import                         | Environment | Exports                                                           |
-| ------------------------------ | ----------- | ----------------------------------------------------------------- |
-| `@opendatalabs/connect/server` | Node.js     | `connect()`, `getData()`, `signVanaManifest()`, low-level clients |
-| `@opendatalabs/connect/react`  | Browser     | `useVanaConnect()`, `useVanaData()`, `ConnectButton`              |
-| `@opendatalabs/connect/core`   | Universal   | Types, `ConnectError`, constants                                  |
+| Import            | Environment | Exports                                                           |
+| ----------------- | ----------- | ----------------------------------------------------------------- |
+| `vana-cli/server` | Node.js     | `connect()`, `getData()`, `signVanaManifest()`, low-level clients |
+| `vana-cli/react`  | Browser     | `useVanaConnect()`, `useVanaData()`, `ConnectButton`              |
+| `vana-cli/core`   | Universal   | Types, `ConnectError`, constants                                  |
 
 ### `connect(config): Promise<SessionInitResult>`
 
@@ -312,7 +312,7 @@ import {
   createRequestSigner, // Web3Signed header generation
   createSessionRelay, // Session Relay HTTP client
   createDataClient, // Data Gateway HTTP client
-} from "@opendatalabs/connect/server";
+} from "vana-cli/server";
 ```
 
 ## License

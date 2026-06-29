@@ -142,7 +142,7 @@ Missing a platform?
 shares connectors and local storage with
 [DataConnect](https://github.com/vana-com/data-connect), the desktop app. For
 building apps that request user data, see the
-[Connect SDK](https://github.com/vana-com/vana-connect).
+[Connect SDK](https://github.com/vana-com/vana-cli).
 
 ## Privacy
 
