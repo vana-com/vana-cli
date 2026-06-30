@@ -1070,12 +1070,12 @@ describe("runCli", () => {
           account: {
             address: "0x2ab394e4be7c43ac360d226a31e1c90bc01aafa1",
             session_token: "vana_account_session",
-            expires_at: "2026-04-22T19:25:14.420Z",
+            expires_at: "2027-04-22T19:25:14.420Z",
           },
           personal_server: {
             url: "https://0x2ab394e4be7c43ac360d226a31e1c90bc01aafa1.myvana.app",
             session_token: "vana_ps_session",
-            expires_at: "2026-04-22T19:25:14.420Z",
+            expires_at: "2027-04-22T19:25:14.420Z",
           },
         });
       }
@@ -1137,6 +1137,12 @@ describe("runCli", () => {
         message: "Steam needs credentials",
         fields: ["username", "password"],
       },
+      {
+        type: "collection-complete",
+        source: "steam",
+        resultPath: "/tmp/.vana/steam-result.json",
+        logPath: "/tmp/logs/run.log",
+      },
     ];
 
     const { runCli } = await import("../../src/cli/index.js");
@@ -1166,6 +1172,19 @@ describe("runCli", () => {
         type: "outcome",
         status: "needs_input",
         source: "steam",
+      }),
+    );
+    expect(lines).not.toContainEqual(
+      expect.objectContaining({
+        type: "outcome",
+        status: "connected_local_only",
+        source: "steam",
+      }),
+    );
+    expect(mockUpdateSourceState).not.toHaveBeenCalledWith(
+      "steam",
+      expect.objectContaining({
+        lastRunOutcome: "connected_local_only",
       }),
     );
   });

@@ -36,8 +36,7 @@ const SERVER_REGISTRATION_TYPES = {
   ],
 } as const;
 
-const GATEWAY_URL =
-  process.env.DATA_GATEWAY_URL ?? "https://data-gateway.vana.org";
+const GATEWAY_URL = process.env.DATA_GATEWAY_URL ?? "https://dp-rpc.vana.org";
 
 export type RegisterServerErrorCode =
   | "ALREADY_REGISTERED"

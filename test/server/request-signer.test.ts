@@ -6,6 +6,8 @@ import { privateKeyToAccount } from "viem/accounts";
 const TEST_PRIVATE_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
 const TEST_ADDRESS = privateKeyToAccount(TEST_PRIVATE_KEY).address;
+const PREFIXED_EMPTY_BODY_HASH =
+  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 describe("createRequestSigner", () => {
   it("produces a Web3Signed header with correct format", async () => {
@@ -99,7 +101,7 @@ describe("createRequestSigner", () => {
     expect(payload.grantId).toBeUndefined();
   });
 
-  it("computes body hash for non-empty body", async () => {
+  it("computes legacy body hash by default for non-empty body", async () => {
     const signer = createRequestSigner({ privateKey: TEST_PRIVATE_KEY });
     const header = await signer.signRequest({
       aud: "https://example.com",
@@ -117,7 +119,7 @@ describe("createRequestSigner", () => {
     expect(payload.bodyHash).not.toBe("");
   });
 
-  it("uses empty-body hash when no body provided", async () => {
+  it("uses legacy empty body hash by default when no body provided", async () => {
     const signer = createRequestSigner({ privateKey: TEST_PRIVATE_KEY });
     const header = await signer.signRequest({
       aud: "https://example.com",
@@ -130,6 +132,40 @@ describe("createRequestSigner", () => {
     const payload = JSON.parse(payloadJson);
 
     expect(payload.bodyHash).toBe("");
+  });
+
+  it("supports sha256-prefixed body hashes when requested", async () => {
+    const signer = createRequestSigner({
+      privateKey: TEST_PRIVATE_KEY,
+      bodyHashFormat: "prefixed",
+    });
+
+    const nonEmptyHeader = await signer.signRequest({
+      aud: "https://example.com",
+      method: "POST",
+      uri: "/v1/data/test",
+      body: JSON.stringify({ scopes: ["test"], granteeAddress: "0x123" }),
+    });
+    const nonEmptyPayloadBase64 = nonEmptyHeader
+      .replace("Web3Signed ", "")
+      .split(".")[0];
+    const nonEmptyPayload = JSON.parse(
+      Buffer.from(nonEmptyPayloadBase64, "base64").toString("utf-8"),
+    );
+    expect(nonEmptyPayload.bodyHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+
+    const emptyHeader = await signer.signRequest({
+      aud: "https://example.com",
+      method: "GET",
+      uri: "/v1/data/test",
+    });
+    const emptyPayloadBase64 = emptyHeader
+      .replace("Web3Signed ", "")
+      .split(".")[0];
+    const emptyPayload = JSON.parse(
+      Buffer.from(emptyPayloadBase64, "base64").toString("utf-8"),
+    );
+    expect(emptyPayload.bodyHash).toBe(PREFIXED_EMPTY_BODY_HASH);
   });
 
   it("canonicalizes body before hashing (key order does not matter)", async () => {

@@ -72,6 +72,12 @@ export interface DataFetchParams {
 export interface RequestSignerConfig {
   /** Builder private key in hex format. */
   privateKey: `0x${string}`;
+  /**
+   * Body hash wire format.
+   * - `"legacy"`: bare sha256 hex, with `""` for empty bodies. Required by the current Session Relay.
+   * - `"prefixed"`: `sha256:<hex>`, including the canonical empty-body hash.
+   */
+  bodyHashFormat?: "legacy" | "prefixed";
 }
 
 /** Configuration for {@link createSessionRelay}. */

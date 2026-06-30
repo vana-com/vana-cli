@@ -100,6 +100,7 @@ describe("createDataClient", () => {
         Buffer.from(payloadBase64, "base64").toString("utf-8"),
       );
       expect(payload.grantId).toBe("grant-123");
+      expect(payload.bodyHash).toMatch(/^sha256:[0-9a-f]{64}$/);
     });
 
     it("includes query params for fileId and at", async () => {
@@ -174,6 +175,9 @@ describe("createDataClient", () => {
       );
       expect(payload.grantId).toBeUndefined();
       expect(payload.uri).toBe("/v1/data");
+      expect(payload.bodyHash).toBe(
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      );
     });
   });
 

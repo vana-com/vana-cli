@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import type { RequestSignerConfig } from "../core/types.js";
 
+const EMPTY_BODY_HASH =
+  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+type BodyHashFormat = NonNullable<RequestSignerConfig["bodyHashFormat"]>;
+
 function base64urlEncode(input: string): string {
   return Buffer.from(input, "utf-8")
     .toString("base64")
@@ -21,14 +25,18 @@ function canonicalizeJson(obj: unknown): unknown {
   return sorted;
 }
 
-function computeBodyHash(body?: string): string {
+function computeBodyHash(
+  body: string | undefined,
+  format: BodyHashFormat,
+): string {
   if (!body || body.length === 0) {
-    return "";
+    return format === "prefixed" ? EMPTY_BODY_HASH : "";
   }
   const parsed = JSON.parse(body);
   const canonical = canonicalizeJson(parsed);
   const canonicalStr = JSON.stringify(canonical);
-  return createHash("sha256").update(canonicalStr).digest("hex");
+  const hash = createHash("sha256").update(canonicalStr).digest("hex");
+  return format === "prefixed" ? `sha256:${hash}` : hash;
 }
 
 /**
@@ -64,6 +72,7 @@ export function createRequestSigner(
   config: RequestSignerConfig,
 ): RequestSigner {
   const account = privateKeyToAccount(config.privateKey);
+  const bodyHashFormat = config.bodyHashFormat ?? "legacy";
 
   return {
     address: account.address,
@@ -73,7 +82,7 @@ export function createRequestSigner(
 
       const payload: Record<string, unknown> = {
         aud: params.aud,
-        bodyHash: computeBodyHash(params.body),
+        bodyHash: computeBodyHash(params.body, bodyHashFormat),
         exp: now + 300,
         iat: now,
         method: params.method,

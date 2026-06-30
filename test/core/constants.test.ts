@@ -10,13 +10,14 @@ describe("getEnvConfig", () => {
     const config = getEnvConfig("dev");
     expect(config).toBe(ENV_CONFIG.dev);
     expect(config.sessionRelayUrl).toContain("session-relay");
-    expect(config.gatewayUrl).toContain("data-gateway");
+    expect(config.gatewayUrl).toBe("https://dp-rpc-dev.vana.org");
     expect(config.accountUrl).toBe("https://account-dev.vana.org");
   });
 
   it("returns prod config for 'prod'", () => {
     const config = getEnvConfig("prod");
     expect(config).toBe(ENV_CONFIG.prod);
+    expect(config.gatewayUrl).toBe("https://dp-rpc.vana.org");
     expect(config.accountUrl).toBe("https://account.vana.org");
   });
 

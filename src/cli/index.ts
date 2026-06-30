@@ -1274,6 +1274,7 @@ async function runConnect(
     let ingestFailureMessage: string | null = null;
     let resultPath = getSourceResultPath(source);
     let collectedResult = false;
+    let blockedByRequiredInput = false;
     let ingestScopeResults:
       | Array<{
           scope: string;
@@ -1348,6 +1349,9 @@ async function runConnect(
       }
 
       if (event.type === "needs-input") {
+        if (options.noInput && !options.ipc) {
+          blockedByRequiredInput = true;
+        }
         await updateSourceState(resolution.source, {
           lastRunAt: new Date().toISOString(),
           lastRunOutcome: CliOutcomeStatus.NEEDS_INPUT,
@@ -1448,6 +1452,10 @@ async function runConnect(
       }
 
       if (event.type === "collection-complete" && event.resultPath) {
+        if (blockedByRequiredInput) {
+          continue;
+        }
+
         // Check if the result is actually an error object
         try {
           const raw = await fsp.readFile(event.resultPath, "utf8");
