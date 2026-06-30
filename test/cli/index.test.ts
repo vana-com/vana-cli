@@ -562,6 +562,35 @@ describe("runCli", () => {
     expect(stderr).not.toContain("Logging in to Vana...");
   });
 
+  it("passes an explicit OAuth client ID to cloud login", async () => {
+    mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+      const creds = {
+        account: {
+          address: "vana-account",
+          session_token: "vana_account_session",
+          expires_at: "2026-04-22T19:25:14.420Z",
+        },
+        personal_server: null,
+      };
+      await callbacks.onAuthorized(creds);
+      return creds;
+    });
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli([
+      "node",
+      "vana",
+      "login",
+      "--client-id",
+      "custom-cli",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(mockRunDeviceCodeFlow).toHaveBeenCalledWith(expect.any(Object), {
+      clientId: "custom-cli",
+    });
+  });
+
   it("prints telemetry status in json mode", async () => {
     mockGetTelemetryStatus.mockResolvedValue({
       enabled: false,

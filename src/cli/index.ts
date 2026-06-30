@@ -127,6 +127,11 @@ interface GlobalOptions {
   detach?: boolean;
 }
 
+interface LoginCommandOptions {
+  clientId?: string;
+  server?: string;
+}
+
 interface SourceLabelMap {
   [source: string]: string;
 }
@@ -615,10 +620,12 @@ Examples:
     .command("login")
     .description("Log in to your Vana account or a self-hosted Personal Server")
     .option("-s, --server <url>", "Self-hosted Personal Server URL")
-    .action(async (loginOptions: { server?: string }) => {
+    .option("--client-id <id>", "OAuth public client ID for Vana Account login")
+    .action(async (loginOptions: LoginCommandOptions) => {
       process.exitCode = await runCommandWithTelemetry(
         { ...telemetryBaseContext, command: "login" },
-        async () => runLogin(parsedOptions, loginOptions.server),
+        async () =>
+          runLogin(parsedOptions, loginOptions.server, loginOptions.clientId),
       );
     });
 
@@ -6026,6 +6033,7 @@ async function runSkillShow(
 async function runLogin(
   options: GlobalOptions,
   serverUrl?: string,
+  clientId?: string,
 ): Promise<number> {
   // Determine auth target: cloud (account.vana.org) or self-hosted (PS directly)
   const psUrl = serverUrl ?? resolvePersonalServerUrl() ?? null;
@@ -6143,26 +6151,31 @@ async function runLogin(
 
   if (options.json) {
     // JSON mode: run flow and output result
-    const creds = await runDeviceCodeFlow({
-      onCode: (code, uri) => {
-        process.stderr.write(
-          JSON.stringify({ event: "device_code", code, uri }) + "\n",
-        );
+    const creds = await runDeviceCodeFlow(
+      {
+        onCode: (code, uri) => {
+          process.stderr.write(
+            JSON.stringify({ event: "device_code", code, uri }) + "\n",
+          );
+        },
+        onWaiting: () => {},
+        onAuthorized: () => {},
+        onExpired: () => {
+          process.stdout.write(
+            JSON.stringify({
+              status: "expired",
+              error: "Device code expired",
+            }) + "\n",
+          );
+        },
+        onError: (err) => {
+          process.stdout.write(
+            JSON.stringify({ status: "error", error: err.message }) + "\n",
+          );
+        },
       },
-      onWaiting: () => {},
-      onAuthorized: () => {},
-      onExpired: () => {
-        process.stdout.write(
-          JSON.stringify({ status: "expired", error: "Device code expired" }) +
-            "\n",
-        );
-      },
-      onError: (err) => {
-        process.stdout.write(
-          JSON.stringify({ status: "error", error: err.message }) + "\n",
-        );
-      },
-    });
+      { clientId },
+    );
 
     if (creds) {
       await saveCredentials(creds);
@@ -6195,42 +6208,47 @@ async function runLogin(
   };
   renderer.title("Vana");
 
-  const creds = await runDeviceCodeFlow({
-    onCode: (code, uri) => {
-      writeStaticLoginNotes([
-        "Open this URL in your browser:",
-        uri,
-        `Enter this code: ${code}`,
-      ]);
+  const creds = await runDeviceCodeFlow(
+    {
+      onCode: (code, uri) => {
+        writeStaticLoginNotes([
+          "Open this URL in your browser:",
+          uri,
+          `Enter this code: ${code}`,
+        ]);
+      },
+      onWaiting: () => {
+        renderer.scopeActive("Waiting for authorization");
+      },
+      onAuthorized: async (authedCreds) => {
+        await saveCredentials(authedCreds);
+        if (authedCreds.personal_server?.url) {
+          await updateCliConfig({
+            personalServerUrl: authedCreds.personal_server.url,
+          });
+        }
+        renderer.success(
+          `Logged in as ${formatAddress(authedCreds.account.address)}`,
+        );
+        if (authedCreds.personal_server) {
+          renderer.detail(
+            `Personal Server: ${authedCreds.personal_server.url}`,
+          );
+        }
+        renderer.detail("Credentials saved to ~/.vana/auth.json");
+      },
+      onExpired: () => {
+        renderer.fail("Authorization expired");
+        renderer.next("vana login");
+      },
+      onError: (err) => {
+        renderer.fail("Login failed");
+        renderer.detail(err.message);
+        renderer.next("vana login");
+      },
     },
-    onWaiting: () => {
-      renderer.scopeActive("Waiting for authorization");
-    },
-    onAuthorized: async (authedCreds) => {
-      await saveCredentials(authedCreds);
-      if (authedCreds.personal_server?.url) {
-        await updateCliConfig({
-          personalServerUrl: authedCreds.personal_server.url,
-        });
-      }
-      renderer.success(
-        `Logged in as ${formatAddress(authedCreds.account.address)}`,
-      );
-      if (authedCreds.personal_server) {
-        renderer.detail(`Personal Server: ${authedCreds.personal_server.url}`);
-      }
-      renderer.detail("Credentials saved to ~/.vana/auth.json");
-    },
-    onExpired: () => {
-      renderer.fail("Authorization expired");
-      renderer.next("vana login");
-    },
-    onError: (err) => {
-      renderer.fail("Login failed");
-      renderer.detail(err.message);
-      renderer.next("vana login");
-    },
-  });
+    { clientId },
+  );
 
   renderer.cleanup();
 
