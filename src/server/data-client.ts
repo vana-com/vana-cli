@@ -28,7 +28,10 @@ export interface DataClient {
  */
 export function createDataClient(config: DataClientConfig): DataClient {
   const gatewayBase = config.gatewayUrl.replace(/\/+$/, "");
-  const signer = createRequestSigner({ privateKey: config.privateKey });
+  const signer = createRequestSigner({
+    privateKey: config.privateKey,
+    bodyHashFormat: "prefixed",
+  });
 
   return {
     async resolveServerUrl(userAddress: string): Promise<string> {

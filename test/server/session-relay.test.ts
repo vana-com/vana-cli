@@ -58,6 +58,15 @@ describe("createSessionRelay", () => {
       const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(callBody.granteeAddress).toBe(TEST_GRANTEE);
       expect(callBody.scopes).toEqual(["instagram.profile"]);
+
+      const authHeader = mockFetch.mock.calls[0][1].headers
+        .Authorization as string;
+      const payloadBase64 = authHeader.replace("Web3Signed ", "").split(".")[0];
+      const payload = JSON.parse(
+        Buffer.from(payloadBase64, "base64").toString("utf-8"),
+      );
+      expect(payload.bodyHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(payload.bodyHash).not.toMatch(/^sha256:/);
     });
 
     it("includes optional webhookUrl and appUserId in body", async () => {
