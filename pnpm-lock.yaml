@@ -16,6 +16,9 @@ importers:
       "@modelcontextprotocol/sdk":
         specifier: ^1.27.1
         version: 1.27.1(zod@4.3.6)
+      "@opendatalabs/vana-sdk":
+        specifier: ^3.9.0
+        version: 3.9.0(bufferutil@4.1.0)(react@19.2.4)(typescript@5.7.3)(utf-8-validate@5.0.10)
       chromium-bidi:
         specifier: 15.0.0
         version: 15.0.0(devtools-protocol@0.0.1596832)
@@ -2404,6 +2407,12 @@ packages:
       }
     engines: { node: ^14.21.3 || >=16 }
 
+  "@noble/secp256k1@2.3.0":
+    resolution:
+      {
+        integrity: sha512-0TQed2gcBbIrh7Ccyw+y/uZQvbJwm7Ao4scBUxqpBCcsOlZG0O4KGfjtNAy/li4W8n1xt3dxrwJ0beZ2h2G6Kw==,
+      }
+
   "@nodelib/fs.scandir@2.1.5":
     resolution:
       {
@@ -2523,6 +2532,18 @@ packages:
       {
         integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==,
       }
+
+  "@opendatalabs/vana-sdk@3.9.0":
+    resolution:
+      {
+        integrity: sha512-oSkbWp9GHglSsVMbO68MEH3KAFty39LNQPJzHHDBqApZfV9/f8LDqfnL7u40ZCTYFq6ytAkvPM4o9QSGQy+3Bw==,
+      }
+    engines: { node: ">=22.0.0" }
+    peerDependencies:
+      react: ">=18.0.0"
+    peerDependenciesMeta:
+      react:
+        optional: true
 
   "@paulmillr/qr@0.2.1":
     resolution:
@@ -5886,6 +5907,12 @@ packages:
         integrity: sha512-QXUSXI3QVc/gJME0dBpXrag1kbzOqCjCX8/b54ntNyW6sjtoqxqRk3LTmXzaJoh71zMsDCjM+47jS7XiwN/+fQ==,
       }
 
+  bn.js@4.12.4:
+    resolution:
+      {
+        integrity: sha512-njR1b+ixG2ufvL9Zn9JGneW+b5GV6jqpYyPPpg4QVt723b5kJPGUczkUyWEH9BwEA74UakJZ43I4FDLBF7ci0g==,
+      }
+
   bn.js@5.2.2:
     resolution:
       {
@@ -5935,6 +5962,12 @@ packages:
         integrity: sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==,
       }
     engines: { node: ">=8" }
+
+  brorand@1.1.0:
+    resolution:
+      {
+        integrity: sha512-cKV8tMCEpQs4hK/ik71d6LrPOnpkpGBR0wzxqr68g2m/LB2GxVYQroAjMJZRVM1Y4BCjCKc3vAamxSzOY2RP+w==,
+      }
 
   browserslist@4.28.1:
     resolution:
@@ -6821,6 +6854,12 @@ packages:
     resolution:
       {
         integrity: sha512-9tfDXhJ4RKFNerfjdCcZfufu49vg620741MNs26a9+bhLThdB+plgMeou98CAaHu/WATj2iHOOHTp1hWtABj2A==,
+      }
+
+  elliptic@6.6.1:
+    resolution:
+      {
+        integrity: sha512-RaddvvMatK2LJHqFJ+YA4WysVN5Ita9E35botqIYspQ4TkRAlCicdzKOjlyv/1Za5RyTNn7di//eEV0uTAfe3g==,
       }
 
   emoji-regex@10.6.0:
@@ -7903,12 +7942,24 @@ packages:
       }
     engines: { node: ^20.17.0 || >=22.9.0 }
 
+  hash.js@1.1.7:
+    resolution:
+      {
+        integrity: sha512-taOaskGt4z4SOANNseOviYDvjEJinIkRgmp7LbKP2YTTmVxWBl87s/uzK9r+44BclBSp2X7K1hqeNfz9JbBeXA==,
+      }
+
   html-encoding-sniffer@6.0.0:
     resolution:
       {
         integrity: sha512-CV9TW3Y3f8/wT0BRFc1/KAVQ3TUHiXmaAb6VW9vtiMFf7SLoMd1PdAc4W3KFOFETBJUb90KatHqlsZMWV+R9Gg==,
       }
     engines: { node: ^20.19.0 || ^22.12.0 || >=24.0.0 }
+
+  hmac-drbg@1.0.1:
+    resolution:
+      {
+        integrity: sha512-Tti3gMqLdZfhOQY1Mzf/AanLiqh1WTiJgEj26ZuYQ9fbkLomzGchCws4FyrSd4VkpBfiNhaE1On+lOz894jvXg==,
+      }
 
   http-errors@2.0.1:
     resolution:
@@ -9101,6 +9152,18 @@ packages:
       }
     engines: { node: ">=18" }
 
+  minimalistic-assert@1.0.1:
+    resolution:
+      {
+        integrity: sha512-UtJcAD4yEaGtjPezWuO9wC4nwUnVH/8/Im3yEHQP4b67cXlD/Qr9hdITCU1xDbSEXg2XKNaP8jsReV7vQd00/A==,
+      }
+
+  minimalistic-crypto-utils@1.0.1:
+    resolution:
+      {
+        integrity: sha512-JIYlbt6g8i5jKfJ3xz7rF0LXmv2TkDxBLUkiBeZ7bAx4GnnNMr8xFpGnOxn6GhTEHx3SjRrZEoU+j04prX1ktg==,
+      }
+
   minimatch@10.1.2:
     resolution:
       {
@@ -9323,6 +9386,12 @@ packages:
     resolution:
       {
         integrity: sha512-Ntyt4AIXyaLIuMHF6IOoTakB3K+RWxwtsHNRxllEoA6vPwP9o4866g6YWDLUdnucilZhmkxiHwHr11gAENw+QA==,
+      }
+
+  node-addon-api@5.1.0:
+    resolution:
+      {
+        integrity: sha512-eh0GgfEkpnoWDq+VY8OyvYhFEzBk6jIYbRKdIlyTiAXIVJ8PyBaKb0rp7oDtoddbdoHWhq8wwr+XZ81F1rpNdA==,
       }
 
   node-domexception@1.0.0:
@@ -9619,6 +9688,18 @@ packages:
       {
         integrity: sha512-opyTPaunsklCBpTK8JGef6mfPhLSnyy5a0IN9vKtx3+4aExf+KxEqYwIy3hqkedXIB97u357uLMJsOnm3GVjsw==,
       }
+
+  openpgp@6.3.1:
+    resolution:
+      {
+        integrity: sha512-7oSPvmlKPojxFoyelT5DWPIAVmqWZh4qU/5pO6bdoShEtRpCw9Sye9IXUQj6EFM3XpgGssqccAr705YtTcLNQw==,
+      }
+    engines: { node: ">= 18.0.0", typescript: ">= 5.0.0" }
+    peerDependencies:
+      "@openpgp/web-stream-tools": ~0.3.0
+    peerDependenciesMeta:
+      "@openpgp/web-stream-tools":
+        optional: true
 
   optionator@0.9.4:
     resolution:
@@ -10782,6 +10863,13 @@ packages:
       {
         integrity: sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q==,
       }
+
+  secp256k1@5.0.1:
+    resolution:
+      {
+        integrity: sha512-lDFs9AAIaWP9UCdtWrotXWWF9t8PWgQDcxqgAnpM9rMqxb3Oaq2J0thzPVSxBwdJgyQtkU/sYtFtbM1RSt/iYA==,
+      }
+    engines: { node: ">=18.0.0" }
 
   secure-json-parse@2.7.0:
     resolution:
@@ -14107,6 +14195,8 @@ snapshots:
 
   "@noble/hashes@1.8.0": {}
 
+  "@noble/secp256k1@2.3.0": {}
+
   "@nodelib/fs.scandir@2.1.5":
     dependencies:
       "@nodelib/fs.stat": 2.0.5
@@ -14186,6 +14276,23 @@ snapshots:
       outvariant: 1.4.3
 
   "@open-draft/until@2.1.0": {}
+
+  "@opendatalabs/vana-sdk@3.9.0(bufferutil@4.1.0)(react@19.2.4)(typescript@5.7.3)(utf-8-validate@5.0.10)":
+    dependencies:
+      "@noble/hashes": 1.8.0
+      "@noble/secp256k1": 2.3.0
+      abitype: 1.2.3(typescript@5.7.3)(zod@4.3.6)
+      openpgp: 6.3.1
+      viem: 2.46.2(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.3.6)
+      zod: 4.3.6
+    optionalDependencies:
+      react: 19.2.4
+      secp256k1: 5.0.1
+    transitivePeerDependencies:
+      - "@openpgp/web-stream-tools"
+      - bufferutil
+      - typescript
+      - utf-8-validate
 
   "@paulmillr/qr@0.2.1": {}
 
@@ -18007,6 +18114,8 @@ snapshots:
 
   blakejs@1.2.1: {}
 
+  bn.js@4.12.4: {}
+
   bn.js@5.2.2: {}
 
   body-parser@2.2.2:
@@ -18045,6 +18154,8 @@ snapshots:
   braces@3.0.3:
     dependencies:
       fill-range: 7.1.1
+
+  brorand@1.1.0: {}
 
   browserslist@4.28.1:
     dependencies:
@@ -18488,6 +18599,16 @@ snapshots:
   ee-first@1.1.1: {}
 
   electron-to-chromium@1.5.286: {}
+
+  elliptic@6.6.1:
+    dependencies:
+      bn.js: 4.12.4
+      brorand: 1.1.0
+      hash.js: 1.1.7
+      hmac-drbg: 1.0.1
+      inherits: 2.0.4
+      minimalistic-assert: 1.0.1
+      minimalistic-crypto-utils: 1.0.1
 
   emoji-regex@10.6.0: {}
 
@@ -19172,6 +19293,11 @@ snapshots:
 
   headers-polyfill@4.0.3: {}
 
+  hash.js@1.1.7:
+    dependencies:
+      inherits: 2.0.4
+      minimalistic-assert: 1.0.1
+
   help-me@5.0.0: {}
 
   highlight.js@10.7.3: {}
@@ -19193,6 +19319,12 @@ snapshots:
       "@exodus/bytes": 1.14.1(@noble/hashes@1.8.0)
     transitivePeerDependencies:
       - "@noble/hashes"
+
+  hmac-drbg@1.0.1:
+    dependencies:
+      hash.js: 1.1.7
+      minimalistic-assert: 1.0.1
+      minimalistic-crypto-utils: 1.0.1
 
   http-errors@2.0.1:
     dependencies:
@@ -19794,6 +19926,10 @@ snapshots:
 
   mimic-function@5.0.1: {}
 
+  minimalistic-assert@1.0.1: {}
+
+  minimalistic-crypto-utils@1.0.1: {}
+
   minimatch@10.1.2:
     dependencies:
       "@isaacs/brace-expansion": 5.0.1
@@ -19959,6 +20095,8 @@ snapshots:
 
   node-addon-api@2.0.2: {}
 
+  node-addon-api@5.1.0: {}
+
   node-domexception@1.0.0: {}
 
   node-emoji@2.2.0:
@@ -20078,6 +20216,8 @@ snapshots:
 
   openapi-typescript-helpers@0.0.15: {}
 
+  openpgp@6.3.1: {}
+
   optionator@0.9.4:
     dependencies:
       deep-is: 0.1.4
@@ -20140,6 +20280,21 @@ snapshots:
       "@scure/bip32": 1.7.0
       "@scure/bip39": 1.6.0
       abitype: 1.2.3(typescript@5.7.3)(zod@3.25.76)
+      eventemitter3: 5.0.1
+    optionalDependencies:
+      typescript: 5.7.3
+    transitivePeerDependencies:
+      - zod
+
+  ox@0.12.4(typescript@5.7.3)(zod@4.3.6):
+    dependencies:
+      "@adraffy/ens-normalize": 1.11.1
+      "@noble/ciphers": 1.3.0
+      "@noble/curves": 1.9.1
+      "@noble/hashes": 1.8.0
+      "@scure/bip32": 1.7.0
+      "@scure/bip39": 1.6.0
+      abitype: 1.2.3(typescript@5.7.3)(zod@4.3.6)
       eventemitter3: 5.0.1
     optionalDependencies:
       typescript: 5.7.3
@@ -20908,6 +21063,13 @@ snapshots:
       xmlchars: 2.2.0
 
   scheduler@0.27.0: {}
+
+  secp256k1@5.0.1:
+    dependencies:
+      elliptic: 6.6.1
+      node-addon-api: 5.1.0
+      node-gyp-build: 4.8.4
+    optional: true
 
   secure-json-parse@2.7.0: {}
 
@@ -21733,6 +21895,23 @@ snapshots:
       abitype: 1.2.3(typescript@5.7.3)(zod@3.25.76)
       isows: 1.0.7(ws@8.18.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))
       ox: 0.12.4(typescript@5.7.3)(zod@3.25.76)
+      ws: 8.18.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
+    optionalDependencies:
+      typescript: 5.7.3
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+      - zod
+
+  viem@2.46.2(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.3.6):
+    dependencies:
+      "@noble/curves": 1.9.1
+      "@noble/hashes": 1.8.0
+      "@scure/bip32": 1.7.0
+      "@scure/bip39": 1.6.0
+      abitype: 1.2.3(typescript@5.7.3)(zod@4.3.6)
+      isows: 1.0.7(ws@8.18.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))
+      ox: 0.12.4(typescript@5.7.3)(zod@4.3.6)
       ws: 8.18.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
     optionalDependencies:
       typescript: 5.7.3

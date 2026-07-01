@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createSessionRelay } from "../../src/server/session-relay.js";
-import { ConnectError } from "../../src/core/errors.js";
+import { ConnectError, ConnectErrorCode } from "../../src/core/errors.js";
 
 const TEST_PRIVATE_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
@@ -93,10 +93,10 @@ describe("createSessionRelay", () => {
 
       const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(callBody.webhookUrl).toBe("https://webhook.example.com");
-      expect(callBody.app_user_id).toBe("user-42");
+      expect(callBody.appUserId).toBe("user-42");
     });
 
-    it("throws ConnectError on non-ok response", async () => {
+    it("maps SDK init errors to ConnectError", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 403,
@@ -114,9 +114,14 @@ describe("createSessionRelay", () => {
         sessionRelayUrl: RELAY_URL,
       });
 
-      await expect(relay.initSession({ scopes: ["test"] })).rejects.toThrow(
-        ConnectError,
-      );
+      const promise = relay.initSession({ scopes: ["test"] });
+
+      await expect(promise).rejects.toThrow(ConnectError);
+      await expect(promise).rejects.toMatchObject({
+        code: "BUILDER_NOT_REGISTERED",
+        message: "Builder not registered",
+        statusCode: 403,
+      });
     });
   });
 
@@ -138,6 +143,7 @@ describe("createSessionRelay", () => {
       expect(result.status).toBe("pending");
       expect(mockFetch).toHaveBeenCalledWith(
         `${RELAY_URL}/v1/session/sess-123/poll`,
+        { method: "GET" },
       );
     });
 
@@ -166,12 +172,15 @@ describe("createSessionRelay", () => {
       expect(result.grant?.grantId).toBe("grant-1");
     });
 
-    it("throws ConnectError on non-ok response", async () => {
+    it("maps SDK poll errors to ConnectError", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 404,
         json: async () => ({
-          error: { errorCode: "SESSION_NOT_FOUND" },
+          error: {
+            errorCode: "SESSION_NOT_FOUND",
+            message: "Session not found",
+          },
         }),
       });
 
@@ -181,9 +190,14 @@ describe("createSessionRelay", () => {
         sessionRelayUrl: RELAY_URL,
       });
 
-      await expect(relay.pollSession("nonexistent")).rejects.toThrow(
-        ConnectError,
-      );
+      const promise = relay.pollSession("nonexistent");
+
+      await expect(promise).rejects.toThrow(ConnectError);
+      await expect(promise).rejects.toMatchObject({
+        code: "SESSION_NOT_FOUND",
+        message: "Session not found",
+        statusCode: 404,
+      });
     });
   });
 
@@ -254,12 +268,14 @@ describe("createSessionRelay", () => {
         sessionRelayUrl: RELAY_URL,
       });
 
-      await expect(
-        relay.pollUntilComplete("sess-123", {
-          interval: 10,
-          timeout: 50,
-        }),
-      ).rejects.toThrow("Polling timed out");
+      const promise = relay.pollUntilComplete("sess-123", {
+        interval: 10,
+        timeout: 50,
+      });
+      await expect(promise).rejects.toThrow("Polling timed out");
+      await expect(promise).rejects.toMatchObject({
+        code: ConnectErrorCode.POLL_TIMEOUT,
+      });
     });
   });
 });

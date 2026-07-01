@@ -178,7 +178,7 @@ describe("connect", () => {
 
     const initBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(initBody.webhookUrl).toBe("https://webhook.example.com");
-    expect(initBody.app_user_id).toBe("user-42");
+    expect(initBody.appUserId).toBe("user-42");
   });
 
   it("only makes one fetch call (no polling or data fetch)", async () => {

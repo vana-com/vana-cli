@@ -11,6 +11,7 @@ const checksumPath = path.resolve(requiredArg(args, "checksum"));
 const platform = requiredArg(args, "platform");
 const binaryName =
   args.get("binary-name") ?? (platform === "win32" ? "vana.exe" : "vana");
+const archiveListMaxBuffer = 64 * 1024 * 1024;
 
 await assertExists(
   artifactDir,
@@ -136,6 +137,7 @@ function listArchiveEntries({ archivePath, platform }) {
       ],
       {
         encoding: "utf8",
+        maxBuffer: archiveListMaxBuffer,
       },
     );
     return raw
@@ -146,6 +148,7 @@ function listArchiveEntries({ archivePath, platform }) {
 
   const raw = execFileSync("tar", ["-tzf", archivePath], {
     encoding: "utf8",
+    maxBuffer: archiveListMaxBuffer,
   });
   return raw
     .split(/\r?\n/)

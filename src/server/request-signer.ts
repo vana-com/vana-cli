@@ -1,18 +1,11 @@
 import { createHash } from "node:crypto";
+import { buildWeb3SignedHeader } from "@opendatalabs/vana-sdk/auth/web3-signed-builder";
 import { privateKeyToAccount } from "viem/accounts";
 import type { RequestSignerConfig } from "../core/types.js";
 
 const EMPTY_BODY_HASH =
   "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 type BodyHashFormat = NonNullable<RequestSignerConfig["bodyHashFormat"]>;
-
-function base64urlEncode(input: string): string {
-  return Buffer.from(input, "utf-8")
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
 
 function canonicalizeJson(obj: unknown): unknown {
   if (obj === null || typeof obj !== "object") return obj;
@@ -79,34 +72,18 @@ export function createRequestSigner(
 
     async signRequest(params): Promise<string> {
       const now = Math.floor(Date.now() / 1000);
+      const bodyHash = computeBodyHash(params.body, bodyHashFormat);
 
-      const payload: Record<string, unknown> = {
+      return buildWeb3SignedHeader({
         aud: params.aud,
-        bodyHash: computeBodyHash(params.body, bodyHashFormat),
         exp: now + 300,
+        grantId: params.grantId,
         iat: now,
         method: params.method,
         uri: params.uri,
-      };
-
-      if (params.grantId !== undefined) {
-        payload["grantId"] = params.grantId;
-      }
-
-      // Sort keys for deterministic serialization
-      const sortedPayload = Object.keys(payload)
-        .sort()
-        .reduce<Record<string, unknown>>((acc, key) => {
-          acc[key] = payload[key];
-          return acc;
-        }, {});
-
-      const payloadJson = JSON.stringify(sortedPayload);
-      const payloadBase64 = base64urlEncode(payloadJson);
-
-      const signature = await account.signMessage({ message: payloadBase64 });
-
-      return `Web3Signed ${payloadBase64}.${signature}`;
+        bodyHash,
+        signMessage: (message: string) => account.signMessage({ message }),
+      });
     },
   };
 }

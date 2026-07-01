@@ -1,20 +1,64 @@
+import {
+  createSessionRelayBuilderClient,
+  type SessionRelayInitResult as SdkRelaySessionInitResult,
+} from "@opendatalabs/vana-sdk/session-relay";
+import { privateKeyToAccount } from "viem/accounts";
 import { ConnectError, ConnectErrorCode } from "../core/errors.js";
 import type {
   SessionRelayConfig,
   SessionInitParams,
   SessionPollResult,
 } from "../core/types.js";
-import { createRequestSigner } from "./request-signer.js";
 
 /** Raw response from the Session Relay init endpoint. */
-export interface RelaySessionInitResult {
-  sessionId: string;
-  deepLinkUrl: string;
-  expiresAt: string;
+export type RelaySessionInitResult = SdkRelaySessionInitResult;
+
+interface RelayErrorLike extends Error {
+  details: {
+    status?: number;
+    relayErrorCode?: string;
+  };
+}
+
+function isRelayErrorLike(err: unknown): err is RelayErrorLike {
+  return (
+    err instanceof Error &&
+    "details" in err &&
+    err.details !== null &&
+    typeof err.details === "object"
+  );
+}
+
+function mapRelayError(
+  err: unknown,
+  fallbackCode: ConnectErrorCode,
+): ConnectError {
+  if (err instanceof ConnectError) {
+    return err;
+  }
+
+  if (isRelayErrorLike(err)) {
+    const relayCode = err.details.relayErrorCode;
+    const code =
+      relayCode === "SESSION_RELAY_POLL_TIMEOUT"
+        ? ConnectErrorCode.POLL_TIMEOUT
+        : (relayCode ?? fallbackCode);
+    return new ConnectError(err.message, code, err.details.status);
+  }
+
+  if (err instanceof Error) {
+    return new ConnectError(err.message, fallbackCode);
+  }
+
+  return new ConnectError(String(err), fallbackCode);
 }
 
 /**
  * Low-level client for the Session Relay service.
+ *
+ * This is a CLI adapter over the Vana SDK Session Relay integration. Session
+ * Relay is a Vana-operated service integration for app handoff flows, not a
+ * protocol-core primitive.
  *
  * @see {@link createSessionRelay} to create an instance.
  */
@@ -45,97 +89,44 @@ export interface SessionRelay {
  * @returns A {@link SessionRelay} instance.
  */
 export function createSessionRelay(config: SessionRelayConfig): SessionRelay {
-  const baseUrl = config.sessionRelayUrl.replace(/\/+$/, "");
-  const signer = createRequestSigner({ privateKey: config.privateKey });
+  const account = privateKeyToAccount(config.privateKey);
+  const relay = createSessionRelayBuilderClient({
+    baseUrl: config.sessionRelayUrl,
+    granteeAddress: config.granteeAddress,
+    signMessage: (message: string) => account.signMessage({ message }),
+  });
 
   return {
     async initSession(
       params: SessionInitParams,
     ): Promise<RelaySessionInitResult> {
-      const body = JSON.stringify({
-        granteeAddress: config.granteeAddress,
-        scopes: params.scopes,
-        ...(params.webhookUrl && { webhookUrl: params.webhookUrl }),
-        ...(params.appUserId && { app_user_id: params.appUserId }),
-      });
-
-      const authHeader = await signer.signRequest({
-        aud: baseUrl,
-        method: "POST",
-        uri: "/v1/session/init",
-        body,
-      });
-
-      const res = await fetch(`${baseUrl}/v1/session/init`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: authHeader,
-        },
-        body,
-      });
-
-      if (!res.ok) {
-        const errorBody = await res.json().catch(() => ({}));
-        const errorMsg =
-          (errorBody as Record<string, unknown>).error &&
-          typeof (errorBody as Record<string, unknown>).error === "object"
-            ? ((errorBody as Record<string, Record<string, unknown>>).error
-                .message as string)
-            : `Session init failed: ${res.status}`;
-        throw new ConnectError(
-          errorMsg,
-          ((errorBody as Record<string, Record<string, unknown>>).error
-            ?.errorCode as string) ?? ConnectErrorCode.SESSION_INIT_FAILED,
-          res.status,
-        );
+      try {
+        return await relay.initSession(params);
+      } catch (err) {
+        throw mapRelayError(err, ConnectErrorCode.SESSION_INIT_FAILED);
       }
-
-      return (await res.json()) as RelaySessionInitResult;
     },
 
     async pollSession(sessionId: string): Promise<SessionPollResult> {
-      const res = await fetch(`${baseUrl}/v1/session/${sessionId}/poll`);
-
-      if (!res.ok) {
-        const errorBody = await res.json().catch(() => ({}));
-        throw new ConnectError(
-          `Poll failed: ${res.status}`,
-          ((errorBody as Record<string, Record<string, unknown>>).error
-            ?.errorCode as string) ?? ConnectErrorCode.POLL_FAILED,
-          res.status,
-        );
+      try {
+        return await relay.pollSession(sessionId);
+      } catch (err) {
+        throw mapRelayError(err, ConnectErrorCode.POLL_FAILED);
       }
-
-      return (await res.json()) as SessionPollResult;
     },
 
     async pollUntilComplete(
       sessionId: string,
       opts?: { interval?: number; timeout?: number },
     ): Promise<SessionPollResult> {
-      const interval = opts?.interval ?? 2000;
-      const timeout = opts?.timeout ?? 900_000; // 15 minutes
-      const deadline = Date.now() + timeout;
-
-      while (Date.now() < deadline) {
-        const result = await this.pollSession(sessionId);
-
-        if (
-          result.status === "approved" ||
-          result.status === "denied" ||
-          result.status === "expired"
-        ) {
-          return result;
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, interval));
+      try {
+        return await relay.pollUntilComplete(sessionId, {
+          intervalMs: opts?.interval,
+          timeoutMs: opts?.timeout,
+        });
+      } catch (err) {
+        throw mapRelayError(err, ConnectErrorCode.POLL_FAILED);
       }
-
-      throw new ConnectError(
-        "Polling timed out",
-        ConnectErrorCode.POLL_TIMEOUT,
-      );
     },
   };
 }
