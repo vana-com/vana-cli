@@ -22,11 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      HAS_RELEASE_APP_CREDS: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
     outputs:
       new-release-version: ${{ steps.version.outputs.new-release-version }}
       new-release-published: ${{ steps.version.outputs.new-release-published }}
     steps:
       - uses: actions/create-github-app-token@v2
+        if: env.HAS_RELEASE_APP_CREDS == 'true'
         id: app-token
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
@@ -34,7 +36,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token || github.token }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
@@ -70,7 +72,7 @@ jobs:
             echo "No release needed"
           fi
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
 
   # Phase 2: Build SEA binaries with the correct version baked in.
   build-sea:
@@ -167,8 +169,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      HAS_RELEASE_APP_CREDS: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/create-github-app-token@v2
+        if: env.HAS_RELEASE_APP_CREDS == 'true'
         id: app-token
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
@@ -176,7 +180,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token || github.token }}
       - run: git pull origin main
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
@@ -199,19 +203,19 @@ jobs:
           path: artifacts/demo-preview
       - run: pnpm exec semantic-release
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Generate package-manager metadata
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           RELEASE_TAG=$(gh api repos/${GITHUB_REPOSITORY}/releases/latest --jq .tag_name)
           PACKAGE_VERSION="${RELEASE_TAG#v}"
           pnpm package-managers:generate -- --release-tag "$RELEASE_TAG" --package-version "$PACKAGE_VERSION"
       - name: Attach release assets
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           RELEASE_TAG=$(gh api repos/${GITHUB_REPOSITORY}/releases/latest --jq .tag_name)
           mapfile -t RELEASE_FILES < <(node ./scripts/collect-release-assets.mjs)
