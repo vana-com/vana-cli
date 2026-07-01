@@ -195,6 +195,7 @@ export interface DeviceCodeResponse {
   device_code: string;
   user_code: string;
   verification_uri: string;
+  verification_uri_complete?: string;
   expires_in: number;
   interval: number;
 }
@@ -228,6 +229,54 @@ export type DeviceCodePollResponse =
   | DeviceCodePollSlowDown
   | DeviceCodePollExpired;
 
+export interface DeviceCodeFlowOptions {
+  clientId?: string;
+}
+
+interface DeviceCodeFlowCallbacks {
+  onCode: (code: string, verificationUri: string) => void;
+  onWaiting: () => void;
+  onAuthorized: (creds: VanaCredentials) => void | Promise<void>;
+  onExpired: () => void;
+  onError: (error: Error) => void;
+}
+
+interface OidcDiscoveryDocument {
+  device_authorization_endpoint?: unknown;
+  token_endpoint?: unknown;
+}
+
+interface OAuthDeviceEndpoints {
+  deviceAuthorizationEndpoint: string;
+  tokenEndpoint: string;
+}
+
+interface OAuthTokenSuccess {
+  access_token: string;
+  address?: string;
+  expires_at?: string;
+  expires_in?: number;
+  id_token?: string;
+  personal_server_session_token?: string;
+  personal_server_url?: string;
+  ps_access_token?: string;
+}
+
+interface OAuthTokenError {
+  error?: string;
+  error_description?: string;
+}
+
+interface StartedDeviceCodeFlow {
+  deviceCode: DeviceCodeResponse;
+  kind: "legacy" | "oauth";
+  poll: () => Promise<DeviceCodePollResponse>;
+  verificationUri: string;
+}
+
+const OAUTH_DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+const DEFAULT_OAUTH_SCOPE = "openid profile offline_access";
+
 function resolveCredentialExpiry(params: {
   expiresAt?: string;
   expiresIn?: number;
@@ -248,6 +297,29 @@ function getAccountUrl(): string {
     process.env.VANA_ACCOUNT_URL?.replace(/\/+$/, "") ??
     "https://account.vana.org"
   );
+}
+
+export function resolveOAuthClientId(accountUrl = getAccountUrl()): string {
+  const configured =
+    process.env.VANA_OAUTH_CLIENT_ID ?? process.env.VANA_ACCOUNT_CLIENT_ID;
+  if (configured?.trim()) {
+    return configured.trim();
+  }
+
+  try {
+    const hostname = new URL(accountUrl).hostname;
+    if (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname.includes("account-dev")
+    ) {
+      return "vana-cli-dev";
+    }
+  } catch {
+    // Fall through to the production client id.
+  }
+
+  return "vana-cli";
 }
 
 /**
@@ -292,6 +364,212 @@ export async function pollDeviceCode(
   return (await response.json()) as DeviceCodePollResponse;
 }
 
+async function discoverOAuthDeviceEndpoints(
+  accountUrl: string,
+): Promise<OAuthDeviceEndpoints | null> {
+  try {
+    const response = await fetch(
+      `${accountUrl}/.well-known/openid-configuration`,
+      {
+        method: "GET",
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const doc = (await response.json()) as OidcDiscoveryDocument;
+    if (
+      typeof doc.device_authorization_endpoint !== "string" ||
+      typeof doc.token_endpoint !== "string"
+    ) {
+      return null;
+    }
+    return {
+      deviceAuthorizationEndpoint: doc.device_authorization_endpoint,
+      tokenEndpoint: doc.token_endpoint,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function requestOAuthDeviceCode(
+  endpoint: string,
+  clientId: string,
+): Promise<DeviceCodeResponse> {
+  const body = new URLSearchParams({
+    client_id: clientId,
+    scope: process.env.VANA_OAUTH_SCOPE ?? DEFAULT_OAUTH_SCOPE,
+  });
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const detail = await readOAuthErrorDetail(response);
+    throw new Error(
+      `Failed to start OAuth device flow: HTTP ${response.status}${detail ? ` — ${detail}` : ""}`,
+    );
+  }
+
+  return (await response.json()) as DeviceCodeResponse;
+}
+
+async function pollOAuthDeviceCode(params: {
+  clientId: string;
+  deviceCode: string;
+  tokenEndpoint: string;
+}): Promise<DeviceCodePollResponse> {
+  const body = new URLSearchParams({
+    client_id: params.clientId,
+    device_code: params.deviceCode,
+    grant_type: OAUTH_DEVICE_CODE_GRANT,
+  });
+  const response = await fetch(params.tokenEndpoint, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+    signal: AbortSignal.timeout(10_000),
+  });
+  const raw = (await response.json().catch(() => ({}))) as unknown;
+  const parsed =
+    raw && typeof raw === "object"
+      ? (raw as OAuthTokenSuccess | OAuthTokenError)
+      : {};
+
+  if (response.ok && "access_token" in parsed) {
+    return oauthTokenToAuthorized(parsed);
+  }
+
+  const errorBody = parsed as OAuthTokenError;
+  const oauthError =
+    typeof errorBody.error === "string" ? errorBody.error : "unknown_error";
+  if (oauthError === "authorization_pending") {
+    return { status: "pending" };
+  }
+  if (oauthError === "slow_down") {
+    return { status: "slow_down" };
+  }
+  if (oauthError === "expired_token") {
+    return { status: "expired" };
+  }
+
+  const description =
+    typeof errorBody.error_description === "string"
+      ? errorBody.error_description
+      : oauthError;
+  throw new Error(`OAuth device authorization failed: ${description}`);
+}
+
+function oauthTokenToAuthorized(
+  token: OAuthTokenSuccess,
+): DeviceCodePollAuthorized {
+  return {
+    status: "authorized",
+    address: resolveOAuthAccountAddress(token),
+    session_token: token.access_token,
+    expires_at: token.expires_at,
+    expires_in: token.expires_in,
+    personal_server_url: token.personal_server_url,
+    personal_server_session_token: token.personal_server_session_token,
+    ps_access_token: token.ps_access_token,
+  };
+}
+
+async function readOAuthErrorDetail(response: Response): Promise<string> {
+  const text = await response.text().catch(() => "");
+  if (!text) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(text) as OAuthTokenError;
+    return parsed.error_description ?? parsed.error ?? text.slice(0, 500);
+  } catch {
+    return text.slice(0, 500);
+  }
+}
+
+function resolveOAuthAccountAddress(token: OAuthTokenSuccess): string {
+  if (token.address) {
+    return token.address;
+  }
+  const claims = decodeJwtClaims(token.id_token);
+  for (const key of ["wallet_address", "wallet", "eth_address", "address"]) {
+    const value = claims?.[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  const sub = claims?.sub;
+  if (typeof sub === "string" && isWalletAddress(sub)) {
+    return sub;
+  }
+  return "vana-account";
+}
+
+function decodeJwtClaims(
+  idToken: string | undefined,
+): Record<string, unknown> | null {
+  if (!idToken) {
+    return null;
+  }
+  const [, payload] = idToken.split(".");
+  if (!payload) {
+    return null;
+  }
+  try {
+    return JSON.parse(
+      Buffer.from(payload, "base64url").toString("utf8"),
+    ) as Record<string, unknown> | null;
+  } catch {
+    return null;
+  }
+}
+
+async function startDeviceCodeFlow(
+  options: DeviceCodeFlowOptions,
+): Promise<StartedDeviceCodeFlow> {
+  const accountUrl = getAccountUrl();
+  const endpoints = await discoverOAuthDeviceEndpoints(accountUrl);
+  if (endpoints) {
+    const clientId = options.clientId ?? resolveOAuthClientId(accountUrl);
+    const deviceCode = await requestOAuthDeviceCode(
+      endpoints.deviceAuthorizationEndpoint,
+      clientId,
+    );
+    return {
+      deviceCode,
+      kind: "oauth",
+      poll: () =>
+        pollOAuthDeviceCode({
+          clientId,
+          deviceCode: deviceCode.device_code,
+          tokenEndpoint: endpoints.tokenEndpoint,
+        }),
+      verificationUri:
+        deviceCode.verification_uri_complete ?? deviceCode.verification_uri,
+    };
+  }
+
+  const deviceCode = await requestDeviceCode();
+  return {
+    deviceCode,
+    kind: "legacy",
+    poll: () => pollDeviceCode(deviceCode.device_code),
+    verificationUri: deviceCode.verification_uri,
+  };
+}
+
 /**
  * Open a URL in the user's default browser.
  * Best-effort — failures are silently ignored.
@@ -320,31 +598,29 @@ export function openBrowser(url: string): void {
  * Returns credentials on success, or null if the code expired.
  * Calls the provided callbacks for UI updates.
  */
-export async function runDeviceCodeFlow(callbacks: {
-  onCode: (code: string, verificationUri: string) => void;
-  onWaiting: () => void;
-  onAuthorized: (creds: VanaCredentials) => void | Promise<void>;
-  onExpired: () => void;
-  onError: (error: Error) => void;
-}): Promise<VanaCredentials | null> {
+export async function runDeviceCodeFlow(
+  callbacks: DeviceCodeFlowCallbacks,
+  options: DeviceCodeFlowOptions = {},
+): Promise<VanaCredentials | null> {
   try {
-    const deviceCode = await requestDeviceCode();
+    const flow = await startDeviceCodeFlow(options);
+    const { deviceCode } = flow;
 
-    callbacks.onCode(deviceCode.user_code, deviceCode.verification_uri);
+    callbacks.onCode(deviceCode.user_code, flow.verificationUri);
 
     // Try to open browser
-    openBrowser(deviceCode.verification_uri);
+    openBrowser(flow.verificationUri);
 
     callbacks.onWaiting();
 
-    const interval = (deviceCode.interval ?? 5) * 1000;
+    let interval = (deviceCode.interval ?? 5) * 1000;
     const deadline = Date.now() + deviceCode.expires_in * 1000;
 
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, interval));
 
       try {
-        const result = await pollDeviceCode(deviceCode.device_code);
+        const result = await flow.poll();
 
         if (result.status === "authorized") {
           const expiresAt = resolveCredentialExpiry({
@@ -382,12 +658,17 @@ export async function runDeviceCodeFlow(callbacks: {
         }
 
         if (result.status === "slow_down") {
+          interval += 5_000;
           continue;
         }
 
         // status === "pending" — continue polling
-      } catch {
-        // Transient poll error — retry on next interval
+      } catch (error) {
+        if (flow.kind === "legacy") {
+          // Transient legacy poll error — retry on next interval
+          continue;
+        }
+        throw error;
       }
     }
 

@@ -14,6 +14,7 @@ vi.mock("node:child_process", () => ({
 import {
   getAuthTarget,
   loadCredentials,
+  resolveOAuthClientId,
   runDeviceCodeFlow,
   runSelfHostedLoginFlow,
 } from "../../src/cli/auth.js";
@@ -267,14 +268,32 @@ describe("runDeviceCodeFlow", () => {
     fetchMock.mockReset();
     mocks.spawnSync.mockReset();
     vi.stubGlobal("fetch", fetchMock);
+    delete process.env.VANA_ACCOUNT_URL;
+    delete process.env.VANA_ACCOUNT_CLIENT_ID;
+    delete process.env.VANA_OAUTH_CLIENT_ID;
+    delete process.env.VANA_OAUTH_SCOPE;
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    delete process.env.VANA_ACCOUNT_URL;
+    delete process.env.VANA_ACCOUNT_CLIENT_ID;
+    delete process.env.VANA_OAUTH_CLIENT_ID;
+    delete process.env.VANA_OAUTH_SCOPE;
   });
 
+  function mockDiscoveryUnavailable() {
+    fetchMock.mockResolvedValueOnce(
+      new Response("not found", {
+        status: 404,
+        headers: { "Content-Type": "text/plain" },
+      }),
+    );
+  }
+
   it("prefers server-issued expires_at over locally invented expiry", async () => {
+    mockDiscoveryUnavailable();
     fetchMock
       .mockResolvedValueOnce(
         new Response(
@@ -342,6 +361,7 @@ describe("runDeviceCodeFlow", () => {
   });
 
   it("accepts legacy ps_access_token responses from account login polling", async () => {
+    mockDiscoveryUnavailable();
     fetchMock
       .mockResolvedValueOnce(
         new Response(
@@ -388,6 +408,7 @@ describe("runDeviceCodeFlow", () => {
   });
 
   it("continues polling when the account service asks the CLI to slow down", async () => {
+    mockDiscoveryUnavailable();
     fetchMock
       .mockResolvedValueOnce(
         new Response(
@@ -429,7 +450,7 @@ describe("runDeviceCodeFlow", () => {
       onError: vi.fn(),
     });
 
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(15_000);
 
     await expect(promise).resolves.toMatchObject({
       account: {
@@ -441,6 +462,126 @@ describe("runDeviceCodeFlow", () => {
         session_token: "vana_ps_token",
       },
     });
+  });
+
+  it("uses OAuth device flow when Account discovery advertises device endpoints", async () => {
+    process.env.VANA_ACCOUNT_URL = "https://account-dev.vana.org";
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            device_authorization_endpoint:
+              "https://account-dev.vana.org/oauth/device/code",
+            token_endpoint: "https://account-dev.vana.org/oauth/token",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            device_code: "oauth-device-123",
+            user_code: "WXYZ-1234",
+            verification_uri: "https://account-dev.vana.org/device",
+            verification_uri_complete:
+              "https://account-dev.vana.org/device?user_code=WXYZ-1234",
+            expires_in: 300,
+            interval: 5,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "authorization_pending" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "vana_account_oauth_token",
+            expires_at: "2026-04-22T00:00:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+    const onCode = vi.fn();
+    const onAuthorized = vi.fn();
+    const promise = runDeviceCodeFlow({
+      onCode,
+      onWaiting: vi.fn(),
+      onAuthorized,
+      onExpired: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(promise).resolves.toMatchObject({
+      account: {
+        address: "vana-account",
+        session_token: "vana_account_oauth_token",
+        expires_at: "2026-04-22T00:00:00.000Z",
+      },
+      personal_server: null,
+    });
+    expect(onCode).toHaveBeenCalledWith(
+      "WXYZ-1234",
+      "https://account-dev.vana.org/device?user_code=WXYZ-1234",
+    );
+    expect(mocks.spawnSync).toHaveBeenCalledWith(
+      expect.any(String),
+      ["https://account-dev.vana.org/device?user_code=WXYZ-1234"],
+      expect.any(Object),
+    );
+
+    const [, deviceInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://account-dev.vana.org/oauth/device/code",
+    );
+    expect((deviceInit.body as URLSearchParams).get("client_id")).toBe(
+      "vana-cli-dev",
+    );
+    expect((deviceInit.body as URLSearchParams).get("scope")).toBe(
+      "openid profile offline_access",
+    );
+
+    const [, tokenInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      "https://account-dev.vana.org/oauth/token",
+    );
+    expect((tokenInit.body as URLSearchParams).get("grant_type")).toBe(
+      "urn:ietf:params:oauth:grant-type:device_code",
+    );
+    expect((tokenInit.body as URLSearchParams).get("client_id")).toBe(
+      "vana-cli-dev",
+    );
+  });
+});
+
+describe("resolveOAuthClientId", () => {
+  afterEach(() => {
+    delete process.env.VANA_ACCOUNT_CLIENT_ID;
+    delete process.env.VANA_OAUTH_CLIENT_ID;
+  });
+
+  it("uses configured client IDs before URL-based defaults", () => {
+    process.env.VANA_OAUTH_CLIENT_ID = "custom-cli";
+    expect(resolveOAuthClientId("https://account-dev.vana.org")).toBe(
+      "custom-cli",
+    );
+  });
+
+  it("defaults dev Account URLs to the dev CLI client", () => {
+    expect(resolveOAuthClientId("https://account-dev.vana.org")).toBe(
+      "vana-cli-dev",
+    );
+  });
+
+  it("defaults production Account URLs to the production CLI client", () => {
+    expect(resolveOAuthClientId("https://account.vana.org")).toBe("vana-cli");
   });
 });
 
