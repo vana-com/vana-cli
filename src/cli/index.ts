@@ -6179,9 +6179,12 @@ async function runLogin(
 
     if (creds) {
       await saveCredentials(creds);
-      if (creds.personal_server?.url) {
-        await updateCliConfig({ personalServerUrl: creds.personal_server.url });
-      }
+      // Always sync the pinned PS config to this login's result — including
+      // clearing it when this account has no PS, so a stale PS URL from a
+      // previously logged-in account can't linger and be used by mistake.
+      await updateCliConfig({
+        personalServerUrl: creds.personal_server?.url,
+      });
       process.stdout.write(
         `${JSON.stringify({
           status: "authenticated",
@@ -6222,11 +6225,12 @@ async function runLogin(
       },
       onAuthorized: async (authedCreds) => {
         await saveCredentials(authedCreds);
-        if (authedCreds.personal_server?.url) {
-          await updateCliConfig({
-            personalServerUrl: authedCreds.personal_server.url,
-          });
-        }
+        // Always sync the pinned PS config to this login's result — including
+        // clearing it when this account has no PS, so a stale PS URL from a
+        // previously logged-in account can't linger and be used by mistake.
+        await updateCliConfig({
+          personalServerUrl: authedCreds.personal_server?.url,
+        });
         renderer.success(
           `Logged in as ${formatAddress(authedCreds.account.address)}`,
         );
@@ -6234,6 +6238,9 @@ async function runLogin(
           renderer.detail(
             `Personal Server: ${authedCreds.personal_server.url}`,
           );
+        } else {
+          renderer.detail("No Personal Server found for this account yet.");
+          renderer.next("vana server set-url <url>");
         }
         renderer.detail("Credentials saved to ~/.vana/auth.json");
       },

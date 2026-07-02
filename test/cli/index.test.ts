@@ -591,6 +591,59 @@ describe("runCli", () => {
     });
   });
 
+  it("clears a stale pinned Personal Server URL when cloud login resolves none", async () => {
+    mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+      const creds = {
+        account: {
+          address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          session_token: "vana_account_session",
+          expires_at: "2026-04-22T19:25:14.420Z",
+        },
+        personal_server: null,
+      };
+      await callbacks.onAuthorized(creds);
+      return creds;
+    });
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "login"]);
+
+    expect(exitCode).toBe(0);
+    expect(mockUpdateCliConfig).toHaveBeenCalledWith({
+      personalServerUrl: undefined,
+    });
+    expect(stderr).toContain("No Personal Server found for this account yet.");
+    expect(stderr).toContain("vana server set-url");
+  });
+
+  it("pins the Personal Server URL returned by cloud login", async () => {
+    mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+      const creds = {
+        account: {
+          address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          session_token: "vana_account_session",
+          expires_at: "2026-04-22T19:25:14.420Z",
+        },
+        personal_server: {
+          url: "https://0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266.myvana.app",
+          session_token: "vana_ps_session",
+          expires_at: "2026-04-22T19:25:14.420Z",
+        },
+      };
+      await callbacks.onAuthorized(creds);
+      return creds;
+    });
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "login"]);
+
+    expect(exitCode).toBe(0);
+    expect(mockUpdateCliConfig).toHaveBeenCalledWith({
+      personalServerUrl:
+        "https://0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266.myvana.app",
+    });
+  });
+
   it("prints telemetry status in json mode", async () => {
     mockGetTelemetryStatus.mockResolvedValue({
       enabled: false,
