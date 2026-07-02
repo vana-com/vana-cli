@@ -559,6 +559,116 @@ describe("runDeviceCodeFlow", () => {
       "vana-cli-dev",
     );
   });
+
+  it("resolves Personal Server info from OAuth id_token claims when the token response omits it", async () => {
+    process.env.VANA_ACCOUNT_URL = "https://account-dev.vana.org";
+    const idToken = [
+      Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
+      Buffer.from(
+        JSON.stringify({
+          sub: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          wallet_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          personal_server_url: "https://ps.example",
+          ps_session_token: "vana_ps_token",
+        }),
+      ).toString("base64url"),
+      "",
+    ].join(".");
+
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            device_authorization_endpoint:
+              "https://account-dev.vana.org/oauth/device/code",
+            token_endpoint: "https://account-dev.vana.org/oauth/token",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            device_code: "device-123",
+            user_code: "ABCD-EFGH",
+            verification_uri: "https://account-dev.vana.org/device",
+            expires_in: 300,
+            interval: 5,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "vana_sess_123",
+            id_token: idToken,
+            expires_at: "2026-04-22T00:00:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+    const promise = runDeviceCodeFlow({
+      onCode: vi.fn(),
+      onWaiting: vi.fn(),
+      onAuthorized: vi.fn(),
+      onExpired: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await expect(promise).resolves.toMatchObject({
+      account: { address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" },
+      personal_server: {
+        url: "https://ps.example",
+        session_token: "vana_ps_token",
+      },
+    });
+  });
+
+  it("leaves personal_server null when OAuth returns no PS info at all", async () => {
+    mockDiscoveryUnavailable();
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            device_code: "device-123",
+            user_code: "ABCD-EFGH",
+            verification_uri: "https://account.vana.org/auth/device",
+            expires_in: 300,
+            interval: 5,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "authorized",
+            session_token: "vana_sess_123",
+            address: "0xabc123",
+            expires_at: "2026-04-22T00:00:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+    const promise = runDeviceCodeFlow({
+      onCode: vi.fn(),
+      onWaiting: vi.fn(),
+      onAuthorized: vi.fn(),
+      onExpired: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await expect(promise).resolves.toMatchObject({
+      personal_server: null,
+    });
+  });
 });
 
 describe("resolveOAuthClientId", () => {

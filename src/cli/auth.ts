@@ -474,16 +474,48 @@ async function pollOAuthDeviceCode(params: {
 function oauthTokenToAuthorized(
   token: OAuthTokenSuccess,
 ): DeviceCodePollAuthorized {
+  const address = resolveOAuthAccountAddress(token);
+  const claims = decodeJwtClaims(token.id_token);
+
   return {
     status: "authorized",
-    address: resolveOAuthAccountAddress(token),
+    address,
     session_token: token.access_token,
     expires_at: token.expires_at,
     expires_in: token.expires_in,
-    personal_server_url: token.personal_server_url,
-    personal_server_session_token: token.personal_server_session_token,
-    ps_access_token: token.ps_access_token,
+    personal_server_url:
+      token.personal_server_url ??
+      readStringClaim(claims, [
+        "personal_server_url",
+        "ps_url",
+        "vana_personal_server_url",
+      ]),
+    personal_server_session_token:
+      token.personal_server_session_token ??
+      readStringClaim(claims, [
+        "personal_server_session_token",
+        "ps_session_token",
+      ]),
+    ps_access_token:
+      token.ps_access_token ??
+      readStringClaim(claims, ["ps_access_token", "vana_ps_token"]),
   };
+}
+
+function readStringClaim(
+  claims: Record<string, unknown> | null,
+  keys: string[],
+): string | undefined {
+  if (!claims) {
+    return undefined;
+  }
+  for (const key of keys) {
+    const value = claims[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 async function readOAuthErrorDetail(response: Response): Promise<string> {
