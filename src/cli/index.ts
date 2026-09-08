@@ -186,8 +186,10 @@ type SourceStatusDetail =
     };
 
 export async function runCli(argv = process.argv): Promise<number> {
-  // Migrate ~/.dataconnect → ~/.vana, symlink old path for DataConnect compat
-  if (migrateLegacyDataHome()) {
+  // Migrate ~/.dataconnect → ~/.vana, symlink old path for DataConnect compat.
+  // Only an actual data migration announces itself; the compat symlink that
+  // every fresh install gets on its second run stays silent.
+  if (migrateLegacyDataHome() === "migrated") {
     process.stderr.write("Moved your data to ~/.vana.\n\n");
   }
 
@@ -657,6 +659,7 @@ Examples:
   telemetry
     .command("enable")
     .description("Enable telemetry")
+    .option("--json", "Output machine-readable JSON")
     .action(async () => {
       process.exitCode = await runTelemetryEnable(parsedOptions);
     });
@@ -664,6 +667,7 @@ Examples:
   telemetry
     .command("disable")
     .description("Disable telemetry")
+    .option("--json", "Output machine-readable JSON")
     .action(async () => {
       process.exitCode = await runTelemetryDisable(parsedOptions);
     });
@@ -1156,9 +1160,7 @@ async function runConnect(
             connectorInstalled: false,
             lastRunAt: new Date().toISOString(),
             lastRunOutcome: CliOutcomeStatus.CONNECTOR_UNAVAILABLE,
-            dataState: "none",
             lastError: message,
-            lastResultPath: null,
             lastLogPath: getErrorLogPath(retryError),
           });
           renderer?.fail(`${displayName} connector could not be verified.`);
@@ -1184,9 +1186,7 @@ async function runConnect(
           connectorInstalled: false,
           lastRunAt: new Date().toISOString(),
           lastRunOutcome: CliOutcomeStatus.CONNECTOR_UNAVAILABLE,
-          dataState: "none",
           lastError: message,
-          lastResultPath: null,
           lastLogPath: getErrorLogPath(firstError),
         });
         renderer?.fail(`${displayName} is not available.`);
@@ -1249,9 +1249,7 @@ async function runConnect(
         sessionPresent: fs.existsSync(profilePath),
         lastRunAt: new Date().toISOString(),
         lastRunOutcome: CliOutcomeStatus.LEGACY_AUTH,
-        dataState: "none",
         lastError: message,
-        lastResultPath: null,
         lastLogPath: fetchLogPath ?? null,
       });
       renderer?.fail(
@@ -1438,8 +1436,6 @@ async function runConnect(
           lastRunAt: new Date().toISOString(),
           lastRunOutcome: CliOutcomeStatus.LEGACY_AUTH,
           lastError: event.message ?? "Legacy authentication is required.",
-          dataState: "none",
-          lastResultPath: null,
           lastLogPath: event.logPath,
           connectionHealth: "needs_reauth",
           connectionHealthChangedAt: new Date().toISOString(),
@@ -1582,9 +1578,7 @@ async function runConnect(
         sessionPresent: fs.existsSync(profilePath),
         lastRunAt: new Date().toISOString(),
         lastRunOutcome: CliOutcomeStatus.UNEXPECTED_INTERNAL_ERROR,
-        dataState: "none",
         lastError: "Connector run ended without a result.",
-        lastResultPath: null,
         lastLogPath: runLogPath ?? fetchLogPath ?? null,
       });
       renderer?.fail(`Problem connecting ${displayName}.`);
@@ -1640,6 +1634,8 @@ async function runConnect(
       successSummary = `Collected your ${displayName} data and synced it to your Personal Server.`;
     } else if (finalDataState === "ingest_unavailable") {
       successSummary = `Collected your ${displayName} data. Personal Server sync is pending.`;
+    } else if (finalDataState === "ingest_failed") {
+      successSummary = `Collected your ${displayName} data, but Personal Server sync failed.`;
     } else {
       successSummary = `Collected your ${displayName} data and saved it locally.`;
     }
@@ -1657,6 +1653,14 @@ async function runConnect(
     } else if (finalDataState === "ingest_unavailable") {
       renderer?.detail(`Pending sync will retry during scheduled collection.`);
       renderer?.detail(`Retry now: vana server sync`);
+    } else if (finalDataState === "ingest_failed") {
+      if (ingestFailureMessage?.includes("401")) {
+        renderer?.detail(
+          "Your Personal Server requires authentication. Run `vana login` to authenticate, then `vana server sync`.",
+        );
+      } else {
+        renderer?.detail(`Retry: vana server sync`);
+      }
     }
 
     // Journey-aware next step

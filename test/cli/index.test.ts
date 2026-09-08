@@ -2674,8 +2674,9 @@ describe("runCli", () => {
     expect(exitCode).toBe(0);
     expect(stderr).toContain("Connected GitHub.");
     expect(stderr).toContain(
-      "Collected your GitHub data and saved it locally.",
+      "Collected your GitHub data, but Personal Server sync failed.",
     );
+    expect(stderr).toContain("Retry: vana server sync");
     expect(mockUpdateSourceState).toHaveBeenLastCalledWith(
       "github",
       expect.objectContaining({

@@ -137,7 +137,7 @@ export async function startMcpServer(): Promise<void> {
         content: [
           {
             type: "text",
-            text: "Not yet implemented. Install with: vana skill install next-prompt",
+            text: "Not yet implemented. Install with: vana skills install next-prompt",
           },
         ],
       };
@@ -149,9 +149,26 @@ export async function startMcpServer(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // Wait until the transport closes
+  // Wait until the transport closes.
+  //
+  // StdioServerTransport only fires onclose when close() is invoked
+  // programmatically — it never watches stdin for "end" — so a client
+  // disconnect would leave this promise unsettled and the process would die
+  // with an "unsettled top-level await" warning (exit 13) instead of
+  // exiting cleanly. Resolve on stdin EOF as well.
   return new Promise<void>((resolve) => {
-    transport.onclose = () => resolve();
+    let settled = false;
+    const done = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      process.stdin.off("end", onStdinEnd);
+      resolve();
+    };
+    const onStdinEnd = (): void => done();
+    process.stdin.once("end", onStdinEnd);
+    transport.onclose = () => done();
   });
 }
 
