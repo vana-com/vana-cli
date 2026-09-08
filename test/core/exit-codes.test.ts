@@ -70,6 +70,20 @@ describe("exitCodeForProtocolCode", () => {
     expect(exitCodeForProtocolCode("bad_usage")).toBe(CliExitCode.USAGE);
   });
 
+  it("normalizes the codes the SDK actually throws", () => {
+    expect(exitCodeForProtocolCode("JOB_OWNER_NOT_READY")).toBe(
+      CliExitCode.SERVER_UNAVAILABLE,
+    );
+    expect(exitCodeForProtocolCode("JOB_GRANT_INVALID")).toBe(
+      CliExitCode.NO_GRANT,
+    );
+    expect(exitCodeForProtocolCode("JOB_TIMEOUT")).toBe(CliExitCode.NOT_READY);
+    expect(exitCodeForProtocolCode("GRANT_INVALID")).toBe(CliExitCode.NO_GRANT);
+    expect(exitCodeForProtocolCode("OWNER_NOT_READY")).toBe(
+      CliExitCode.SERVER_UNAVAILABLE,
+    );
+  });
+
   it("falls back to failure for unknown codes", () => {
     expect(exitCodeForProtocolCode("builder_unknown")).toBe(
       CliExitCode.FAILURE,

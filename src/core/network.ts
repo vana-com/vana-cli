@@ -68,6 +68,10 @@ const NETWORKS: Record<VanaNetworkName, Omit<ResolvedNetwork, "env">> = {
 const DEV_HOSTS = {
   gatewayUrl: "https://dp-rpc-dev.vana.org",
   accountUrl: "https://account-dev.vana.org",
+  // The SDK's dev consent endpoints live on app-dev (see
+  // @opendatalabs/vana-sdk dist/direct/endpoints.js); mixing the prod
+  // approval app with dev everything-else would split deployments.
+  approvalUrl: "https://app-dev.vana.org",
   sessionRelayUrl: "https://dev.session-relay.vana.org",
 } as const;
 

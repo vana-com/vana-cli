@@ -43,6 +43,7 @@ describe("resolveNetwork", () => {
     expect(network.chainId).toBe(14800);
     expect(network.gatewayUrl).toBe("https://dp-rpc-dev.vana.org");
     expect(network.accountUrl).toBe("https://account-dev.vana.org");
+    expect(network.approvalUrl).toBe("https://app-dev.vana.org");
     // Explorer and rpc stay on the chain, not the deployment.
     expect(network.explorerUrl).toBe("https://moksha.vanascan.io");
   });

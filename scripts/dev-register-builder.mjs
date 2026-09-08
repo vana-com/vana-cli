@@ -163,7 +163,11 @@ async function main() {
     );
     console.log(JSON.stringify(pre.data.data, null, 2));
     console.log(`\nGrantee address:    ${granteeAddress}`);
-    console.log(`Grantee private key: ${grantee.privateKey}`);
+    if (grantee.generated) {
+      console.log(`Grantee private key: ${grantee.privateKey}`);
+    } else {
+      console.log("Grantee private key: (from VANA_BUILDER_PRIVATE_KEY, not shown)");
+    }
     return;
   }
   if (pre.status !== 404) {
@@ -269,7 +273,11 @@ async function main() {
   console.log(`proof.status: ${record.proof?.status ?? "n/a"}`);
   console.log("\n--- Credentials (throwaway dev key) ---");
   console.log(`Grantee address:    ${granteeAddress}`);
-  console.log(`Grantee private key: ${grantee.privateKey}`);
+  if (grantee.generated) {
+    console.log(`Grantee private key: ${grantee.privateKey}`);
+  } else {
+    console.log("Grantee private key: (from VANA_BUILDER_PRIVATE_KEY, not shown)");
+  }
   console.log(`Grantee public key: ${publicKey.slice(0, 42)}...`);
   console.log(`Owner address:      ${ownerAddress}`);
   console.log(`appUrl:             ${appUrl}`);

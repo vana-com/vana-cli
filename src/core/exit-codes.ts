@@ -75,6 +75,30 @@ export const PROTOCOL_EXIT_MAP: Record<string, CliExitCode> = {
   internal: CliExitCode.FAILURE,
 };
 
+/**
+ * Aliases for codes the SDK and gateway actually emit (jobs-client error
+ * `.code` values, gateway admission codes), normalized onto the table's
+ * stable keys. Extend here as the adapter meets new shapes; unknown codes
+ * stay FAILURE rather than guessing.
+ */
+const PROTOCOL_CODE_ALIASES: Record<string, string> = {
+  job_owner_not_ready: "owner_not_ready",
+  job_grant_invalid: "grant_invalid",
+  job_timeout: "not_ready",
+  job_not_found: "internal",
+  job_id_taken: "internal",
+  job_request_too_large: "bad_usage",
+  builder_unknown: "builder_unknown",
+  grant_invalid: "grant_invalid",
+  owner_not_ready: "owner_not_ready",
+};
+
+/** Lowercase and strip the transport prefixes real SDK codes carry. */
+export function normalizeProtocolCode(code: string): string {
+  const lower = code.trim().toLowerCase();
+  return PROTOCOL_CODE_ALIASES[lower] ?? lower;
+}
+
 export function exitCodeForProtocolCode(code: string): CliExitCode {
-  return PROTOCOL_EXIT_MAP[code] ?? CliExitCode.FAILURE;
+  return PROTOCOL_EXIT_MAP[normalizeProtocolCode(code)] ?? CliExitCode.FAILURE;
 }

@@ -53,6 +53,7 @@ import {
 } from "../core/index.js";
 import type { StoredSourceState } from "../core/state-store.js";
 import {
+  UnknownNetworkError,
   VANA_NETWORKS,
   isVanaNetworkName,
   resolveNetwork,
@@ -194,9 +195,17 @@ function mergeParsedGlobalOptions(
   ) {
     chain.unshift(current);
   }
+  // Only values commander actually parsed count; a leaf's implicit
+  // default (e.g. --no-input declaring input: true) must never overwrite a
+  // value the user set at another level of the command line.
   const merged: Record<string, unknown> = {};
   for (const command of chain) {
-    Object.assign(merged, command.opts());
+    const opts = command.opts();
+    for (const key of Object.keys(opts)) {
+      if (command.getOptionValueSource(key) !== "default") {
+        merged[key] = opts[key];
+      }
+    }
   }
   if (merged.json === true) target.json = true;
   if (merged.input === false) target.noInput = true;
@@ -1889,17 +1898,17 @@ async function runConnectEntry(options: GlobalOptions): Promise<number> {
           : null,
       })}\n`,
     );
-    return 1;
+    return CliExitCode.USAGE;
   }
 
   if (options.noInput) {
     emit.info(missingSourceMessage);
-    return 1;
+    return CliExitCode.USAGE;
   }
 
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     emit.info(missingSourceMessage);
-    return 1;
+    return CliExitCode.USAGE;
   }
 
   if (enrichedSources.length === 0) {
@@ -2272,8 +2281,24 @@ async function runDoctor(options: GlobalOptions): Promise<number> {
   const basePayload = await queryDoctor();
   // Builder-side protocol network (owner-side server config is separate and
   // reported by its own checks). Additive field; the rest of the payload
-  // still matches CliDoctor exactly.
-  const network = resolveNetwork(options.network);
+  // still matches CliDoctor exactly. A bad VANA_NETWORK/VANA_ENV combination
+  // is a usage problem, not a crash: exit 2 with a structured message.
+  let network: ReturnType<typeof resolveNetwork>;
+  try {
+    network = resolveNetwork(options.network);
+  } catch (error) {
+    if (error instanceof UnknownNetworkError) {
+      if (options.json) {
+        process.stdout.write(
+          `${JSON.stringify({ error: "bad_usage", message: error.message })}\n`,
+        );
+      } else {
+        process.stderr.write(`${error.message}\n`);
+      }
+      return CliExitCode.USAGE;
+    }
+    throw error;
+  }
   const payload = {
     ...basePayload,
     network: {
@@ -4722,7 +4747,11 @@ export function getLifecycleCommands(
  * update-notifier suppression and the telemetry context read it); the
  * preAction hook overlays the authoritative parsed values afterwards.
  */
-function extractGlobalOptions(argv: string[]): GlobalOptions {
+function extractGlobalOptions(rawArgv: string[]): GlobalOptions {
+  // Everything after a bare "--" is positional; commander will not parse it
+  // as options, so the seed must not either.
+  const boundary = rawArgv.indexOf("--");
+  const argv = boundary === -1 ? rawArgv : rawArgv.slice(0, boundary);
   let network: VanaNetworkName | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -5981,7 +6010,7 @@ async function runSkillsGuidedPicker(options: GlobalOptions): Promise<number> {
     return runSkillList(options);
   }
 
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+  if (options.noInput || !process.stdin.isTTY || !process.stdout.isTTY) {
     return runSkillList(options);
   }
 
