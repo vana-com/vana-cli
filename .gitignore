@@ -12,7 +12,9 @@ coverage/
 __pycache__/
 .claude
 .cursor
-.agents
+# Local agent state stays out of git; the tracked skills under .agents/skills do not.
+.agents/*
+!.agents/skills/
 .agent
 docs/vhs/*.gif
 docs/vhs/fixtures/demo-home/.cache/
