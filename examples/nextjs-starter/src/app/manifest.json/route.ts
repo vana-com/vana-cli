@@ -1,8 +1,8 @@
 // Serves a signed web app manifest.
 // The DataConnect Desktop App reads this to verify your app's identity.
 
-import { ConnectError } from "@opendatalabs/connect/core";
-import { signVanaManifest } from "@opendatalabs/connect/server";
+import { ConnectError } from "vana-cli/core";
+import { signVanaManifest } from "vana-cli/server";
 import { NextResponse } from "next/server";
 import { config } from "@/config";
 

@@ -2,8 +2,8 @@
 // Returns a connect URL for the user to approve the connection.
 
 import { NextResponse } from "next/server";
-import { connect } from "@opendatalabs/connect/server";
-import { ConnectError } from "@opendatalabs/connect/core";
+import { connect } from "vana-cli/server";
+import { ConnectError } from "vana-cli/core";
 import { config } from "@/config";
 
 export async function POST() {
