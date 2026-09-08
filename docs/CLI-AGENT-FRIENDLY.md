@@ -149,18 +149,21 @@ the pattern is well-documented.
 
 #### g) Semantic exit codes
 
-Map `CliOutcomeStatus` values to distinct exit codes so agents can branch
-without parsing JSON:
+**Superseded.** The table that used to live here (2 = needs_input,
+3 = setup_required, 4 = auth_failed, 5 = connector_unavailable) was never
+implemented and is replaced by the one binary-wide contract in
+`CLI-EXIT-CODE-MATRIX.md`, implemented in `src/core/exit-codes.ts`:
 
-| Exit code | Status                  | Meaning                          |
-| --------- | ----------------------- | -------------------------------- |
-| 0         | `connected_and_synced`  | Success, data synced             |
-| 0         | `connected_local_only`  | Success, data saved locally      |
-| 1         | `runtime_error`         | General failure                  |
-| 2         | `needs_input`           | Recoverable with interactive run |
-| 3         | `setup_required`        | Recoverable with `vana setup`    |
-| 4         | `auth_failed`           | Authentication problem           |
-| 5         | `connector_unavailable` | Source not supported yet         |
+| Exit code | Meaning                                         |
+| --------- | ----------------------------------------------- |
+| 0         | done                                            |
+| 1         | failed                                          |
+| 2         | bad usage                                       |
+| 3         | no grant, or the grant does not cover this      |
+| 4         | payment required and not settled                |
+| 5         | no server holding this data answered            |
+| 6         | not ready yet, come back                        |
+| 7         | a person has to confirm before this can proceed |
 
 ### Tier 3 — Forward-looking
 
