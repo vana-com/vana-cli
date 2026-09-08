@@ -1,5 +1,8 @@
 node_modules/
 dist/
+.corepack/
+.test-home/
+.pnpm-store/
 .sea-work/
 artifacts/
 *.tsbuildinfo

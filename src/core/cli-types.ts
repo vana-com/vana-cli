@@ -389,6 +389,27 @@ export const cliEventSchema = z.object({
 });
 export type CliEvent = z.infer<typeof cliEventSchema>;
 
+/**
+ * The terminal outcome event of a command run. `cliOutcomeSchema` is the
+ * validated form of the contract this interface only asserted; anything the
+ * CLI emits as an outcome must parse against it (extra fields allowed, the
+ * named ones typed).
+ */
+export const cliOutcomeSchema = z
+  .object({
+    type: z.literal("outcome"),
+    status: z.enum(
+      Object.values(CliOutcomeStatus) as [
+        CliOutcomeStatus,
+        ...CliOutcomeStatus[],
+      ],
+    ),
+    source: z.string().optional(),
+    resultPath: z.string().optional(),
+    reason: z.string().optional(),
+  })
+  .catchall(z.unknown());
+
 export interface CliOutcome extends Record<string, unknown> {
   type: "outcome";
   status: CliOutcomeStatus;

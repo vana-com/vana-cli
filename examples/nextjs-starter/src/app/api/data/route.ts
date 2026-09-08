@@ -1,8 +1,8 @@
 // Fetches user data from their Personal Server using an approved grant.
 
 import { NextResponse } from "next/server";
-import { getData } from "@opendatalabs/connect/server";
-import { ConnectError, isValidGrant } from "@opendatalabs/connect/core";
+import { getData } from "vana-cli/server";
+import { ConnectError, isValidGrant } from "vana-cli/core";
 import { config } from "@/config";
 
 export async function POST(request: Request) {

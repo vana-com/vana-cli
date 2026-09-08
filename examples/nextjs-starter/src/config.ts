@@ -1,4 +1,4 @@
-import { createVanaConfig } from "@opendatalabs/connect/server";
+import { createVanaConfig } from "vana-cli/server";
 
 // Scopes define what user data your app requests.
 const SCOPES = ["chatgpt.conversations"];

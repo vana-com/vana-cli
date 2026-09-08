@@ -7,7 +7,7 @@ import os from "node:os";
 
 import { confirm, input, password } from "@inquirer/prompts";
 import { searchSelect } from "./search-select.js";
-import { Command, CommanderError } from "commander";
+import { Command, CommanderError, Option } from "commander";
 
 // Vana-branded theme for inquirer prompts — matches brand palette
 const VANA_BLUE = "\x1b[38;2;65;65;252m";
@@ -52,6 +52,14 @@ import {
   updateSourceState,
 } from "../core/index.js";
 import type { StoredSourceState } from "../core/state-store.js";
+import {
+  UnknownNetworkError,
+  VANA_NETWORKS,
+  isVanaNetworkName,
+  resolveNetwork,
+  type VanaNetworkName,
+} from "../core/network.js";
+import { CliExitCode } from "../core/exit-codes.js";
 import type {
   CliChannel,
   CliEvent,
@@ -125,6 +133,89 @@ interface GlobalOptions {
   yes?: boolean;
   quiet?: boolean;
   detach?: boolean;
+  /** `--network` value; resolved via resolveNetwork() where needed. */
+  network?: VanaNetworkName;
+}
+
+/** Long flags shared by every command; declared once, applied to all leaves. */
+const GLOBAL_FLAG_DEFS: ReadonlyArray<readonly [string, string]> = [
+  ["--json", "Output machine-readable JSON"],
+  ["--no-input", "Never prompt; fail or print a URL instead"],
+  ["--yes", "Assume yes for confirmation prompts"],
+  ["--quiet", "Suppress non-essential output"],
+  ["--ipc", "Emit structured IPC events (internal)"],
+  ["--detach", "Run in the background where supported"],
+] as const;
+
+/**
+ * Declare the shared global flags on every leaf command that does not
+ * already define them, so commander accepts them anywhere on the line and
+ * `--help` documents them. Idempotent per flag.
+ */
+function applyGlobalOptions(command: Command): void {
+  if (command.commands.length === 0) {
+    for (const [flags, description] of GLOBAL_FLAG_DEFS) {
+      const long = `--${flags.replace(/^--(no-)?/, "")}`;
+      const exists = command.options.some(
+        (option) => option.long === flags || option.long === long,
+      );
+      if (!exists) {
+        command.option(flags, description);
+      }
+    }
+    if (!command.options.some((option) => option.long === "--network")) {
+      command.addOption(
+        new Option("--network <network>", "Vana network").choices([
+          ...VANA_NETWORKS,
+        ]),
+      );
+    }
+    return;
+  }
+  for (const child of command.commands) {
+    applyGlobalOptions(child as Command);
+  }
+}
+
+/**
+ * Merge the options commander actually parsed (root -> action command, child
+ * wins) into the pre-parse seed, so action handlers see the authoritative
+ * values while pre-parse consumers (update-notifier suppression, telemetry
+ * context) keep working from the argv scan.
+ */
+function mergeParsedGlobalOptions(
+  target: GlobalOptions,
+  actionCommand: Command,
+): void {
+  const chain: Command[] = [];
+  for (
+    let current: Command | null = actionCommand;
+    current;
+    current = current.parent as Command | null
+  ) {
+    chain.unshift(current);
+  }
+  // Only values commander actually parsed count; a leaf's implicit
+  // default (e.g. --no-input declaring input: true) must never overwrite a
+  // value the user set at another level of the command line.
+  const merged: Record<string, unknown> = {};
+  for (const command of chain) {
+    const opts = command.opts();
+    for (const key of Object.keys(opts)) {
+      if (command.getOptionValueSource(key) !== "default") {
+        merged[key] = opts[key];
+      }
+    }
+  }
+  if (merged.json === true) target.json = true;
+  if (merged.input === false) target.noInput = true;
+  if (merged.yes === true) target.yes = true;
+  if (merged.quiet === true) target.quiet = true;
+  if (merged.ipc === true) target.ipc = true;
+  if (merged.detach === true) target.detach = true;
+  if (typeof merged.network === "string" && isVanaNetworkName(merged.network)) {
+    target.network = merged.network;
+  }
 }
 
 interface LoginCommandOptions {
@@ -186,8 +277,10 @@ type SourceStatusDetail =
     };
 
 export async function runCli(argv = process.argv): Promise<number> {
-  // Migrate ~/.dataconnect → ~/.vana, symlink old path for DataConnect compat
-  if (migrateLegacyDataHome()) {
+  // Migrate ~/.dataconnect → ~/.vana, symlink old path for DataConnect compat.
+  // Only an actual data migration announces itself; the compat symlink that
+  // every fresh install gets on its second run stays silent.
+  if (migrateLegacyDataHome() === "migrated") {
     process.stderr.write("Moved your data to ~/.vana.\n\n");
   }
 
@@ -261,6 +354,22 @@ More:
 `,
     );
   program.exitOverride();
+
+  // Global flags: declared here for `vana --help`, mirrored onto every leaf
+  // command by applyGlobalOptions() so they are accepted anywhere on the
+  // line. Values are merged back into parsedOptions in the preAction hook.
+  for (const [flags, description] of GLOBAL_FLAG_DEFS) {
+    program.option(flags, description);
+  }
+  program.addOption(
+    new Option(
+      "--network <network>",
+      "Vana network for protocol operations (default: moksha)",
+    ).choices([...VANA_NETWORKS]),
+  );
+  program.hook("preAction", (_thisCommand, actionCommand) => {
+    mergeParsedGlobalOptions(parsedOptions, actionCommand as Command);
+  });
 
   program
     .command("version")
@@ -657,6 +766,7 @@ Examples:
   telemetry
     .command("enable")
     .description("Enable telemetry")
+    .option("--json", "Output machine-readable JSON")
     .action(async () => {
       process.exitCode = await runTelemetryEnable(parsedOptions);
     });
@@ -664,6 +774,7 @@ Examples:
   telemetry
     .command("disable")
     .description("Disable telemetry")
+    .option("--json", "Output machine-readable JSON")
     .action(async () => {
       process.exitCode = await runTelemetryDisable(parsedOptions);
     });
@@ -787,6 +898,8 @@ Examples:
       );
     });
 
+  applyGlobalOptions(program);
+
   try {
     await program.parseAsync(normalizedArgv);
   } catch (error) {
@@ -799,8 +912,13 @@ Examples:
         process.exitCode = error.exitCode;
         return Number(process.exitCode ?? 0);
       }
-      // Commander already printed to stderr; just set exit code.
-      process.exitCode = error.exitCode;
+      // Commander already printed to stderr. Usage errors (unknown command
+      // or option, missing or invalid argument) exit 2 per the exit-code
+      // table in docs/CLI-EXIT-CODE-MATRIX.md; anything else keeps
+      // commander's own code.
+      process.exitCode = error.code.startsWith("commander.")
+        ? CliExitCode.USAGE
+        : error.exitCode;
       return Number(process.exitCode ?? 1);
     }
     throw error;
@@ -1156,9 +1274,7 @@ async function runConnect(
             connectorInstalled: false,
             lastRunAt: new Date().toISOString(),
             lastRunOutcome: CliOutcomeStatus.CONNECTOR_UNAVAILABLE,
-            dataState: "none",
             lastError: message,
-            lastResultPath: null,
             lastLogPath: getErrorLogPath(retryError),
           });
           renderer?.fail(`${displayName} connector could not be verified.`);
@@ -1184,9 +1300,7 @@ async function runConnect(
           connectorInstalled: false,
           lastRunAt: new Date().toISOString(),
           lastRunOutcome: CliOutcomeStatus.CONNECTOR_UNAVAILABLE,
-          dataState: "none",
           lastError: message,
-          lastResultPath: null,
           lastLogPath: getErrorLogPath(firstError),
         });
         renderer?.fail(`${displayName} is not available.`);
@@ -1249,9 +1363,7 @@ async function runConnect(
         sessionPresent: fs.existsSync(profilePath),
         lastRunAt: new Date().toISOString(),
         lastRunOutcome: CliOutcomeStatus.LEGACY_AUTH,
-        dataState: "none",
         lastError: message,
-        lastResultPath: null,
         lastLogPath: fetchLogPath ?? null,
       });
       renderer?.fail(
@@ -1438,8 +1550,6 @@ async function runConnect(
           lastRunAt: new Date().toISOString(),
           lastRunOutcome: CliOutcomeStatus.LEGACY_AUTH,
           lastError: event.message ?? "Legacy authentication is required.",
-          dataState: "none",
-          lastResultPath: null,
           lastLogPath: event.logPath,
           connectionHealth: "needs_reauth",
           connectionHealthChangedAt: new Date().toISOString(),
@@ -1582,9 +1692,7 @@ async function runConnect(
         sessionPresent: fs.existsSync(profilePath),
         lastRunAt: new Date().toISOString(),
         lastRunOutcome: CliOutcomeStatus.UNEXPECTED_INTERNAL_ERROR,
-        dataState: "none",
         lastError: "Connector run ended without a result.",
-        lastResultPath: null,
         lastLogPath: runLogPath ?? fetchLogPath ?? null,
       });
       renderer?.fail(`Problem connecting ${displayName}.`);
@@ -1640,6 +1748,8 @@ async function runConnect(
       successSummary = `Collected your ${displayName} data and synced it to your Personal Server.`;
     } else if (finalDataState === "ingest_unavailable") {
       successSummary = `Collected your ${displayName} data. Personal Server sync is pending.`;
+    } else if (finalDataState === "ingest_failed") {
+      successSummary = `Collected your ${displayName} data, but Personal Server sync failed.`;
     } else {
       successSummary = `Collected your ${displayName} data and saved it locally.`;
     }
@@ -1657,6 +1767,14 @@ async function runConnect(
     } else if (finalDataState === "ingest_unavailable") {
       renderer?.detail(`Pending sync will retry during scheduled collection.`);
       renderer?.detail(`Retry now: vana server sync`);
+    } else if (finalDataState === "ingest_failed") {
+      if (ingestFailureMessage?.includes("401")) {
+        renderer?.detail(
+          "Your Personal Server requires authentication. Run `vana login` to authenticate, then `vana server sync`.",
+        );
+      } else {
+        renderer?.detail(`Retry: vana server sync`);
+      }
     }
 
     // Journey-aware next step
@@ -1780,17 +1898,17 @@ async function runConnectEntry(options: GlobalOptions): Promise<number> {
           : null,
       })}\n`,
     );
-    return 1;
+    return CliExitCode.USAGE;
   }
 
   if (options.noInput) {
     emit.info(missingSourceMessage);
-    return 1;
+    return CliExitCode.USAGE;
   }
 
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     emit.info(missingSourceMessage);
-    return 1;
+    return CliExitCode.USAGE;
   }
 
   if (enrichedSources.length === 0) {
@@ -2160,7 +2278,41 @@ function formatSyncFailureSummary(source: SourceStatus): string {
 }
 
 async function runDoctor(options: GlobalOptions): Promise<number> {
-  const payload = await queryDoctor();
+  const basePayload = await queryDoctor();
+  // Builder-side protocol network (owner-side server config is separate and
+  // reported by its own checks). Additive field; the rest of the payload
+  // still matches CliDoctor exactly. A bad VANA_NETWORK/VANA_ENV combination
+  // is a usage problem, not a crash: exit 2 with a structured message.
+  let network: ReturnType<typeof resolveNetwork>;
+  try {
+    network = resolveNetwork(options.network);
+  } catch (error) {
+    if (error instanceof UnknownNetworkError) {
+      if (options.json) {
+        process.stdout.write(
+          `${JSON.stringify({ error: "bad_usage", message: error.message })}\n`,
+        );
+      } else {
+        process.stderr.write(`${error.message}\n`);
+      }
+      return CliExitCode.USAGE;
+    }
+    throw error;
+  }
+  const payload = {
+    ...basePayload,
+    network: {
+      name: network.name,
+      env: network.env,
+      chainId: network.chainId,
+      gatewayUrl: network.gatewayUrl,
+      source: options.network
+        ? "flag"
+        : process.env.VANA_NETWORK
+          ? "env"
+          : "default",
+    },
+  };
 
   if (options.json) {
     process.stdout.write(`${JSON.stringify(payload)}\n`);
@@ -2188,6 +2340,11 @@ async function runDoctor(options: GlobalOptions): Promise<number> {
     "Personal Server",
     payload.personalServer,
     payload.personalServer === "available" ? "success" : "warning",
+  );
+  emit.keyValue(
+    "Network",
+    `${payload.network.name} (chain ${payload.network.chainId}, ${payload.network.source})`,
+    "muted",
   );
   emit.keyValue(
     "Tracked sources",
@@ -4585,7 +4742,29 @@ export function getLifecycleCommands(
   }
 }
 
-function extractGlobalOptions(argv: string[]): GlobalOptions {
+/**
+ * Pre-parse seed for the global options. Needed before commander runs (the
+ * update-notifier suppression and the telemetry context read it); the
+ * preAction hook overlays the authoritative parsed values afterwards.
+ */
+function extractGlobalOptions(rawArgv: string[]): GlobalOptions {
+  // Everything after a bare "--" is positional; commander will not parse it
+  // as options, so the seed must not either.
+  const boundary = rawArgv.indexOf("--");
+  const argv = boundary === -1 ? rawArgv : rawArgv.slice(0, boundary);
+  let network: VanaNetworkName | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    let candidate: string | undefined;
+    if (argument === "--network") {
+      candidate = argv[index + 1];
+    } else if (argument.startsWith("--network=")) {
+      candidate = argument.slice("--network=".length);
+    }
+    if (candidate && isVanaNetworkName(candidate)) {
+      network = candidate;
+    }
+  }
   return {
     json: argv.includes("--json"),
     noInput: argv.includes("--no-input"),
@@ -4593,6 +4772,7 @@ function extractGlobalOptions(argv: string[]): GlobalOptions {
     yes: argv.includes("--yes"),
     quiet: argv.includes("--quiet"),
     detach: argv.includes("--detach"),
+    network,
   };
 }
 
@@ -5830,7 +6010,7 @@ async function runSkillsGuidedPicker(options: GlobalOptions): Promise<number> {
     return runSkillList(options);
   }
 
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+  if (options.noInput || !process.stdin.isTTY || !process.stdout.isTTY) {
     return runSkillList(options);
   }
 

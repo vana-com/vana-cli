@@ -18,9 +18,11 @@ export function getVanaHome(): string {
  * desktop app) keeps working. DataConnect hardcodes ~/.dataconnect in
  * src-tauri/src/commands/connector.rs:66. It should adopt ~/.vana upstream.
  *
- * Returns true if any migration or symlink was performed.
+ * Returns "migrated" when legacy data was actually moved, "symlinked" when
+ * only the compat symlink was created (typical first run of a fresh
+ * install), and null when nothing changed.
  */
-export function migrateLegacyDataHome(): boolean {
+export function migrateLegacyDataHome(): "migrated" | "symlinked" | null {
   const vanaHome = getVanaHome();
   const oldHome = path.join(os.homedir(), ".dataconnect");
 
@@ -29,9 +31,9 @@ export function migrateLegacyDataHome(): boolean {
     try {
       fs.renameSync(oldHome, vanaHome);
       fs.symlinkSync(vanaHome, oldHome);
-      return true;
+      return "migrated";
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -40,13 +42,13 @@ export function migrateLegacyDataHome(): boolean {
   if (fs.existsSync(vanaHome) && !fs.existsSync(oldHome)) {
     try {
       fs.symlinkSync(vanaHome, oldHome);
-      return true;
+      return "symlinked";
     } catch {
-      return false;
+      return null;
     }
   }
 
-  return false;
+  return null;
 }
 
 export function getConnectorCacheDir(): string {

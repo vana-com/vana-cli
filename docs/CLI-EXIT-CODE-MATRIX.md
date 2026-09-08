@@ -1,89 +1,50 @@
 # CLI Exit Code Matrix
 
-_March 14, 2026_
+_Updated September 8, 2026 — replaces the March 14, 2026 contract._
 
-This document defines the current `vana` exit-code contract.
+One table for the whole binary. The previous contract (0/1 only, bad usage
+inheriting commander's 1) and the never-implemented 2-5 set that used to be
+described in CLI-AGENT-FRIENDLY.md are both replaced by this table. Anything
+that branched on `exit == 1` should re-check: bad usage now exits `2`, and
+statuses with a distinct slot below stop returning `1` as they are wired in.
 
-The guiding rule is simple:
+| Code | Meaning                                         | What it replaces                     |
+| ---- | ----------------------------------------------- | ------------------------------------ |
+| 0    | done                                            | nothing, it already meant this       |
+| 1    | failed                                          | every failure the binary had         |
+| 2    | bad usage                                       | commander's 1; old docs' needs_input |
+| 3    | no grant, or the grant does not cover this      | old docs' setup_required             |
+| 4    | payment required and not settled                | old docs' auth_failed                |
+| 5    | no server holding this data answered            | old docs' connector_unavailable      |
+| 6    | not ready yet, come back                        | new                                  |
+| 7    | a person has to confirm before this can proceed | new                                  |
 
-- `0` means the requested command completed successfully
-- `1` means the requested command did not complete successfully, including
-  guided/recoverable cases like missing source input, setup required, or manual
-  action still needed
+Source of truth in code: `src/core/exit-codes.ts` (`CliExitCode`,
+`exitCodeForOutcome`, `exitCodeForProtocolCode`). The JSON outcome's `code`
+field carries the finer-grained reason (`owner_not_ready`, `grant_revoked`,
+`max_fee_exceeded`, ...); the exit code is the coarse branch for shells.
 
-The CLI does **not** currently use a large family of bespoke nonzero exit
-codes. The machine-readable distinction comes from:
+## What is wired today
 
-- the JSON payload for command surfaces like `status`, `sources`, `data`, and
-  errors
-- streamed `outcome` / runtime events for connect flows
+- Usage errors — unknown command, unknown option, missing or invalid
+  argument — exit `2` (commander errors are mapped centrally in
+  `src/cli/index.ts`).
+- `--help` / `--version` exit `0`.
+- Owner-side command failures still return `1` until each command adopts
+  `exitCodeForOutcome`; the mapping for their statuses is:
+  `personal_server_unavailable -> 5`, `needs_input -> 7`, success -> `0`,
+  everything else `1`.
+- The builder command group (`vana app ...`) emits through the mapper from
+  its first release.
 
-## Top-level Commands
+## Notes for agents
 
-| Command               | Success                | Non-success |
-| --------------------- | ---------------------- | ----------- |
-| `vana`                | `0` when help is shown | n/a         |
-| `vana --help`         | `0`                    | n/a         |
-| `vana --version`      | `0`                    | n/a         |
-| `vana version`        | `0`                    | n/a         |
-| `vana version --json` | `0`                    | n/a         |
-| `vana status`         | `0`                    | n/a         |
-| `vana status --json`  | `0`                    | n/a         |
-| `vana doctor`         | `0`                    | n/a         |
-| `vana doctor --json`  | `0`                    | n/a         |
-| `vana sources`        | `0`                    | n/a         |
-| `vana sources --json` | `0`                    | n/a         |
-
-## Connect
-
-| Command / Outcome                                      | Exit code | Notes                                                  |
-| ------------------------------------------------------ | --------- | ------------------------------------------------------ |
-| `vana connect <source>` success                        | `0`       | Includes local-only and synced success                 |
-| `vana connect` guided picker success                   | `0`       | When a source is selected and the connect run succeeds |
-| `vana connect --json` without source                   | `1`       | Returns `source_required` JSON                         |
-| `vana connect` without source in non-interactive shell | `1`       | Prints guidance                                        |
-| Guided picker cancelled                                | `1`       | No connection was made                                 |
-| Setup required / setup declined                        | `1`       | Recoverable via `vana setup` or rerun                  |
-| `needs_input` in `--no-input` mode                     | `1`       | Recoverable by rerunning without `--no-input`          |
-| `legacy_auth` / manual browser step still required     | `1`       | Recoverable by rerunning interactively                 |
-| Connector unavailable                                  | `1`       | Recoverable if/when the connector becomes available    |
-| Runtime/internal failure                               | `1`       | Inspect logs / doctor output                           |
-
-## Data
-
-| Command / Outcome                         | Exit code | Notes                                           |
-| ----------------------------------------- | --------- | ----------------------------------------------- |
-| `vana data`                               | `0`       | Shows help                                      |
-| `vana data list`                          | `0`       | Even when no data exists yet                    |
-| `vana data list --json`                   | `0`       | Returns an empty list when nothing is collected |
-| `vana data show <source>` success         | `0`       | Prints summary and next steps                   |
-| `vana data show <source> --json` success  | `0`       | Returns structured dataset payload              |
-| `vana data show <source>` missing dataset | `1`       | Recoverable via `vana connect <source>`         |
-| `vana data path <source>` success         | `0`       | Human mode prints the path only                 |
-| `vana data path <source>` missing dataset | `1`       | Recoverable via `vana connect <source>`         |
-
-## Logs
-
-| Command / Outcome                   | Exit code | Notes                                     |
-| ----------------------------------- | --------- | ----------------------------------------- |
-| `vana logs`                         | `0`       | Even when there are no stored logs yet    |
-| `vana logs --json`                  | `0`       | Returns an empty log list when none exist |
-| `vana logs <source>` success        | `0`       | Human mode prints the path only           |
-| `vana logs <source> --json` success | `0`       | Returns structured log metadata           |
-| `vana logs <source>` missing log    | `1`       | Recoverable by running the source again   |
-
-## Setup
-
-| Command / Outcome          | Exit code | Notes                                      |
-| -------------------------- | --------- | ------------------------------------------ |
-| `vana setup` success       | `0`       | Includes the already-installed case        |
-| `vana setup --yes` success | `0`       | Includes runtime install completion        |
-| `vana setup` failure       | `1`       | Runtime could not be installed or repaired |
-
-## Design Notes
-
-- Help surfaces return `0` because they are a successful user outcome.
-- Guided/recoverable states still return `1` when the requested action did not
-  actually complete.
-- If the CLI later needs richer nonzero codes, it should add them
-  intentionally, document them here, and keep the JSON/event contract aligned.
+- Branch on the exit code for control flow, read the JSON `code` for the
+  reason and the `remedy` for the next command to run.
+- Exit `5` can carry `code: "owner_not_ready"` — the owner has never
+  finished Personal Server setup; retrying does not help, a person must
+  complete setup in the web app.
+- Exit `6` means retry later; when the payload names a poll interval, use
+  that instead of your own.
+- No failure code is documented as safe to retry blindly: on the paid read
+  path a retry can settle a second fee (see the receipts cache).

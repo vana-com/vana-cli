@@ -5,7 +5,12 @@ export const TEST_PRIVATE_KEY =
 
 export const testAccount = privateKeyToAccount(TEST_PRIVATE_KEY);
 
-export const builderPrivateKey = generatePrivateKey();
+// Builder identity for e2e runs. Set VANA_BUILDER_PRIVATE_KEY to use a
+// builder that is registered in the target environment (required for the
+// live relay e2e); otherwise a throwaway key is generated (fine for local
+// relays that auto-register, and for the graceful-skip path).
+export const builderPrivateKey = (process.env.VANA_BUILDER_PRIVATE_KEY ??
+  generatePrivateKey()) as `0x${string}`;
 export const builderAccount = privateKeyToAccount(builderPrivateKey);
 
 export function getSessionRelayUrl(): string {

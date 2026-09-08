@@ -26,8 +26,14 @@ describe("Connect flow E2E", () => {
     } catch (err: unknown) {
       // Builder may not be registered — skip gracefully
       const msg = (err as Error).message ?? "";
-      if (msg.includes("BUILDER_NOT_REGISTERED") || msg.includes("403")) {
-        console.log("Builder not registered on-chain — skipping e2e flow test");
+      if (
+        msg.includes("BUILDER_NOT_REGISTERED") ||
+        msg.includes("403") ||
+        /not registered/i.test(msg)
+      ) {
+        console.log(
+          `Builder not registered on-chain (${builderAccount.address}) — skipping e2e flow test`,
+        );
         return;
       }
       throw err;
@@ -74,8 +80,8 @@ describe("Connect flow E2E", () => {
     expect(approved.status).toBe("approved");
     expect(approved.grant).toBeDefined();
     expect(approved.grant!.grantId).toBeDefined();
-    expect(approved.grant!.userAddress).toBe(
-      "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    expect(approved.grant!.userAddress?.toLowerCase()).toBe(
+      "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
     );
 
     // 7. Verify request signing produces valid header

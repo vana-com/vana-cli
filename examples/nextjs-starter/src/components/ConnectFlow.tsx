@@ -4,8 +4,8 @@
 // initConnect() starts a session, the hook polls until approved, then
 // fetchData() calls /api/data with the grant to retrieve user data.
 
-import type { ConnectionStatus } from "@opendatalabs/connect/core";
-import { useVanaData } from "@opendatalabs/connect/react";
+import type { ConnectionStatus } from "vana-cli/core";
+import { useVanaData } from "vana-cli/react";
 import { useEffect, useRef } from "react";
 
 const STATUS_DISPLAY: Record<

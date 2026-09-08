@@ -2265,7 +2265,8 @@ describe("runCli", () => {
     const exitCode = await runCli(["node", "vana", "connect", "--json"]);
     const parsed = sourceRequiredErrorSchema.parse(JSON.parse(stdout));
 
-    expect(exitCode).toBe(1);
+    // Missing required source is bad usage per the exit-code table.
+    expect(exitCode).toBe(2);
     expect(parsed).toEqual({
       error: "source_required",
       message:
@@ -2305,7 +2306,8 @@ describe("runCli", () => {
       value: originalStdinTty,
     });
 
-    expect(exitCode).toBe(1);
+    // Missing required source is bad usage per the exit-code table.
+    expect(exitCode).toBe(2);
     expect(stdout).toContain(
       "Specify a source. Start with `vana connect github`, or run `vana sources` to see available options.",
     );
@@ -2674,8 +2676,9 @@ describe("runCli", () => {
     expect(exitCode).toBe(0);
     expect(stderr).toContain("Connected GitHub.");
     expect(stderr).toContain(
-      "Collected your GitHub data and saved it locally.",
+      "Collected your GitHub data, but Personal Server sync failed.",
     );
+    expect(stderr).toContain("Retry: vana server sync");
     expect(mockUpdateSourceState).toHaveBeenLastCalledWith(
       "github",
       expect.objectContaining({
