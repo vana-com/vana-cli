@@ -108,6 +108,7 @@ import {
 } from "./update-check.js";
 import {
   loadCredentials,
+  readStoredAccountAddress,
   saveCredentials,
   clearCredentials,
   isExpired,
@@ -6322,6 +6323,9 @@ async function runLogin(
 
   // Check if already logged in
   const existing = loadCredentials();
+  // For the account-switch check below: the previous address even when the
+  // stored credentials have expired (loadCredentials hides those).
+  const previousAddress = readStoredAccountAddress();
   if (existing && !isExpired(existing)) {
     if (options.json) {
       process.stdout.write(
@@ -6386,9 +6390,16 @@ async function runLogin(
       // Always sync the pinned PS config to this login's result — including
       // clearing it when this account has no PS, so a stale PS URL from a
       // previously logged-in account can't linger and be used by mistake.
-      await updateCliConfig({
-        personalServerUrl: creds.personal_server?.url,
-      });
+      if (creds.personal_server?.url) {
+        await updateCliConfig({
+          personalServerUrl: creds.personal_server.url,
+        });
+      } else if (previousAddress && previousAddress !== creds.account.address) {
+        // A different account logged in: its pinned Personal Server URL is
+        // stale. Same-account logins keep the pin - the prod token flow
+        // carries no PS info, so its absence proves nothing.
+        await updateCliConfig({ personalServerUrl: undefined });
+      }
       process.stdout.write(
         `${JSON.stringify({
           status: "authenticated",
@@ -6431,9 +6442,17 @@ async function runLogin(
         // Always sync the pinned PS config to this login's result — including
         // clearing it when this account has no PS, so a stale PS URL from a
         // previously logged-in account can't linger and be used by mistake.
-        await updateCliConfig({
-          personalServerUrl: authedCreds.personal_server?.url,
-        });
+        if (authedCreds.personal_server?.url) {
+          await updateCliConfig({
+            personalServerUrl: authedCreds.personal_server.url,
+          });
+        } else if (
+          previousAddress &&
+          previousAddress !== authedCreds.account.address
+        ) {
+          // See the JSON branch: clear only on an account switch.
+          await updateCliConfig({ personalServerUrl: undefined });
+        }
         renderer.success(
           `Logged in as ${formatAddress(authedCreds.account.address)}`,
         );

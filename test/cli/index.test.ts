@@ -591,7 +591,51 @@ describe("runCli", () => {
     });
   });
 
-  it("clears a stale pinned Personal Server URL when cloud login resolves none", async () => {
+  it("keeps a pinned Personal Server URL when the same/no prior account logs in without PS info", async () => {
+    // The prod token flow never carries PS info, so its absence proves
+    // nothing; only an account switch clears the pin.
+    mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+      const creds = {
+        account: {
+          address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          session_token: "vana_account_session",
+          expires_at: "2026-04-22T19:25:14.420Z",
+        },
+        personal_server: null,
+      };
+      await callbacks.onAuthorized(creds);
+      return creds;
+    });
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "login"]);
+
+    expect(exitCode).toBe(0);
+    expect(mockUpdateCliConfig).not.toHaveBeenCalledWith({
+      personalServerUrl: undefined,
+    });
+    expect(stderr).toContain("No Personal Server found for this account yet.");
+    expect(stderr).toContain("vana server set-url");
+  });
+
+  it("clears the pinned Personal Server URL when a different account logs in", async () => {
+    // Previous (expired) credentials belong to another account.
+    mockExistsSync.mockImplementation((target: unknown) =>
+      String(target).endsWith("auth.json"),
+    );
+    mockReadFileSync.mockImplementation((target: unknown) => {
+      if (String(target).endsWith("auth.json")) {
+        return JSON.stringify({
+          account: {
+            address: "0x1111111111111111111111111111111111111111",
+            session_token: "old",
+            expires_at: "2020-01-01T00:00:00.000Z",
+          },
+          personal_server: { url: "http://localhost:8080" },
+        });
+      }
+      throw new Error(`unexpected read: ${String(target)}`);
+    });
     mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
       const creds = {
         account: {
@@ -612,8 +656,6 @@ describe("runCli", () => {
     expect(mockUpdateCliConfig).toHaveBeenCalledWith({
       personalServerUrl: undefined,
     });
-    expect(stderr).toContain("No Personal Server found for this account yet.");
-    expect(stderr).toContain("vana server set-url");
   });
 
   it("pins the Personal Server URL returned by cloud login", async () => {
