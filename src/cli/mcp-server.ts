@@ -146,6 +146,21 @@ export async function startMcpServer(): Promise<void> {
 
   // ── Connect transport and run ────────────────────────────────────────
 
+  // A human running `vana mcp` in a terminal sees a silent hang, because
+  // this is an stdio JSON-RPC server meant to be launched by an MCP client.
+  // Say so on stderr (stdout is the transport and must stay clean).
+  if (process.stdin.isTTY) {
+    process.stderr.write(
+      [
+        "vana mcp is an MCP server speaking JSON-RPC over stdio.",
+        "It is meant to be launched by an MCP client, not run by hand:",
+        "  claude mcp add vana -- vana mcp",
+        "Waiting for a client on stdin (Ctrl-C or Ctrl-D to exit)...",
+        "",
+      ].join("\n"),
+    );
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
