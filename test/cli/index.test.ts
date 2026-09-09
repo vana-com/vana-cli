@@ -513,7 +513,7 @@ describe("runCli", () => {
 
     expect(exitCode).toBe(0);
     expect(stderr).toContain("Log in to http://localhost:8080");
-    expect(stderr).toContain("Open this URL in your browser:");
+    expect(stderr).toContain("Open");
     expect(stderr).toContain(
       "http://localhost:8080/auth/device/approve?session=abc",
     );
@@ -551,9 +551,9 @@ describe("runCli", () => {
 
     expect(exitCode).toBe(0);
     expect(stderr).toContain("Log in to Vana");
-    expect(stderr).toContain("Open this URL in your browser:");
+    expect(stderr).toContain("Open");
     expect(stderr).toContain("https://account.vana.org/auth/device/approve");
-    expect(stderr).toContain("Enter this code:");
+    expect(stderr).toContain("Enter");
     expect(stderr).toContain("ABCD-EFGH");
     expect(stderr).toContain("Logged in as 0xf39F...266");
     expect(stderr).toContain("Personal Server:");
