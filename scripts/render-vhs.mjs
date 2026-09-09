@@ -15,7 +15,10 @@ const linuxSeaBinaryPath = path.join(
   "vana-linux-x64",
   "vana",
 );
-const VHS_DOCKER_IMAGE = "ghcr.io/charmbracelet/vhs:latest";
+// Pinned: vhs v0.12.0 (released 2026-09-09) silently stops writing the
+// gif on CI, which skipped the release job three runs in a row. v0.11.0
+// is the last known-good renderer; bump deliberately, never via :latest.
+const VHS_DOCKER_IMAGE = "ghcr.io/charmbracelet/vhs:v0.11.0";
 const DEFAULT_TAPE_TIMEOUT_MS = 180_000;
 
 /**
