@@ -6251,18 +6251,27 @@ async function runLogin(
         }
         renderer?.scopeActive("Waiting for authorization");
         // Try to open browser — use spawn with args array to prevent shell injection
-        // (a malicious self-hosted PS could return a URL with shell metacharacters)
-        try {
-          const { spawn } = require("node:child_process");
-          const opener =
-            process.platform === "darwin"
-              ? "open"
-              : process.platform === "win32"
-                ? "start"
-                : "xdg-open";
-          spawn(opener, [url], { detached: true, stdio: "ignore" }).unref();
-        } catch {
-          // Browser open failed — user will open manually
+        // (a malicious self-hosted PS could return a URL with shell metacharacters).
+        // Interactive terminals only: agents, CI and the test suite must never
+        // pop a browser (a vitest run used to open the fixture URL for real).
+        const browserAllowed =
+          Boolean(process.stdout.isTTY) &&
+          !options.json &&
+          !options.noInput &&
+          !process.env.VANA_NO_BROWSER;
+        if (browserAllowed) {
+          try {
+            const { spawn } = require("node:child_process");
+            const opener =
+              process.platform === "darwin"
+                ? "open"
+                : process.platform === "win32"
+                  ? "start"
+                  : "xdg-open";
+            spawn(opener, [url], { detached: true, stdio: "ignore" }).unref();
+          } catch {
+            // Browser open failed — user will open manually
+          }
         }
       });
 
