@@ -61,6 +61,7 @@ import {
 } from "../core/network.js";
 import { CliExitCode } from "../core/exit-codes.js";
 import { registerAppCommands } from "./app/index.js";
+import { lookupRegisteredServers } from "../personal-server/registered.js";
 import type {
   CliChannel,
   CliEvent,
@@ -2454,6 +2455,11 @@ async function runDoctor(options: GlobalOptions): Promise<number> {
 async function runServerStatus(options: GlobalOptions): Promise<number> {
   const emit = createEmitter(options);
   const target = await detectPersonalServerTarget();
+  // The local transport URL and the gateway-registered public URL are two
+  // names for the same server; show both when the owner is known.
+  const registeredServers = target.health?.owner
+    ? await lookupRegisteredServers(target.health.owner)
+    : [];
   const state = await readCliState();
 
   // Count scopes from state
@@ -2472,6 +2478,7 @@ async function runServerStatus(options: GlobalOptions): Promise<number> {
         state: target.state,
         url: target.url,
         source: target.source,
+        registeredServers,
         health: target.health,
         scopeCount: totalScopeCount,
       })}\n`,
@@ -2494,6 +2501,10 @@ async function runServerStatus(options: GlobalOptions): Promise<number> {
               ? "(from VANA_PERSONAL_SERVER_URL)"
               : `(${target.source ?? "unknown"})`;
     emit.keyValue("URL", `${target.url} ${urlSuffix}`, "muted");
+  }
+
+  for (const server of registeredServers) {
+    emit.keyValue("Registered", `${server.url} (${server.network})`, "muted");
   }
 
   const stateLabel = target.state === "available" ? "healthy" : "Not connected";
@@ -6232,10 +6243,11 @@ async function runLogin(
     try {
       const result = await runSelfHostedLoginFlow(psUrl, (url: string) => {
         if (!options.json && !options.quiet) {
+          // Same emphasis rule as the cloud flow: the actionable URL
+          // carries the Vana accent, the label stays muted.
           process.stderr.write(
-            `  ${humanRenderer.theme.muted("Open this URL in your browser:")}\n`,
+            `  ${humanRenderer.theme.muted("Open")}  ${humanRenderer.theme.accent(url)}\n`,
           );
-          process.stderr.write(`  ${humanRenderer.theme.muted(url)}\n`);
         }
         renderer?.scopeActive("Waiting for authorization");
         // Try to open browser — use spawn with args array to prevent shell injection
@@ -6384,24 +6396,23 @@ async function runLogin(
   // Interactive mode
   const renderer = createLoginRenderer();
   const humanRenderer = createHumanRenderer();
-  const writeStaticLoginNotes = (lines: string[]) => {
+  // Branding lives in emphasis, not chrome (CLI-BEAUTY doctrine: no
+  // banners). The two things the user must act on - the URL and the code -
+  // carry the Vana accent; everything around them stays muted.
+  const writeDeviceCodePrompt = (code: string, uri: string) => {
     if (options.json || options.quiet) {
       return;
     }
-    for (const line of lines) {
-      process.stderr.write(`  ${humanRenderer.theme.muted(line)}\n`);
-    }
+    const theme = humanRenderer.theme;
+    process.stderr.write(`  ${theme.muted("Open")}  ${theme.accent(uri)}\n`);
+    process.stderr.write(`  ${theme.muted("Enter")} ${theme.heading(code)}\n`);
   };
   renderer.title("Vana");
 
   const creds = await runDeviceCodeFlow(
     {
       onCode: (code, uri) => {
-        writeStaticLoginNotes([
-          "Open this URL in your browser:",
-          uri,
-          `Enter this code: ${code}`,
-        ]);
+        writeDeviceCodePrompt(code, uri);
       },
       onWaiting: () => {
         renderer.scopeActive("Waiting for authorization");
