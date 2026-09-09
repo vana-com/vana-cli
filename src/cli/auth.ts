@@ -127,14 +127,53 @@ export function loadCredentials(): VanaCredentials | null {
  * precisely because the token expired.
  */
 export function readStoredAccountAddress(): string | null {
+  return readStoredAuthFile()?.address ?? null;
+}
+
+/**
+ * Raw peek at auth.json ignoring expiry: the previous address and the
+ * previous personal_server block. Login uses it to detect an account switch
+ * and to carry a still-useful PS session across a same-account cloud
+ * re-login (the cloud flow cannot mint PS tokens, so overwriting the block
+ * with null would discard a working session for nothing).
+ */
+export function readStoredAuthFile(): {
+  address: string | null;
+  personalServer: VanaCredentials["personal_server"];
+} | null {
   try {
     const raw = fs.readFileSync(getAuthFilePath(), "utf8");
-    const parsed = JSON.parse(raw) as { account?: { address?: unknown } };
-    const address = parsed.account?.address;
-    return typeof address === "string" && address.trim() ? address : null;
+    const parsed = JSON.parse(raw) as LegacyVanaCredentials;
+    const normalized = normalizeCredentialsIgnoringExpiry(parsed);
+    return normalized;
   } catch {
     return null;
   }
+}
+
+function normalizeCredentialsIgnoringExpiry(parsed: LegacyVanaCredentials): {
+  address: string | null;
+  personalServer: VanaCredentials["personal_server"];
+} {
+  const address =
+    typeof parsed.account?.address === "string" && parsed.account.address.trim()
+      ? parsed.account.address
+      : null;
+  const ps = parsed.personal_server;
+  const personalServer =
+    ps && typeof ps.url === "string" && ps.url.trim()
+      ? {
+          url: ps.url,
+          session_token:
+            typeof ps.session_token === "string" && ps.session_token
+              ? ps.session_token
+              : typeof ps.access_token === "string"
+                ? ps.access_token
+                : "",
+          expires_at: typeof ps.expires_at === "string" ? ps.expires_at : "",
+        }
+      : null;
+  return { address, personalServer };
 }
 
 /**

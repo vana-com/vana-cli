@@ -108,7 +108,7 @@ import {
 } from "./update-check.js";
 import {
   loadCredentials,
-  readStoredAccountAddress,
+  readStoredAuthFile,
   saveCredentials,
   clearCredentials,
   isExpired,
@@ -6323,9 +6323,10 @@ async function runLogin(
 
   // Check if already logged in
   const existing = loadCredentials();
-  // For the account-switch check below: the previous address even when the
-  // stored credentials have expired (loadCredentials hides those).
-  const previousAddress = readStoredAccountAddress();
+  // For the account-switch check below: the previous auth file content even
+  // when the stored credentials have expired (loadCredentials hides those).
+  const previousAuth = readStoredAuthFile();
+  const previousAddress = previousAuth?.address ?? null;
   if (existing && !isExpired(existing)) {
     if (options.json) {
       process.stdout.write(
@@ -6386,6 +6387,14 @@ async function runLogin(
     );
 
     if (creds) {
+      if (
+        !creds.personal_server &&
+        previousAuth?.personalServer &&
+        (!previousAddress || previousAddress === creds.account.address)
+      ) {
+        // The cloud flow cannot mint PS sessions; keep the one we had.
+        creds.personal_server = previousAuth.personalServer;
+      }
       await saveCredentials(creds);
       // Always sync the pinned PS config to this login's result — including
       // clearing it when this account has no PS, so a stale PS URL from a
@@ -6438,6 +6447,14 @@ async function runLogin(
         renderer.scopeActive("Waiting for authorization");
       },
       onAuthorized: async (authedCreds) => {
+        if (
+          !authedCreds.personal_server &&
+          previousAuth?.personalServer &&
+          (!previousAddress || previousAddress === authedCreds.account.address)
+        ) {
+          // The cloud flow cannot mint PS sessions; keep the one we had.
+          authedCreds.personal_server = previousAuth.personalServer;
+        }
         await saveCredentials(authedCreds);
         // Always sync the pinned PS config to this login's result — including
         // clearing it when this account has no PS, so a stale PS URL from a
