@@ -785,10 +785,26 @@ Examples:
   program
     .command("mcp")
     .description("Start MCP server for agent integration")
-    .action(async () => {
+    .option("--http", "Serve over HTTP on localhost and print the URL")
+    .option("--port <port>", "Port for --http (default 8790)")
+    .action(async (commandOptions: { http?: boolean; port?: string }) => {
+      const port = Number(commandOptions.port ?? 8790);
+      if (
+        commandOptions.http &&
+        (!Number.isInteger(port) || port < 1 || port > 65535)
+      ) {
+        process.stderr.write("Invalid --port.\n");
+        process.exitCode = CliExitCode.USAGE;
+        return;
+      }
       process.exitCode = await runLongRunningCommandWithTelemetry(
         { ...telemetryBaseContext, command: "mcp" },
         async () => {
+          if (commandOptions.http) {
+            const { startMcpHttpServer } = await import("./mcp-server.js");
+            await startMcpHttpServer(port);
+            return;
+          }
           const { startMcpServer } = await import("./mcp-server.js");
           await startMcpServer();
         },
