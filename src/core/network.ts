@@ -39,12 +39,16 @@ export interface ResolvedNetwork {
   explorerUrl: string;
   /** JSON-RPC endpoint for on-chain calls (escrow depositNative). */
   rpcUrl: string;
+  /** DataPortabilityGrantees contract, the EIP-712 verifying contract for
+   * builder registration (same deployment address on both networks). */
+  granteesContract: string;
 }
 
 const NETWORKS: Record<VanaNetworkName, Omit<ResolvedNetwork, "env">> = {
   moksha: {
     name: "moksha",
     chainId: 14800,
+    granteesContract: "0x8325C0A0948483EdA023A1A2Fd895e62C5131234",
     gatewayUrl: "https://dp-rpc.moksha.vana.org",
     accountUrl: "https://account.vana.org",
     approvalUrl: "https://app.vana.org",
@@ -55,6 +59,7 @@ const NETWORKS: Record<VanaNetworkName, Omit<ResolvedNetwork, "env">> = {
   mainnet: {
     name: "mainnet",
     chainId: 1480,
+    granteesContract: "0x8325C0A0948483EdA023A1A2Fd895e62C5131234",
     gatewayUrl: "https://dp-rpc.vana.org",
     accountUrl: "https://account.vana.org",
     approvalUrl: "https://app.vana.org",
