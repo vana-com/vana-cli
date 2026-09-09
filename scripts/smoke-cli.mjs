@@ -520,6 +520,18 @@ async function checkLogout() {
   return "logged out (no creds in temp HOME; JSON still valid)";
 }
 
+async function checkAppWhoami() {
+  // Fresh HOME, no key, no network needed: exit 0 with a remedy.
+  const result = await runVana(["app", "whoami", "--json"]);
+  assertExitZero(result);
+  const json = assertJson(result.stdout);
+  failIf(json.type !== "outcome", `type=${json.type}`);
+  failIf(json.data?.address !== null, "expected address=null on fresh HOME");
+  failIf(json.remedy !== "vana app register", `remedy=${json.remedy}`);
+  failIf(!("network" in json), "missing network field");
+  return `address=null, remedy=${json.remedy}, network=${json.network}`;
+}
+
 async function checkUnknownCommand() {
   const result = await runVana(["bogus"]);
   failIf(result.exitCode === 0, "unknown command should exit non-zero");
@@ -562,6 +574,7 @@ async function main() {
     ["skills install + failure path", checkSkillsInstall],
     ["mcp initialize + tools/list", checkMcp],
     ["logout", checkLogout],
+    ["app whoami --json (no key)", checkAppWhoami],
     ["unknown command", checkUnknownCommand],
   ];
 

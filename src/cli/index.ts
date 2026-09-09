@@ -60,6 +60,7 @@ import {
   type VanaNetworkName,
 } from "../core/network.js";
 import { CliExitCode } from "../core/exit-codes.js";
+import { registerAppCommands } from "./app/index.js";
 import type {
   CliChannel,
   CliEvent,
@@ -897,6 +898,8 @@ Examples:
         async () => runScheduleRemove(parsedOptions),
       );
     });
+
+  registerAppCommands(program, () => parsedOptions);
 
   applyGlobalOptions(program);
 
