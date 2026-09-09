@@ -121,6 +121,62 @@ export function loadCredentials(): VanaCredentials | null {
 }
 
 /**
+ * The account address stored in auth.json, expired or not. Login uses it to
+ * detect an account switch; loadCredentials() cannot serve that purpose
+ * because it filters expired credentials to null, and re-login happens
+ * precisely because the token expired.
+ */
+export function readStoredAccountAddress(): string | null {
+  return readStoredAuthFile()?.address ?? null;
+}
+
+/**
+ * Raw peek at auth.json ignoring expiry: the previous address and the
+ * previous personal_server block. Login uses it to detect an account switch
+ * and to carry a still-useful PS session across a same-account cloud
+ * re-login (the cloud flow cannot mint PS tokens, so overwriting the block
+ * with null would discard a working session for nothing).
+ */
+export function readStoredAuthFile(): {
+  address: string | null;
+  personalServer: VanaCredentials["personal_server"];
+} | null {
+  try {
+    const raw = fs.readFileSync(getAuthFilePath(), "utf8");
+    const parsed = JSON.parse(raw) as LegacyVanaCredentials;
+    const normalized = normalizeCredentialsIgnoringExpiry(parsed);
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeCredentialsIgnoringExpiry(parsed: LegacyVanaCredentials): {
+  address: string | null;
+  personalServer: VanaCredentials["personal_server"];
+} {
+  const address =
+    typeof parsed.account?.address === "string" && parsed.account.address.trim()
+      ? parsed.account.address
+      : null;
+  const ps = parsed.personal_server;
+  const personalServer =
+    ps && typeof ps.url === "string" && ps.url.trim()
+      ? {
+          url: ps.url,
+          session_token:
+            typeof ps.session_token === "string" && ps.session_token
+              ? ps.session_token
+              : typeof ps.access_token === "string"
+                ? ps.access_token
+                : "",
+          expires_at: typeof ps.expires_at === "string" ? ps.expires_at : "",
+        }
+      : null;
+  return { address, personalServer };
+}
+
+/**
  * Save credentials to ~/.vana/auth.json with 0600 permissions.
  */
 export async function saveCredentials(creds: VanaCredentials): Promise<void> {
@@ -448,7 +504,7 @@ async function pollOAuthDeviceCode(params: {
       : {};
 
   if (response.ok && "access_token" in parsed) {
-    return oauthTokenToAuthorized(parsed);
+    return await oauthTokenToAuthorized(parsed);
   }
 
   const errorBody = parsed as OAuthTokenError;
@@ -471,10 +527,10 @@ async function pollOAuthDeviceCode(params: {
   throw new Error(`OAuth device authorization failed: ${description}`);
 }
 
-function oauthTokenToAuthorized(
+async function oauthTokenToAuthorized(
   token: OAuthTokenSuccess,
-): DeviceCodePollAuthorized {
-  const address = resolveOAuthAccountAddress(token);
+): Promise<DeviceCodePollAuthorized> {
+  const address = await resolveOAuthAccountAddress(token);
   const claims = decodeJwtClaims(token.id_token);
 
   return {
@@ -531,7 +587,9 @@ async function readOAuthErrorDetail(response: Response): Promise<string> {
   }
 }
 
-function resolveOAuthAccountAddress(token: OAuthTokenSuccess): string {
+async function resolveOAuthAccountAddress(
+  token: OAuthTokenSuccess,
+): Promise<string> {
   if (token.address) {
     return token.address;
   }
@@ -546,7 +604,42 @@ function resolveOAuthAccountAddress(token: OAuthTokenSuccess): string {
   if (typeof sub === "string" && isWalletAddress(sub)) {
     return sub;
   }
+  // The prod id_token carries no wallet claims at all; userinfo does
+  // (primary_wallet_address, vana_user_id). Ask it before giving up on a
+  // meaningful identity.
+  const fromUserinfo = await fetchUserinfoIdentity(token.access_token);
+  if (fromUserinfo) {
+    return fromUserinfo;
+  }
   return "vana-account";
+}
+
+/**
+ * Best-effort identity from the OIDC userinfo endpoint: the primary wallet
+ * address when present, else the vana_user id. Null on any failure - login
+ * must not break because a profile endpoint hiccuped.
+ */
+async function fetchUserinfoIdentity(
+  accessToken: string,
+): Promise<string | null> {
+  try {
+    const response = await fetch(`${getAccountUrl()}/userinfo`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const info = (await response.json()) as Record<string, unknown>;
+    const wallet = info.primary_wallet_address;
+    if (typeof wallet === "string" && isWalletAddress(wallet)) {
+      return wallet;
+    }
+    const sub = info.vana_user_id ?? info.sub;
+    return typeof sub === "string" && sub.trim() ? sub : null;
+  } catch {
+    return null;
+  }
 }
 
 function decodeJwtClaims(

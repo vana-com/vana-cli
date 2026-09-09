@@ -1,0 +1,31 @@
+{
+  "requestedScopes": [
+    "github.profile",
+    "github.repositories",
+    "github.starred",
+    "github.events",
+    "github.contributions",
+    "github.history"
+  ],
+  "timestamp": "2026-09-09T17:05:45.670Z",
+  "version": "1.4.0",
+  "platform": "github",
+  "exportSummary": {
+    "count": 0,
+    "label": "items",
+    "details": {
+      "repositories": 0,
+      "starred": 0,
+      "events": 0,
+      "contributions": 0
+    }
+  },
+  "errors": [
+    {
+      "errorClass": "navigation_error",
+      "reason": "Could not reach GitHub after multiple attempts.",
+      "disposition": "fatal",
+      "phase": "collect"
+    }
+  ]
+}

@@ -1,0 +1,142 @@
+{
+  "batchId": "batch_2b88400d-7950-4069-b0f4-0922097ad2ca",
+  "sentAt": "2026-09-09T17:05:45.768Z",
+  "events": [
+    {
+      "identity": {
+        "eventId": "evt_6216a44a-7f5b-4ee7-88c2-1fb543e9ba44",
+        "eventVersion": 1
+      },
+      "time": { "occurredAt": "2026-09-09T17:05:41.365Z" },
+      "attribution": {
+        "producer": "cli",
+        "installId": "inst_b881d06d-480f-4cb5-8265-827e2db6d196"
+      },
+      "context": {
+        "hostPlatform": "macos-arm64",
+        "os": "macos",
+        "arch": "arm64",
+        "producerVersion": "0.16.0"
+      },
+      "correlation": {
+        "scope": "host",
+        "hostRunId": "host_2af2b3f3-067f-4cca-a8b8-8b0eaead8a09"
+      },
+      "kind": { "lifecycle": "host", "phase": "started" },
+      "extensions": {
+        "command": "connect",
+        "subcommand": null,
+        "channel": "stable",
+        "installMethod": "development",
+        "isCi": false,
+        "isAgent": false,
+        "isInteractive": true,
+        "runtimeCheckCompleted": true,
+        "connectorResolved": true
+      }
+    },
+    {
+      "identity": {
+        "eventId": "evt_d8ad9d16-ad1b-4ae6-9678-80cd316bcda0",
+        "eventVersion": 1
+      },
+      "time": { "occurredAt": "2026-09-09T17:05:45.671Z" },
+      "attribution": {
+        "producer": "cli",
+        "installId": "inst_b881d06d-480f-4cb5-8265-827e2db6d196"
+      },
+      "context": {
+        "hostPlatform": "macos-arm64",
+        "os": "macos",
+        "arch": "arm64",
+        "producerVersion": "0.16.0"
+      },
+      "correlation": {
+        "scope": "collection",
+        "hostRunId": "host_2af2b3f3-067f-4cca-a8b8-8b0eaead8a09",
+        "collectionRunId": "col_34b3d966-4f31-4672-8ed0-45a2e33eafca",
+        "source": "github"
+      },
+      "kind": { "lifecycle": "collection", "phase": "started" }
+    },
+    {
+      "identity": {
+        "eventId": "evt_6b4c15e7-effc-4292-9e88-3ca784f55b03",
+        "eventVersion": 1
+      },
+      "time": { "occurredAt": "2026-09-09T17:05:45.671Z" },
+      "attribution": {
+        "producer": "cli",
+        "installId": "inst_b881d06d-480f-4cb5-8265-827e2db6d196"
+      },
+      "context": {
+        "hostPlatform": "macos-arm64",
+        "os": "macos",
+        "arch": "arm64",
+        "producerVersion": "0.16.0"
+      },
+      "correlation": {
+        "scope": "collection",
+        "hostRunId": "host_2af2b3f3-067f-4cca-a8b8-8b0eaead8a09",
+        "collectionRunId": "col_34b3d966-4f31-4672-8ed0-45a2e33eafca",
+        "source": "github"
+      },
+      "kind": {
+        "lifecycle": "collection",
+        "phase": "terminal",
+        "outcome": "success"
+      }
+    },
+    {
+      "identity": {
+        "eventId": "evt_a3027802-ccb4-4ba2-bcf5-2ce8d14a6678",
+        "eventVersion": 1
+      },
+      "time": { "occurredAt": "2026-09-09T17:05:45.672Z" },
+      "attribution": {
+        "producer": "cli",
+        "installId": "inst_b881d06d-480f-4cb5-8265-827e2db6d196"
+      },
+      "context": {
+        "hostPlatform": "macos-arm64",
+        "os": "macos",
+        "arch": "arm64",
+        "producerVersion": "0.16.0"
+      },
+      "correlation": {
+        "scope": "sync",
+        "hostRunId": "host_2af2b3f3-067f-4cca-a8b8-8b0eaead8a09",
+        "syncRunId": "sync_fa3f2501-5442-4b79-8c18-1a31d7ca76cd",
+        "source": "github",
+        "collectionRunId": "col_34b3d966-4f31-4672-8ed0-45a2e33eafca"
+      },
+      "kind": {
+        "lifecycle": "sync",
+        "phase": "skipped",
+        "reason": "not_requested"
+      }
+    },
+    {
+      "identity": {
+        "eventId": "evt_75dc90d5-c37e-4c4d-a25b-db67ffb12334",
+        "eventVersion": 1
+      },
+      "time": { "occurredAt": "2026-09-09T17:05:45.767Z", "durationMs": 4402 },
+      "attribution": {
+        "producer": "cli",
+        "installId": "inst_b881d06d-480f-4cb5-8265-827e2db6d196"
+      },
+      "context": {
+        "hostPlatform": "macos-arm64",
+        "os": "macos",
+        "arch": "arm64",
+        "producerVersion": "0.16.0"
+      },
+      "correlation": {
+        "scope": "host",
+        "hostRunId": "host_2af2b3f3-067f-4cca-a8b8-8b0eaead8a09"
+      },
+      "kind": { "lifecycle": "host", "phase": "terminal", "outcome": "success" }
+    }
+  ]
+}

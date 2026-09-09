@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vana.collect</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/var/folders/f8/smjwsp2n5jz1w425wz7t3tc40000gn/T/vana-vhs-wgIQzo/bin/vana</string>
+    <string>collect</string>
+    <string>--all</string>
+    <string>--quiet</string>
+    <string>--no-input</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>86400</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/volod/vana/vana-cli/docs/vhs/fixtures/demo-home/.vana/logs/schedule.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/volod/vana/vana-cli/docs/vhs/fixtures/demo-home/.vana/logs/schedule.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
