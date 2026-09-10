@@ -77,6 +77,10 @@ await createArchive({
   targetName: path.basename(path.dirname(outputPath)),
 });
 
+// Notarize the archive, not the loose launcher: Apple scans what ships, and
+// the checksum below must cover the stapled artifact.
+await notarizeArchive(archivePath);
+
 const archiveDigest = await sha256(archivePath);
 await fsp.writeFile(
   checksumPath,
@@ -106,14 +110,99 @@ async function buildLauncher(outputFile, mainFile, configFile) {
   });
 }
 
+/**
+ * Sign the macOS launcher.
+ *
+ * With `APPLE_SIGNING_IDENTITY` set (release builds) this is a real
+ * Developer ID signature with hardened runtime, a secure timestamp, and the
+ * same entitlements the desktop app's playwright-runner ships with. Without
+ * it (local builds) it falls back to an ad-hoc signature: enough to run on
+ * the machine that built it, but the binary stays unknown to Gatekeeper and
+ * to endpoint security products, which is why an unsigned build gets
+ * quarantined the first time it drives a browser.
+ */
 async function signLauncher(outputFile) {
   if (platform !== "darwin") {
     return;
   }
 
-  await run("codesign", ["--force", "--sign", "-", outputFile], {
+  const identity = process.env.APPLE_SIGNING_IDENTITY?.trim();
+  if (!identity) {
+    console.log("[sea] APPLE_SIGNING_IDENTITY unset, signing ad-hoc");
+    await run("codesign", ["--force", "--sign", "-", outputFile], {
+      cwd: repoRoot,
+    });
+    return;
+  }
+
+  const entitlements = path.join(repoRoot, "scripts", "entitlements.plist");
+  console.log(`[sea] signing with ${identity}`);
+  await run(
+    "codesign",
+    [
+      "--force",
+      "--options",
+      "runtime",
+      "--timestamp",
+      "--entitlements",
+      entitlements,
+      "--sign",
+      identity,
+      outputFile,
+    ],
+    { cwd: repoRoot },
+  );
+  await run("codesign", ["--verify", "--strict", "--verbose=2", outputFile], {
     cwd: repoRoot,
   });
+}
+
+/**
+ * Notarize a signed artifact with Apple and staple the ticket to it.
+ *
+ * Apple notarizes archives, not loose binaries, so this runs on the release
+ * archive. Stapling attaches the ticket so the artifact validates without a
+ * network round trip on the user machine; a zip cannot carry a ticket, so a
+ * stapling failure is reported and not fatal. Skipped entirely unless the
+ * App Store Connect key variables are present, which keeps local and fork
+ * builds working.
+ */
+async function notarizeArchive(archivePath) {
+  if (platform !== "darwin") {
+    return;
+  }
+  const keyPath = process.env.APPLE_API_KEY_PATH;
+  const keyId = process.env.APPLE_API_KEY_ID;
+  const issuer = process.env.APPLE_API_ISSUER;
+  if (!keyPath || !keyId || !issuer) {
+    console.log("[sea] notarization variables unset, skipping notarization");
+    return;
+  }
+
+  console.log(`[sea] notarizing ${path.basename(archivePath)}`);
+  await run(
+    "xcrun",
+    [
+      "notarytool",
+      "submit",
+      archivePath,
+      "--key",
+      keyPath,
+      "--key-id",
+      keyId,
+      "--issuer",
+      issuer,
+      "--wait",
+    ],
+    { cwd: repoRoot },
+  );
+  try {
+    await run("xcrun", ["stapler", "staple", archivePath], { cwd: repoRoot });
+  } catch (error) {
+    console.log(
+      `[sea] stapling skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function writeLauncher(outputFile) {
