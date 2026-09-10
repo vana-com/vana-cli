@@ -26,7 +26,7 @@ import {
  *
  * Returns a promise that resolves when the transport disconnects.
  */
-function buildMcpServer(): McpServer {
+export async function startMcpServer(): Promise<void> {
   const version = getCliVersion();
 
   const server = new McpServer({
@@ -146,86 +146,6 @@ function buildMcpServer(): McpServer {
 
   // ── Connect transport and run ────────────────────────────────────────
 
-  return server;
-}
-
-/**
- * Start the MCP server over streamable HTTP on localhost, printing the URL
- * a client connects to. One shared server instance; a fresh stateless
- * transport per request.
- */
-export async function startMcpHttpServer(port: number): Promise<void> {
-  const { StreamableHTTPServerTransport } =
-    await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
-  const { createServer } = await import("node:http");
-
-  const httpServer = createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    if (url.pathname !== "/mcp") {
-      res.writeHead(404).end();
-      return;
-    }
-    try {
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) {
-        chunks.push(chunk as Buffer);
-      }
-      const raw = Buffer.concat(chunks).toString("utf8");
-      const body = raw ? (JSON.parse(raw) as unknown) : undefined;
-      const server = buildMcpServer();
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-      });
-      res.on("close", () => {
-        void transport.close();
-        void server.close();
-      });
-      await server.connect(transport);
-      await transport.handleRequest(req, res, body);
-    } catch (error) {
-      process.stderr.write(
-        `[vana mcp] request failed: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
-      if (!res.headersSent) {
-        res.writeHead(500).end();
-      }
-    }
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    httpServer.once("error", reject);
-    httpServer.listen(port, "127.0.0.1", () => resolve());
-  });
-
-  const address = `http://localhost:${port}/mcp`;
-  process.stderr.write(
-    [
-      `MCP server listening at ${address}`,
-      "Connect it as a remote (HTTP) MCP server, e.g.:",
-      `  claude mcp add --transport http vana ${address}`,
-      "Ctrl-C to stop.",
-      "",
-    ].join("\n"),
-  );
-
-  // Run until interrupted.
-  await new Promise<void>((resolve) => {
-    process.on("SIGINT", () => {
-      httpServer.close();
-      resolve();
-    });
-    httpServer.on("close", () => resolve());
-  });
-}
-
-/**
- * Start the MCP server on stdio.
- *
- * Returns a promise that resolves when the transport disconnects.
- */
-export async function startMcpServer(): Promise<void> {
-  const server = buildMcpServer();
-
   // A human running `vana mcp` in a terminal sees a silent hang, because
   // this is an stdio JSON-RPC server meant to be launched by an MCP client.
   // Say so on stderr (stdout is the transport and must stay clean).
@@ -235,7 +155,6 @@ export async function startMcpServer(): Promise<void> {
         "vana mcp is an MCP server speaking JSON-RPC over stdio.",
         "It is meant to be launched by an MCP client, not run by hand:",
         "  claude mcp add vana -- vana mcp",
-        "Tip: vana mcp --http gives you a URL to connect to instead.",
         "Waiting for a client on stdin (Ctrl-C or Ctrl-D to exit)...",
         "",
       ].join("\n"),
