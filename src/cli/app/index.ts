@@ -114,8 +114,9 @@ export function registerAppCommands(
     .description(
       "Deposit VANA into escrow (on-chain tx + gateway registration)",
     )
-    .option("--amount <vana>", "Amount to deposit, in VANA")
-    .action(async (commandOptions: { amount?: string }) => {
+    .option("--amount <amount>", "Amount to deposit, in the asset's units")
+    .option("--asset <address>", "ERC20 to deposit instead of native VANA")
+    .action(async (commandOptions: { amount?: string; asset?: string }) => {
       process.exitCode = await runAppEscrowFund({
         ...getOptions(),
         ...commandOptions,
