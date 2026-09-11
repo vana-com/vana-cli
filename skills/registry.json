@@ -10,6 +10,15 @@
       }
     },
     {
+      "id": "builder",
+      "name": "Builder",
+      "description": "Ask a person for access to their data, then read it and pay for it from the terminal",
+      "version": "1.0.0",
+      "files": {
+        "skill": "builder/SKILL.md"
+      }
+    },
+    {
       "id": "create-connector",
       "name": "Create Connector",
       "description": "How to build, test, validate, and contribute a new data connector",
