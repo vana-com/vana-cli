@@ -19,6 +19,10 @@ statuses with a distinct slot below stop returning `1` as they are wired in.
 | 6    | not ready yet, come back                        | new                                  |
 | 7    | a person has to confirm before this can proceed | new                                  |
 
+macOS release binaries are signed with the Corsali Developer ID and
+notarized by Apple, so Gatekeeper and endpoint security products see a
+known publisher rather than an unknown executable.
+
 Source of truth in code: `src/core/exit-codes.ts` (`CliExitCode`,
 `exitCodeForOutcome`, `exitCodeForProtocolCode`). The JSON outcome's `code`
 field carries the finer-grained reason (`owner_not_ready`, `grant_revoked`,
