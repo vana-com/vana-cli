@@ -11,6 +11,8 @@ import { runAppEscrowBalance, runAppEscrowFund } from "./escrow.js";
 import { runAppOnchain } from "./onchain.js";
 import { runAppRead } from "./read.js";
 import { runAppRegister } from "./register.js";
+import { runAppRequest } from "./request.js";
+import { runAppRequestsList, runAppRequestsShow } from "./requests.js";
 import { runAppWhoami } from "./whoami.js";
 import type { AppCommandOptions } from "./outcome.js";
 
@@ -31,6 +33,47 @@ export function registerAppCommands(
         ...getOptions(),
         appUrl: commandOptions.appUrl,
       });
+    });
+
+  app
+    .command("request")
+    .description("Ask a person for access and wait for the grant")
+    .option("--scopes <list>", "Comma-separated scopes to request")
+    .option("--question <text>", "Derivative question to carry on the request")
+    .option("--derived <scope>", "Scope the answer is written to")
+    .option(
+      "--sources <list>",
+      "Comma-separated scopes the answer is computed from",
+    )
+    .option("--return-url <url>", "Where approval returns the person")
+    .option(
+      "--timeout <seconds>",
+      "How long to wait for approval (default 600)",
+    )
+    .option("--app-id <id>", "App id shown during approval")
+    .option("--app-name <name>", "App name shown during approval")
+    .option("--app-url <url>", "App homepage shown during approval")
+    .action(async (commandOptions: Record<string, string | undefined>) => {
+      process.exitCode = await runAppRequest({
+        ...getOptions(),
+        ...commandOptions,
+      });
+    });
+
+  const requests = app
+    .command("requests")
+    .description("Access requests created from this machine");
+  requests
+    .command("list")
+    .description("List access requests this machine created")
+    .action(async () => {
+      process.exitCode = await runAppRequestsList(getOptions());
+    });
+  requests
+    .command("show <requestId>")
+    .description("Show one access request, refreshed from the service")
+    .action(async (requestId: string) => {
+      process.exitCode = await runAppRequestsShow(requestId, getOptions());
     });
 
   app
