@@ -1,36 +1,79 @@
-# OpenDataLabs Context Gateway JavaScript SDK
+# Vana CLI
 
-`vana-cli` is the JavaScript client SDK for
-[OpenDataLabs Context Gateway](https://www.opendatalabs.com/context-gateway).
-Use it to let users connect their own data to your app.
+`vana` is the command line for Vana: it collects a person's own data into
+their Personal Server, and it drives the builder side of the protocol so an
+app or an agent can ask for that data, read it, and pay for it from a
+terminal.
 
-## CLI
+This repository also ships the JavaScript SDK the CLI is built on, which is
+documented further down.
 
-The `vana` CLI collects your personal data from any platform. See the **[CLI README](./cli/README.md)**.
-
-Install on macOS with Homebrew:
-
-```bash
-brew tap vana-com/tap
-brew install vana
-vana status
-```
-
-Or use the hosted prerelease installer on macOS/Linux:
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vana-com/vana-cli/main/install/install.sh | sh
+vana status
 ```
 
-Branch prerelease:
+Windows uses `install/install.ps1`. Homebrew (`brew tap vana-com/tap && brew
+install vana`) is still published but lags the installer.
 
-- `https://github.com/vana-com/vana-cli/releases/tag/canary-feat-connect-cli-v1`
+## Two halves
 
-Once installed:
+**Owner side** collects your own data and keeps it in your Personal Server:
 
 ```bash
-vana connect linkedin
+vana login                  # Vana account, or --server <url> for a self-hosted PS
+vana connect github         # managed browser, collects, syncs to your server
+vana data show github       # what was collected
+vana server status          # your server, local and registered URLs
 ```
+
+**Builder side** is what an app or an agent uses to work with someone
+else's data, with their consent:
+
+```bash
+vana app register                                  # once per machine
+vana app request --scopes github.repositories      # prints an approval URL, waits
+vana app read github.repositories --grant <id>     # signed read
+```
+
+`request` returns the grant id once the person approves. `read` stops at
+exit 4 with the exact price before spending anything; add `--pay` to settle
+it from escrow and `--max-fee` to cap it. The rest of the group:
+
+| Command                                   | What it does                                         |
+| ----------------------------------------- | ---------------------------------------------------- |
+| `vana app whoami`                         | app address, key source, network, registration state |
+| `vana app requests list\|show <id>`       | what was asked, what was approved                    |
+| `vana app escrow balance\|fund`           | what the app can spend, and funding it               |
+| `vana app onchain <scope> --owner <addr>` | data point version, hashes, deletion state           |
+
+Everything defaults to **moksha**, the testnet; `--network mainnet` spends
+real money and is never implied.
+
+## For agents
+
+Every command takes `--json` and `--no-input`, and exits with a code an
+agent can branch on: `0` done, `1` failed, `2` bad usage, `3` no grant,
+`4` payment required, `5` no server answered, `6` not ready yet, `7` a
+person has to act. The full contract is in
+[docs/CLI-EXIT-CODE-MATRIX.md](./docs/CLI-EXIT-CODE-MATRIX.md).
+
+Install the skills that teach an agent each half:
+
+```bash
+vana skills install builder        # ask for access, read, pay
+vana skills install connect-data   # collect your own data
+```
+
+There is also an MCP server over stdio for clients that prefer tools:
+
+```bash
+claude mcp add vana -- vana mcp
+```
+
+## The SDK
 
 ## What problem this solves
 
