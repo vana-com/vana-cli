@@ -25,6 +25,7 @@ import {
   type StoredRequestStatus,
 } from "../../core/requests-store.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
+import { resolveSourceKey } from "./request.js";
 
 export interface RequestsDeps {
   resolveKey?: typeof resolveAppKey;
@@ -151,7 +152,11 @@ export async function runAppRequestsShow(
           name: "Vana CLI",
           homepageUrl: "https://github.com/vana-com/vana-cli",
         },
-        source: stored.scopes[0].replace(/^write:/, "").split(".")[0],
+        source: resolveSourceKey(
+          stored.scopes,
+          stored.questions?.[0]?.derivedScope,
+          stored.questions?.[0]?.sourceScopes ?? [],
+        ),
         scopes: stored.scopes,
       });
       live = await controller.getAccessRequestStatus(requestId);
