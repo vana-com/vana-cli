@@ -24,7 +24,11 @@ import {
   readPersonalServerData,
   type PersonalServerFetch,
 } from "@opendatalabs/vana-sdk/direct/personal-server-read";
-import { formatEther, parseEther } from "viem";
+import {
+  formatAssetAmount,
+  parseAssetAmount,
+  resolveAsset,
+} from "../../core/assets.js";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   AppKeyMissingError,
@@ -219,26 +223,55 @@ export async function runAppRead(
         (error as { details?: { amount?: string; asset?: string } }).details ??
         {};
       const amountRaw = details.amount ?? "0";
-      const amountVana = formatEther(BigInt(amountRaw));
+      // Fees are quoted in base units of an asset that is often not the
+      // native coin - data_access on mainnet is USDC.e with 6 decimals - so
+      // the asset decides both the display and the --max-fee comparison.
+      const asset = await resolveAsset(details.asset, network.rpcUrl);
+      const amountHuman = formatAssetAmount(amountRaw, asset);
 
       if (!options.pay) {
         return emitAppOutcome(options, {
           status: "failed",
           code: "payment_required",
-          message: `This read costs ${amountVana} VANA and --pay is not set.`,
+          message: `This read costs ${amountHuman} and --pay is not set.`,
           remedy: `vana app read ${scope} --grant ${options.grant} --pay`,
           network: network.name,
-          data: { amount: amountRaw, amountVana, asset: details.asset },
+          data: {
+            amount: amountRaw,
+            amountHuman,
+            asset: details.asset ?? null,
+            assetSymbol: asset?.symbol ?? null,
+            assetDecimals: asset?.decimals ?? null,
+          },
         });
       }
-      if (options.maxFee && BigInt(amountRaw) > parseEther(options.maxFee)) {
-        return emitAppOutcome(options, {
-          status: "failed",
-          code: "max_fee_exceeded",
-          message: `This read costs ${amountVana} VANA, above --max-fee ${options.maxFee}.`,
-          network: network.name,
-          data: { amount: amountRaw, amountVana, asset: details.asset },
-        });
+      if (options.maxFee) {
+        const limit = parseAssetAmount(options.maxFee, asset);
+        if (limit === null) {
+          // Refusing to compare beats comparing in the wrong units.
+          return emitAppOutcome(options, {
+            status: "failed",
+            code: "payment_required",
+            message: `Cannot enforce --max-fee: fee asset ${details.asset} is unknown on this chain.`,
+            remedy: "drop --max-fee to accept the quoted fee",
+            network: network.name,
+            data: { amount: amountRaw, asset: details.asset ?? null },
+          });
+        }
+        if (BigInt(amountRaw) > limit) {
+          return emitAppOutcome(options, {
+            status: "failed",
+            code: "max_fee_exceeded",
+            message:
+              `This read costs ${amountHuman}, above --max-fee ${options.maxFee} ${asset?.symbol ?? ""}.`.trim(),
+            network: network.name,
+            data: {
+              amount: amountRaw,
+              amountHuman,
+              asset: details.asset ?? null,
+            },
+          });
+        }
       }
       if (!escrowContract) {
         return emitAppOutcome(options, {
@@ -280,7 +313,7 @@ export async function runAppRead(
         return emitReadSuccess(options, network, scope, result.data, {
           paid: true,
           amount: amountRaw,
-          amountVana,
+          amountHuman,
           server: personalServerUrl,
           payment: result.payment,
         });
@@ -353,7 +386,7 @@ function emitReadSuccess(
   process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
   if (!options.quiet) {
     const paidNote = meta.paid
-      ? ` (paid ${String(meta.amountVana)} VANA)`
+      ? ` (paid ${String(meta.amountHuman)})`
       : meta.replayedReceipt
         ? " (existing receipt replayed, nothing new paid)"
         : "";

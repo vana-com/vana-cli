@@ -172,8 +172,45 @@ describe("vana app read", () => {
     expect(exitCode).toBe(4);
     const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
     expect(outcome.code).toBe("payment_required");
-    expect(outcome.data).toMatchObject({ amountVana: "0.25" });
+    expect(outcome.data).toMatchObject({
+      amountHuman: "0.25 VANA",
+      assetSymbol: "VANA",
+      assetDecimals: 18,
+    });
     expect(outcome.remedy).toContain("--pay");
+  });
+
+  it("refuses to enforce --max-fee when the fee asset is unknown", async () => {
+    // Comparing a token fee against an ether-parsed limit is how the guard
+    // silently stops guarding; refusing beats guessing units.
+    const exitCode = await runAppRead(
+      "github.repos",
+      {
+        json: true,
+        grant: GRANT,
+        pay: true,
+        maxFee: "0.005",
+        network: "mainnet",
+      },
+      {
+        resolveKey: () => appKey,
+        createClient: () => grantClient(),
+        receipts: store(),
+        read: async () => {
+          const error = new Error("payment required");
+          error.name = "PaymentRequiredError";
+          (error as unknown as { details: unknown }).details = {
+            amount: "10000",
+            // A token address that no RPC in this test can resolve.
+            asset: "0x00000000000000000000000000000000deadbeef",
+          };
+          throw error;
+        },
+      },
+    );
+    expect(exitCode).toBe(4);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.message).toContain("Cannot enforce --max-fee");
   });
 
   it("refuses fees above --max-fee with exit 4", async () => {

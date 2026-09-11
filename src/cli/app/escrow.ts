@@ -11,6 +11,7 @@ import {
   CONTRACTS,
   createGatewayClient,
   encodeDepositNativeData,
+  encodeDepositTokenData,
   type GatewayClient,
 } from "@opendatalabs/vana-sdk";
 import { getChainConfig } from "@opendatalabs/vana-sdk/chains";
@@ -18,10 +19,16 @@ import type { Chain } from "viem";
 import {
   createPublicClient,
   createWalletClient,
+  erc20Abi,
   formatEther,
   http,
-  parseEther,
 } from "viem";
+import {
+  NATIVE_ASSET,
+  formatAssetAmount,
+  parseAssetAmount,
+  resolveAsset,
+} from "../../core/assets.js";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   AppKeyMissingError,
@@ -36,8 +43,13 @@ import {
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
 
 export interface EscrowFundOptions extends AppCommandOptions {
-  /** Amount to deposit, in VANA (decimal string). */
+  /** Amount to deposit, decimal, in units of the chosen asset. */
   amount?: string;
+  /**
+   * ERC20 to deposit instead of native VANA. Reads are priced in USDC.e on
+   * mainnet, so funding native alone leaves every read answering 402.
+   */
+  asset?: string;
 }
 
 export interface EscrowDeps {
@@ -49,6 +61,7 @@ export interface EscrowDeps {
     key: ResolvedAppKey;
     escrowContract: `0x${string}`;
     amountWei: bigint;
+    asset?: string;
   }) => Promise<{ txHash: `0x${string}` }>;
 }
 
@@ -106,18 +119,18 @@ export async function runAppEscrowBalance(
   const client = (deps.createClient ?? createGatewayClient)(network.gatewayUrl);
   try {
     const balance = await client.getEscrowBalance(key.address);
+    // Each entry carries its own asset, and they do not share decimals:
+    // native VANA has 18, USDC.e has 6.
+    const lines = await Promise.all(
+      balance.balances.map(async (entry) => {
+        const info = await resolveAsset(entry.asset, network.rpcUrl);
+        return `${formatAssetAmount(entry.availableAmount ?? "0", info)} available`;
+      }),
+    );
     return emitAppOutcome(options, {
       status: "done",
       code: "ok",
-      message:
-        balance.balances.length === 0
-          ? "Escrow is empty."
-          : balance.balances
-              .map(
-                (entry) =>
-                  `${formatEther(BigInt(entry.availableAmount ?? "0"))} VANA available`,
-              )
-              .join(", "),
+      message: lines.length === 0 ? "Escrow is empty." : lines.join(", "),
       network: network.name,
       data: {
         address: key.address,
@@ -146,24 +159,69 @@ async function defaultSendDeposit(params: {
   key: ResolvedAppKey;
   escrowContract: `0x${string}`;
   amountWei: bigint;
+  asset?: string;
 }): Promise<{ txHash: `0x${string}` }> {
   const chain = getChainConfig(params.network.chainId) as unknown as Chain;
   const account = privateKeyToAccount(params.key.privateKey);
   const transport = http(params.network.rpcUrl);
   const publicClient = createPublicClient({ chain, transport });
+  const walletClient = createWalletClient({ account, chain, transport });
 
-  const balance = await publicClient.getBalance({
-    address: params.key.address,
-  });
-  if (balance < params.amountWei) {
-    throw new InsufficientFundsError(balance, params.amountWei);
+  const isToken = Boolean(
+    params.asset && params.asset.toLowerCase() !== NATIVE_ASSET,
+  );
+
+  if (!isToken) {
+    const balance = await publicClient.getBalance({
+      address: params.key.address,
+    });
+    if (balance < params.amountWei) {
+      throw new InsufficientFundsError(balance, params.amountWei);
+    }
+    const txHash = await walletClient.sendTransaction({
+      to: params.escrowContract,
+      data: encodeDepositNativeData({ account: params.key.address }),
+      value: params.amountWei,
+    });
+    await publicClient.waitForTransactionReceipt({ hash: txHash });
+    return { txHash };
   }
 
-  const walletClient = createWalletClient({ account, chain, transport });
+  // ERC20 path: the escrow pulls the tokens, so it needs an allowance
+  // first. Two transactions, and the approve is skipped when the existing
+  // allowance already covers the deposit.
+  const token = params.asset as `0x${string}`;
+  const held = (await publicClient.readContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [params.key.address],
+  })) as bigint;
+  if (held < params.amountWei) {
+    throw new InsufficientFundsError(held, params.amountWei, token);
+  }
+  const allowance = (await publicClient.readContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: [params.key.address, params.escrowContract],
+  })) as bigint;
+  if (allowance < params.amountWei) {
+    const approveHash = await walletClient.writeContract({
+      address: token,
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [params.escrowContract, params.amountWei],
+    });
+    await publicClient.waitForTransactionReceipt({ hash: approveHash });
+  }
   const txHash = await walletClient.sendTransaction({
     to: params.escrowContract,
-    data: encodeDepositNativeData({ account: params.key.address }),
-    value: params.amountWei,
+    data: encodeDepositTokenData({
+      account: params.key.address,
+      token,
+      amount: params.amountWei,
+    }),
   });
   await publicClient.waitForTransactionReceipt({ hash: txHash });
   return { txHash };
@@ -173,9 +231,12 @@ export class InsufficientFundsError extends Error {
   constructor(
     public readonly balanceWei: bigint,
     public readonly neededWei: bigint,
+    public readonly asset?: string,
   ) {
     super(
-      `Wallet holds ${formatEther(balanceWei)} VANA, needs ${formatEther(neededWei)} plus gas`,
+      asset
+        ? `Wallet holds ${balanceWei} base units of ${asset}, needs ${neededWei}`
+        : `Wallet holds ${formatEther(balanceWei)} VANA, needs ${formatEther(neededWei)} plus gas`,
     );
     this.name = "InsufficientFundsError";
   }
@@ -191,27 +252,33 @@ export async function runAppEscrowFund(
   }
   const { network, key } = context;
 
-  let amountWei: bigint;
-  try {
-    amountWei = parseEther(options.amount ?? "");
-    if (amountWei <= 0n) {
-      throw new Error("not positive");
-    }
-  } catch {
+  // The amount is denominated in the chosen asset, not always in VANA.
+  const asset = await resolveAsset(options.asset, network.rpcUrl);
+  if (options.asset && !asset) {
     return emitAppOutcome(options, {
       status: "failed",
       code: "bad_usage",
-      message: "A positive --amount in VANA is required.",
+      message: `Cannot read decimals for asset ${options.asset} on ${network.name}.`,
+      network: network.name,
+    });
+  }
+  const parsedAmount = parseAssetAmount(options.amount ?? "", asset);
+  if (parsedAmount === null || parsedAmount <= 0n) {
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "bad_usage",
+      message: `A positive --amount in ${asset?.symbol ?? "VANA"} is required.`,
       remedy: "vana app escrow fund --amount 0.5",
       network: network.name,
     });
   }
+  const amountWei = parsedAmount;
 
   if (network.name === "mainnet" && !options.yes) {
     return emitAppOutcome(options, {
       status: "failed",
       code: "confirmation_required",
-      message: `This deposits ${options.amount} real VANA on mainnet.`,
+      message: `This deposits ${options.amount} real ${asset?.symbol ?? "VANA"} on mainnet.`,
       remedy: `re-run with --yes to confirm`,
       network: network.name,
     });
@@ -236,6 +303,7 @@ export async function runAppEscrowFund(
       key,
       escrowContract,
       amountWei,
+      asset: options.asset,
     }));
   } catch (error) {
     if (error instanceof InsufficientFundsError) {
@@ -271,7 +339,7 @@ export async function runAppEscrowFund(
     return emitAppOutcome(options, {
       status: "done",
       code: "ok",
-      message: `Deposited ${options.amount} VANA into escrow.`,
+      message: `Deposited ${options.amount} ${asset?.symbol ?? "VANA"} into escrow.`,
       network: network.name,
       data: {
         txHash,
