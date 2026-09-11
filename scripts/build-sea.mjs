@@ -58,6 +58,7 @@ const configPath = path.join(scratchDir, "sea-config.json");
 await writeLauncher(launcherPath);
 await buildLauncher(outputPath, launcherPath, configPath);
 await signLauncher(outputPath);
+await notarizeLauncher(outputPath);
 await stageAppPayload(appPayloadPath);
 
 if (args.has("smoke")) {
@@ -76,10 +77,6 @@ await createArchive({
   targetParentDir: path.dirname(path.dirname(outputPath)),
   targetName: path.basename(path.dirname(outputPath)),
 });
-
-// Notarize the archive, not the loose launcher: Apple scans what ships, and
-// the checksum below must cover the stapled artifact.
-await notarizeArchive(archivePath);
 
 const archiveDigest = await sha256(archivePath);
 await fsp.writeFile(
@@ -158,16 +155,23 @@ async function signLauncher(outputFile) {
 }
 
 /**
- * Notarize a signed artifact with Apple and staple the ticket to it.
+ * Notarize the signed launcher with Apple.
  *
- * Apple notarizes archives, not loose binaries, so this runs on the release
- * archive. Stapling attaches the ticket so the artifact validates without a
- * network round trip on the user machine; a zip cannot carry a ticket, so a
- * stapling failure is reported and not fatal. Skipped entirely unless the
- * App Store Connect key variables are present, which keeps local and fork
- * builds working.
+ * `notarytool` only accepts a zip, pkg or dmg, and our macOS release
+ * artifact is a tar.gz, so the binary is zipped into a throwaway archive
+ * just for submission. Apple records the notarization against the binary's
+ * own code directory hash, so the ticket applies to the binary shipped
+ * inside the tar.gz as well.
+ *
+ * A bare executable cannot carry a stapled ticket the way an .app or .pkg
+ * can, so Gatekeeper validates it against Apple's records online. That is
+ * the accepted trade for a CLI binary, and it still removes the "unknown
+ * developer" verdict.
+ *
+ * Skipped entirely unless the App Store Connect key variables are present,
+ * which keeps local and fork builds working.
  */
-async function notarizeArchive(archivePath) {
+async function notarizeLauncher(outputFile) {
   if (platform !== "darwin") {
     return;
   }
@@ -179,29 +183,33 @@ async function notarizeArchive(archivePath) {
     return;
   }
 
-  console.log(`[sea] notarizing ${path.basename(archivePath)}`);
-  await run(
-    "xcrun",
-    [
-      "notarytool",
-      "submit",
-      archivePath,
-      "--key",
-      keyPath,
-      "--key-id",
-      keyId,
-      "--issuer",
-      issuer,
-      "--wait",
-    ],
-    { cwd: repoRoot },
-  );
+  const zipPath = `${outputFile}.notarize.zip`;
+  await fsp.rm(zipPath, { force: true });
+  // ditto is what Apple documents for preserving the signature in a zip.
+  await run("ditto", ["-c", "-k", "--keepParent", outputFile, zipPath], {
+    cwd: repoRoot,
+  });
   try {
-    await run("xcrun", ["stapler", "staple", archivePath], { cwd: repoRoot });
-  } catch (error) {
-    console.log(
-      `[sea] stapling skipped: ${error instanceof Error ? error.message : String(error)}`,
+    console.log(`[sea] notarizing ${path.basename(outputFile)}`);
+    await run(
+      "xcrun",
+      [
+        "notarytool",
+        "submit",
+        zipPath,
+        "--key",
+        keyPath,
+        "--key-id",
+        keyId,
+        "--issuer",
+        issuer,
+        "--wait",
+      ],
+      { cwd: repoRoot },
     );
+    console.log("[sea] notarized");
+  } finally {
+    await fsp.rm(zipPath, { force: true });
   }
 }
 
