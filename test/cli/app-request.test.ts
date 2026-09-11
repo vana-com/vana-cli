@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import { runAppRequest } from "../../src/cli/app/request.js";
+import { resolveSourceKey, runAppRequest } from "../../src/cli/app/request.js";
 import {
   runAppRequestsList,
   runAppRequestsShow,
@@ -193,6 +193,36 @@ describe("vana app request", () => {
     const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
     expect(outcome.code).toBe("not_ready");
     expect(outcome.remedy).toContain("requests show");
+  });
+});
+
+describe("resolveSourceKey", () => {
+  it("uses the plain scope when there is no question", () => {
+    expect(resolveSourceKey(["github.repositories"], undefined, [])).toBe(
+      "github",
+    );
+  });
+
+  it("prefers a source scope over a derived one listed first", () => {
+    // Asking for the derived scope first used to make the approval screen
+    // say "Connect coach", a source nobody can connect.
+    expect(
+      resolveSourceKey(["coach.weekly", "spotify.history"], "coach.weekly", [
+        "spotify.history",
+      ]),
+    ).toBe("spotify");
+  });
+
+  it("skips the derived scope even without explicit sources", () => {
+    expect(
+      resolveSourceKey(["coach.weekly", "spotify.history"], "coach.weekly", []),
+    ).toBe("spotify");
+  });
+
+  it("never treats a write prefix as the source name", () => {
+    expect(resolveSourceKey(["write:coach.weekly"], undefined, [])).toBe(
+      "coach",
+    );
   });
 });
 

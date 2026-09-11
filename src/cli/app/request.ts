@@ -64,6 +64,30 @@ const TERMINAL: ReadonlySet<string> = new Set([
   "expired",
 ]);
 
+/**
+ * The connector source shown on the approval screen.
+ *
+ * It has to come from a scope the person actually connected, not from the
+ * first entry in the list: with a derivative question the derived scope can
+ * come first, and a request for `coach.weekly,spotify.history` would ask
+ * the person to "Connect coach", a source that does not exist. Source
+ * scopes win, then any non-derived scope, and `write:` prefixes never count
+ * as a source name.
+ */
+export function resolveSourceKey(
+  scopes: string[],
+  derived: string | undefined,
+  sourceScopes: string[],
+): string {
+  const namespace = (scope: string) =>
+    scope.replace(/^write:/, "").split(".")[0];
+  if (sourceScopes.length > 0) {
+    return namespace(sourceScopes[0]);
+  }
+  const plain = scopes.filter((scope) => scope !== derived);
+  return namespace((plain[0] ?? scopes[0]) as string);
+}
+
 function splitList(value: string | undefined): string[] {
   return (value ?? "")
     .split(",")
@@ -150,7 +174,7 @@ export async function runAppRequest(
       name: options.appName ?? "Vana CLI",
       homepageUrl: options.appUrl ?? "https://github.com/vana-com/vana-cli",
     },
-    source: scopes[0].replace(/^write:/, "").split(".")[0],
+    source: resolveSourceKey(scopes, options.derived, sourceScopes),
     scopes,
   });
 
