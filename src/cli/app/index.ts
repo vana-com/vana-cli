@@ -10,6 +10,8 @@ import type { Command } from "commander";
 import { runAppEscrowBalance, runAppEscrowFund } from "./escrow.js";
 import { runAppOnchain } from "./onchain.js";
 import { runAppRead } from "./read.js";
+import { runAppAsk } from "./ask.js";
+import { runAppLineage, runAppStatus } from "./derivatives.js";
 import { runAppRegister } from "./register.js";
 import { runAppRequest } from "./request.js";
 import { runAppRequestsList, runAppRequestsShow } from "./requests.js";
@@ -129,6 +131,56 @@ export function registerAppCommands(
     .option("--owner <address>", "Data owner address")
     .action(async (scope: string, commandOptions: { owner?: string }) => {
       process.exitCode = await runAppOnchain(scope, {
+        ...getOptions(),
+        ...commandOptions,
+      });
+    });
+
+  app
+    .command("ask <question>")
+    .description("Ask a question about a person's data, through consent")
+    .option(
+      "--sources <list>",
+      "Comma-separated scopes the answer is computed from",
+    )
+    .option("--derived <scope>", "Scope the answer is written to")
+    .option("--pay", "Settle the derived-scope read from escrow")
+    .option("--max-fee <amount>", "Refuse fees above this, in the fee's asset")
+    .option("--timeout <seconds>", "How long to wait for approval")
+    .option(
+      "--registered",
+      "Use the builder-registered path instead of consent",
+    )
+    .action(
+      async (question: string, commandOptions: Record<string, unknown>) => {
+        process.exitCode = await runAppAsk(question, {
+          ...getOptions(),
+          ...commandOptions,
+        });
+      },
+    );
+
+  app
+    .command("status <derivedScope>")
+    .description("Is the answer coming, and when")
+    .option("--grant <id>", "Grant covering the derived scope")
+    .option("--server <url>", "Personal Server URL")
+    .action(
+      async (derivedScope: string, commandOptions: Record<string, unknown>) => {
+        process.exitCode = await runAppStatus(derivedScope, {
+          ...getOptions(),
+          ...commandOptions,
+        });
+      },
+    );
+
+  app
+    .command("lineage <scope>")
+    .description("Where an answer came from, redacted where it must be")
+    .option("--grant <id>", "Grant covering the scope")
+    .option("--server <url>", "Personal Server URL")
+    .action(async (scope: string, commandOptions: Record<string, unknown>) => {
+      process.exitCode = await runAppLineage(scope, {
         ...getOptions(),
         ...commandOptions,
       });
