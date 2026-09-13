@@ -24,6 +24,13 @@ vana app request --scopes spotify.history          # ask a person
 vana app read spotify.history --grant <id> --pay   # read and pay
 ```
 
+Or ask a question instead of reading raw data, in one command:
+
+```bash
+vana app ask "Which genres did they listen to most this month?" \
+  --sources spotify.history --derived myapp.genres --pay
+```
+
 `request` prints an approval URL and waits. The person opens it, approves,
 and the grant id comes back to the terminal. Nothing else in the loop needs
 a browser.
@@ -69,22 +76,48 @@ vana app requests show dcr_... --json    # did they approve yet?
 `show` refreshes from the service and writes the result down, so once it
 reports a `grantId` that id stays available offline.
 
-### Asking a question instead of reading raw data
+## Asking a question instead of reading raw data
 
-A request can carry a question whose answer is computed on the person's own
-server, so the app never reads the sources:
+Prefer this when you want an answer rather than a dataset. The question is
+computed on the person's own server over sources **your app never reads**;
+you end up holding a grant on the answer only.
 
 ```bash
-vana app request \
-  --scopes spotify.history,coach.weekly \
-  --question "Which genres did they listen to most this month?" \
-  --derived coach.weekly \
+vana app ask "Which genres did they listen to most this month?" \
   --sources spotify.history \
-  --json
+  --derived myapp.genres \
+  --pay --json
 ```
 
-The derived scope must also appear in `--scopes` as a plain read. The CLI
-checks this before sending and tells you if it is missing.
+`ask` runs the whole path for you: it asks the person (same approval URL
+and `--no-input` behavior as `request`), waits for the answer to settle,
+then reads it. The derived scope must be in your own namespace, never
+sharing a first segment with a source.
+
+Two commands let you drive the same path by hand:
+
+```bash
+vana app status myapp.genres --json     # is the answer coming, and when
+vana app lineage myapp.genres --json    # what it was computed from
+```
+
+`status` finds the grant and server from your own request history, so you
+do not have to keep ids around. Its states map onto the exit codes: exit 6
+means pending or recomputing, and the payload names the interval the server
+wants you to wait; exit 0 means ready and the remedy is the read command.
+
+**Do not poll `status` in a tight loop.** It is free to you and it can
+trigger a recompute, which spends inference budget without reading
+anything. Use the interval the server names.
+
+### What it costs
+
+Two separate costs, reported separately:
+
+- the compute itself reports `computeCost: null`, which means **unpriced,
+  not free**; treat a number appearing there as a normal change
+- reading the derived scope is an ordinary billable read, with the same
+  `--pay` and `--max-fee` gates as any other read
 
 ## Reading
 
@@ -151,3 +184,7 @@ Pass `--network mainnet` deliberately, never by habit.
   tried every server they registered.
 - Exit 6 is normal, not a failure. Wait and repeat.
 - A denied request is exit 3 and is final. Do not re-ask in a loop.
+- `ask` stops at whatever `request` returned. Exit 7 there means the person
+  has not approved yet, not that anything failed.
+- A derivative that fails with `source_missing` (exit 5) means the person
+  has not connected a source yet. Retrying will not change that.

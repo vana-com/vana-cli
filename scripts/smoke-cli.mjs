@@ -532,6 +532,25 @@ async function checkAppWhoami() {
   return `address=null, remedy=${json.remedy}, network=${json.network}`;
 }
 
+async function checkAppDerivativeGuards() {
+  // Offline-safe: both refuse before touching the network, and the refusals
+  // are the contract an agent branches on.
+  const status = await runVana(["app", "status", "myapp.summary", "--json"]);
+  const statusJson = assertJson(status.stdout);
+  failIf(
+    status.exitCode !== 2 || statusJson.code !== "bad_usage",
+    `status without a key: exit=${status.exitCode} code=${statusJson.code}`,
+  );
+
+  const ask = await runVana(["app", "ask", "why?", "--json"]);
+  const askJson = assertJson(ask.stdout);
+  failIf(
+    ask.exitCode !== 2 || !/sources/.test(askJson.message ?? ""),
+    `ask without sources: exit=${ask.exitCode} message=${askJson.message}`,
+  );
+  return `status exit=${status.exitCode}, ask exit=${ask.exitCode}, both refuse offline`;
+}
+
 async function checkUnknownCommand() {
   const result = await runVana(["bogus"]);
   failIf(result.exitCode === 0, "unknown command should exit non-zero");
@@ -575,6 +594,7 @@ async function main() {
     ["mcp initialize + tools/list", checkMcp],
     ["logout", checkLogout],
     ["app whoami --json (no key)", checkAppWhoami],
+    ["app status/ask guards", checkAppDerivativeGuards],
     ["unknown command", checkUnknownCommand],
   ];
 
