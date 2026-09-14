@@ -8,7 +8,11 @@ plugins:
   - - "@semantic-release/release-notes-generator"
     - preset: conventionalcommits
   - - "@semantic-release/npm"
-    - npmPublish: true
+    # Version bump only. npm publish happens in its own workflow job after
+    # the GitHub release exists, because semantic-release publishes to npm
+    # before it creates the release, so an npm failure here costs users the
+    # binaries. That is exactly what happened to v0.23.0 and v0.23.1.
+    - npmPublish: false
   - - "@semantic-release/git"
     - assets:
         - package.json
