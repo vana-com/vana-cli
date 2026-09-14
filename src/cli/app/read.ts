@@ -24,6 +24,7 @@ import {
   readPersonalServerData,
   type PersonalServerFetch,
 } from "@opendatalabs/vana-sdk/direct/personal-server-read";
+import { createJobsClient } from "@opendatalabs/vana-sdk/protocol/jobs-client";
 import {
   formatAssetAmount,
   parseAssetAmount,
@@ -45,6 +46,10 @@ import {
   receiptKey,
   type ReceiptsStore,
 } from "../../core/receipts.js";
+import {
+  createRequestsStore,
+  type RequestsStore,
+} from "../../core/requests-store.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
 
 export interface ReadCommandOptions extends AppCommandOptions {
@@ -62,6 +67,9 @@ export interface ReadDeps {
   resolveKey?: typeof resolveAppKey;
   read?: typeof readPersonalServerData;
   receipts?: ReceiptsStore;
+  createJobs?: typeof createJobsClient;
+  /** Access-request records, to learn the delivery path for this grant. */
+  requests?: RequestsStore;
 }
 
 function isPaymentRequired(error: unknown): error is Error & {
@@ -143,7 +151,27 @@ export async function runAppRead(
     return gatewayFailure(options, network, error, "grant lookup");
   }
 
-  // 2. The owner's servers: every active registration, newest first.
+  // 2. Enclave delivery, when the access request says so. The owner's data
+  //    is served by a TEE sandbox through the gateway's blind job queue, so
+  //    there is no server to resolve and no endpoint to pick: the gateway is
+  //    the only address a builder knows. The result comes back encrypted to
+  //    this app's key, which is why the jobs client needs the raw private
+  //    key rather than a signer.
+  const delivery = (deps.requests ?? createRequestsStore())
+    .list({ network: network.name })
+    .find((entry) => entry.grantId === options.grant)?.delivery;
+
+  if (delivery === "enclave") {
+    return runEnclaveRead(scope, options, {
+      network,
+      key,
+      grantId: options.grant,
+      owner: grantorAddress,
+      createJobs: deps.createJobs ?? createJobsClient,
+    });
+  }
+
+  // 3. The owner's servers: every active registration, newest first.
   let serverUrls: string[];
   if (options.server) {
     serverUrls = [options.server];
@@ -395,4 +423,110 @@ function emitReadSuccess(
     );
   }
   return 0;
+}
+
+/**
+ * The enclave leg: submit a raw-read job and wait for the answer.
+ *
+ * Deliberately not paid here. The gateway admits enclave jobs with
+ * `price: '0'` and `paymentState: 'none'`, so there is no fee to settle and
+ * no receipt to store; reporting `paid: false` is the honest answer rather
+ * than implying the read was free by protocol design. When the gateway
+ * starts quoting a price, this is where the escrow path plugs in.
+ *
+ * Waking a cold sandbox takes seconds, so the inline wait is used and a
+ * timeout is `not_ready` (exit 6) rather than a failure.
+ */
+async function runEnclaveRead(
+  scope: string,
+  options: ReadCommandOptions,
+  context: {
+    network: ResolvedNetwork;
+    key: ResolvedAppKey;
+    grantId: string;
+    owner: string;
+    createJobs: typeof createJobsClient;
+  },
+): Promise<number> {
+  const { network, key, grantId, owner } = context;
+  try {
+    const jobs = context.createJobs({
+      gatewayUrl: network.gatewayUrl,
+      chainId: network.chainId,
+      builderPrivateKey: key.privateKey,
+    });
+    const result = await jobs.readRaw({
+      owner: owner as `0x${string}`,
+      grantId: grantId as `0x${string}`,
+      scope,
+      wait: MAX_INLINE_WAIT_SECONDS,
+    });
+
+    const text = new TextDecoder().decode(result.body);
+    let payload: unknown = text;
+    if (result.contentType.includes("json")) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        // Keep the raw text rather than failing on a content-type lie.
+      }
+    }
+
+    return emitReadSuccess(options, network, scope, payload, {
+      paid: false,
+      delivery: "enclave",
+      jobId: result.jobId,
+      version: result.version,
+      server: "gateway job queue",
+    });
+  } catch (error) {
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: enclaveErrorCode(error),
+      message: `Enclave read failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      remedy: enclaveRemedy(error),
+      network: network.name,
+      data: { delivery: "enclave", owner },
+    });
+  }
+}
+
+/** Inline wait the protocol allows; a cold sandbox needs seconds, not ms. */
+const MAX_INLINE_WAIT_SECONDS = 25;
+
+/** Map the jobs client's typed errors onto the binary's exit-code table. */
+function enclaveErrorCode(error: unknown): string {
+  const name = error instanceof Error ? error.name : "";
+  switch (name) {
+    case "OwnerNotReadyError":
+      return "owner_not_ready";
+    case "GrantInvalidError":
+      return "grant_invalid";
+    case "BuilderUnknownError":
+      return "builder_unknown";
+    case "JobTimeoutError":
+      return "not_ready";
+    case "JobTransportError":
+      return "server_unavailable";
+    case "JobRequestTooLargeError":
+      return "bad_usage";
+    default:
+      return "internal";
+  }
+}
+
+function enclaveRemedy(error: unknown): string | undefined {
+  const name = error instanceof Error ? error.name : "";
+  if (name === "OwnerNotReadyError") {
+    return "the owner has not finished Personal Server setup in the web app";
+  }
+  if (name === "JobTimeoutError") {
+    return "the sandbox is still waking; run the same command again";
+  }
+  if (name === "BuilderUnknownError") {
+    return "vana app register";
+  }
+  return undefined;
 }

@@ -152,6 +152,22 @@ Two things worth knowing:
 - In human mode the data goes to stdout alone and the summary to stderr, so
   `vana app read ... | jq` is clean.
 
+## Two delivery paths, one command
+
+Some owners serve their data from a Personal Server they run; others from a
+TEE sandbox reached through the gateway's job queue. **You never choose.**
+`read` takes the path the access request reports and handles both.
+
+What differs, if you see it in the output:
+
+- `delivery: "personal_server"` can cost a fee and produces a receipt
+- `delivery: "enclave"` reports `paid: false`, because the gateway currently
+  admits those jobs at zero price; that is a protocol state, not a promise
+  that enclave reads stay free
+- an enclave read can return exit 6 while the owner's sandbox wakes, which
+  takes seconds. Run the same command again rather than treating it as a
+  failure
+
 ## Paying
 
 ```bash
