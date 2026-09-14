@@ -8,10 +8,7 @@ plugins:
   - - "@semantic-release/release-notes-generator"
     - preset: conventionalcommits
   - - "@semantic-release/npm"
-    # npm publish is off until vanaservices is an owner of the vana-cli
-    # package (only tim_vana is today, publish 403s). Installs come from
-    # GitHub release assets, so nothing user-facing depends on npm.
-    - npmPublish: false
+    - npmPublish: true
   - - "@semantic-release/git"
     - assets:
         - package.json

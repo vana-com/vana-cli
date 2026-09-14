@@ -10,6 +10,14 @@ documented further down.
 
 ## Install
 
+Run it without installing anything:
+
+```bash
+npx vana-cli status
+```
+
+Or install the standalone binary, which is signed and notarized on macOS:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vana-com/vana-cli/main/install/install.sh | sh
 vana status
@@ -17,6 +25,10 @@ vana status
 
 Windows uses `install/install.ps1`. Homebrew (`brew tap vana-com/tap && brew
 install vana`) is still published but lags the installer.
+
+The npm route runs under your own Node, which some endpoint security
+products prefer over an unknown executable; the installer gives you a
+single self-contained binary with no Node required. Both are the same CLI.
 
 ## Two halves
 
