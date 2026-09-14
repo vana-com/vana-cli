@@ -13,6 +13,7 @@ import {
 import { runAppOnchain } from "../../src/cli/app/onchain.js";
 import { appOutcomeSchema } from "../../src/cli/app/outcome.js";
 import { createReceiptsStore, receiptKey } from "../../src/core/receipts.js";
+import { createRequestsStore } from "../../src/core/requests-store.js";
 import type { ResolvedAppKey } from "../../src/core/app-key.js";
 
 const KEY =
@@ -383,6 +384,147 @@ describe("vana app read", () => {
     expect(appOutcomeSchema.parse(JSON.parse(stdout)).code).toBe(
       "server_unavailable",
     );
+  });
+});
+
+describe("vana app read, enclave delivery", () => {
+  /** A request index that says this grant is served by the enclave. */
+  function enclaveRequests() {
+    const store = createRequestsStore(path.join(tempDir, "requests.json"));
+    store.save({
+      requestId: "dcr_e",
+      appAddress: account.address,
+      network: "moksha",
+      gatewayUrl: "https://dp-rpc.moksha.vana.org",
+      scopes: ["github.repos"],
+      approvalUrl: "https://app.vana.org/x",
+      createdAt: new Date().toISOString(),
+      status: "approved",
+      updatedAt: new Date().toISOString(),
+      grantId: GRANT,
+      delivery: "enclave",
+    });
+    return store;
+  }
+
+  it("goes through the gateway job queue, never resolving a server", async () => {
+    let listedServers = false;
+    let submitted: Record<string, unknown> | undefined;
+    const exitCode = await runAppRead(
+      "github.repos",
+      { json: true, grant: GRANT },
+      {
+        resolveKey: () => appKey,
+        requests: enclaveRequests(),
+        receipts: store(),
+        createClient: () =>
+          grantClient({
+            listServersByOwner: async () => {
+              listedServers = true;
+              return { active: [], revoked: [], count: 0 };
+            },
+          }),
+        createJobs: ((options: Record<string, unknown>) => ({
+          readRaw: async (params: Record<string, unknown>) => {
+            submitted = { ...options, ...params };
+            return {
+              v: 1,
+              jobId: "job-1",
+              scope: "github.repos",
+              version: "3",
+              contentType: "application/json",
+              body: new TextEncoder().encode('{"rows":2}'),
+            };
+          },
+        })) as never,
+      },
+    );
+    expect(exitCode).toBe(0);
+    // The whole point of the enclave path: no endpoint is resolved.
+    expect(listedServers).toBe(false);
+    expect(submitted).toMatchObject({
+      owner: OWNER,
+      grantId: GRANT,
+      scope: "github.repos",
+      chainId: 14800,
+    });
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.data).toMatchObject({
+      delivery: "enclave",
+      paid: false,
+      jobId: "job-1",
+      result: { rows: 2 },
+    });
+  });
+
+  it("maps an unprepared owner to exit 5, not to a transport failure", async () => {
+    const exitCode = await runAppRead(
+      "github.repos",
+      { json: true, grant: GRANT },
+      {
+        resolveKey: () => appKey,
+        requests: enclaveRequests(),
+        receipts: store(),
+        createClient: () => grantClient(),
+        createJobs: (() => ({
+          readRaw: async () => {
+            const error = new Error("owner identity is not sealed");
+            error.name = "OwnerNotReadyError";
+            throw error;
+          },
+        })) as never,
+      },
+    );
+    expect(exitCode).toBe(5);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.code).toBe("owner_not_ready");
+    expect(outcome.remedy).toContain("Personal Server setup");
+  });
+
+  it("treats a waking sandbox as not ready, worth retrying", async () => {
+    const exitCode = await runAppRead(
+      "github.repos",
+      { json: true, grant: GRANT },
+      {
+        resolveKey: () => appKey,
+        requests: enclaveRequests(),
+        receipts: store(),
+        createClient: () => grantClient(),
+        createJobs: (() => ({
+          readRaw: async () => {
+            const error = new Error("timed out");
+            error.name = "JobTimeoutError";
+            throw error;
+          },
+        })) as never,
+      },
+    );
+    expect(exitCode).toBe(6);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).code).toBe("not_ready");
+  });
+
+  it("still uses the personal server path when delivery says so", async () => {
+    let usedPersonalServer = false;
+    const exitCode = await runAppRead(
+      "github.repos",
+      { json: true, grant: GRANT },
+      {
+        resolveKey: () => appKey,
+        // No delivery recorded: the personal_server path is the default.
+        requests: createRequestsStore(path.join(tempDir, "plain.json")),
+        receipts: store(),
+        createClient: () => grantClient(),
+        read: async () => {
+          usedPersonalServer = true;
+          return { data: { ok: true } };
+        },
+        createJobs: (() => {
+          throw new Error("jobs client must not be used here");
+        }) as never,
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(usedPersonalServer).toBe(true);
   });
 });
 
