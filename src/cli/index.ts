@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
 import os from "node:os";
 
@@ -4651,11 +4652,33 @@ export function getCliChannel(version = getCliVersion()): "stable" | "canary" {
     : "stable";
 }
 
+function normalizePathForMatch(value: string): string {
+  return value.replace(/\\/g, "/").toLowerCase();
+}
+
+/** Where this file itself sits, which is what separates npm from a checkout. */
+function getOwnModulePath(): string {
+  try {
+    return fileURLToPath(import.meta.url);
+  } catch {
+    return "";
+  }
+}
+
+/** True when the CLI is running out of an npm install or an npx cache. */
+function isPackagedUnderNodeModules(normalizedPath: string): boolean {
+  return (
+    normalizedPath.includes("/node_modules/vana-cli/") ||
+    normalizedPath.includes("/_npx/")
+  );
+}
+
 export function getCliInstallMethod(
   execPath = process.execPath,
+  modulePath = getOwnModulePath(),
 ): CliInstallMethod {
-  const candidates = [process.env.VANA_APP_ROOT ?? "", execPath].map((value) =>
-    value.replace(/\\/g, "/").toLowerCase(),
+  const candidates = [process.env.VANA_APP_ROOT ?? "", execPath].map(
+    normalizePathForMatch,
   );
 
   for (const normalizedPath of candidates) {
@@ -4672,6 +4695,22 @@ export function getCliInstallMethod(
       /\/releases\/[^/]+\/app$/.test(normalizedPath)
     ) {
       return "installer";
+    }
+  }
+
+  // npm and npx both run under the user's own node, so execPath looks exactly
+  // like a development checkout. Only the package's own location tells them
+  // apart, and getting it wrong costs an npm user every update notification.
+  if (
+    modulePath &&
+    isPackagedUnderNodeModules(normalizePathForMatch(modulePath))
+  ) {
+    return "npm";
+  }
+
+  for (const normalizedPath of candidates) {
+    if (!normalizedPath) {
+      continue;
     }
     if (
       normalizedPath.endsWith("/node") ||
@@ -4709,6 +4748,8 @@ export function formatInstallMethodLabel(method: CliInstallMethod): string {
       return "Homebrew";
     case "installer":
       return "Hosted installer";
+    case "npm":
+      return "npm";
     case "development":
       return "Development checkout";
     default:
@@ -4719,8 +4760,22 @@ export function formatInstallMethodLabel(method: CliInstallMethod): string {
 export function getLifecycleCommands(
   installMethod: CliInstallMethod,
   channel: CliChannel,
+  modulePath = getOwnModulePath(),
 ): { upgrade: string; uninstall: string } {
   switch (installMethod) {
+    case "npm":
+      // npx installs nothing, so there is nothing to upgrade or remove:
+      // asking for @latest is the whole update story there.
+      return normalizePathForMatch(modulePath).includes("/_npx/")
+        ? {
+            upgrade: "npx vana-cli@latest",
+            uninstall:
+              "npx leaves nothing installed. Remove ~/.vana for any state you no longer need.",
+          }
+        : {
+            upgrade: "npm install -g vana-cli@latest",
+            uninstall: "npm uninstall -g vana-cli",
+          };
     case "homebrew":
       return {
         upgrade: "brew update && brew upgrade vana",

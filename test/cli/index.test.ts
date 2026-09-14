@@ -865,6 +865,55 @@ describe("runCli", () => {
     }
   });
 
+  it("calls an npm install npm, not a development checkout", async () => {
+    // An npm or npx run uses the user's own node, so process.execPath is
+    // indistinguishable from a checkout. Getting this wrong suppresses every
+    // update notification, because the notifier stays quiet in development.
+    const { getCliInstallMethod, getLifecycleCommands } =
+      await import("../../src/cli/index.js");
+
+    expect(
+      getCliInstallMethod(
+        "/usr/local/bin/node",
+        "/work/proj/node_modules/vana-cli/dist/cli/index.js",
+      ),
+    ).toBe("npm");
+    expect(
+      getCliInstallMethod(
+        "/usr/local/bin/node",
+        "/Users/x/.npm/_npx/9a1/node_modules/vana-cli/dist/cli/index.js",
+      ),
+    ).toBe("npm");
+    expect(
+      getCliInstallMethod(
+        "/usr/local/bin/node",
+        "/work/vana-cli/dist/cli/index.js",
+      ),
+    ).toBe("development");
+    // An installed binary still wins over the module path.
+    expect(
+      getCliInstallMethod(
+        "/home/x/.local/share/vana/current/app",
+        "/work/proj/node_modules/vana-cli/dist/cli/index.js",
+      ),
+    ).toBe("installer");
+
+    expect(
+      getLifecycleCommands(
+        "npm",
+        "stable",
+        "/work/proj/node_modules/vana-cli/x.js",
+      ).upgrade,
+    ).toBe("npm install -g vana-cli@latest");
+    expect(
+      getLifecycleCommands(
+        "npm",
+        "stable",
+        "/Users/x/.npm/_npx/9a1/n/vana-cli/x.js",
+      ).upgrade,
+    ).toBe("npx vana-cli@latest");
+  });
+
   it("shows operational commands in top-level help", async () => {
     const { runCli } = await import("../../src/cli/index.js");
     const exitCode = await runCli(["node", "vana", "--help"]);

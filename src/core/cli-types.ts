@@ -34,6 +34,7 @@ export type CliChannel = z.infer<typeof cliChannelSchema>;
 export const cliInstallMethodSchema = z.enum([
   "homebrew",
   "installer",
+  "npm",
   "development",
   "unknown",
 ]);
