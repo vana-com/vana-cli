@@ -258,6 +258,33 @@ jobs:
           mapfile -t RELEASE_FILES < <(node ./scripts/collect-release-assets.mjs)
           gh release upload "$RELEASE_TAG" "${RELEASE_FILES[@]}" --clobber
 
+  # Phase 4: npm, on purpose after the GitHub release and on purpose unable
+  # to fail the release. npm has been the flakiest link in this pipeline -
+  # an expired token, then package ownership, now token scope - and none of
+  # that should cost users the binaries the release job already built.
+  publish-npm:
+    needs: [resolve-version, release]
+    if: needs.resolve-version.outputs.new-release-published == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 25
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm pack:check
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
   verify-release-install:
     needs: release
     runs-on: ubuntu-latest
