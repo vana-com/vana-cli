@@ -283,7 +283,12 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        # The tag has to be explicit. This package name carries versions
+        # 1.0.0-1.1.0 from an unrelated alpha CLI published in 2025, so every
+        # version this project will ever cut is numerically lower and npm
+        # refuses to move `latest` backwards unless it is told to. `latest`
+        # already points at the 0.15.x line, which is this CLI.
+        run: npm publish --access public --tag latest
 
   verify-release-install:
     needs: release
