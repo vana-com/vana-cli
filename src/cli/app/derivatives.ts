@@ -242,9 +242,15 @@ export async function runAppStatus(
 }
 
 /**
- * A 404 from this route does not mean the answer is missing, it means the
- * server has no derivative endpoints at all. Saying "Not found" sends people
- * looking for a lost answer instead of at the server's version.
+ * A 404 here does not mean the answer is missing, it means the route is not
+ * there. Measured against a live Personal Server 1.12.0: an unknown path
+ * answers 404, `/v1/derivatives/questions` answers 401, and
+ * `/v1/derivatives/status` answers 404. So the server accepts questions but
+ * does not report their progress, and updating it does not change that -
+ * the gap is in the Personal Server, not in the install.
+ *
+ * Saying "Not found" sent people hunting for a lost answer, and telling them
+ * to update the server sent them somewhere that does not help either.
  */
 function describeDerivativeFailure(
   what: "status" | "lineage",
@@ -254,8 +260,8 @@ function describeDerivativeFailure(
   const detail = error instanceof Error ? error.message : String(error);
   if (/not found|404/i.test(detail)) {
     return {
-      message: `${personalServerUrl} has no derivative ${what} endpoint, so it is too old to answer questions.`,
-      remedy: "update the Personal Server, then retry",
+      message: `${personalServerUrl} does not implement the derivative ${what} route, so it cannot report on an answer it may still be computing.`,
+      remedy: "read the derived scope directly once you expect it to be ready",
     };
   }
   return { message: `Could not read the derivative ${what}: ${detail}` };
