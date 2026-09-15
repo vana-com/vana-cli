@@ -242,15 +242,16 @@ export async function runAppStatus(
 }
 
 /**
- * A 404 here does not mean the answer is missing, it means the route is not
- * there. Measured against a live Personal Server 1.12.0: an unknown path
- * answers 404, `/v1/derivatives/questions` answers 401, and
- * `/v1/derivatives/status` answers 404. So the server accepts questions but
- * does not report their progress, and updating it does not change that -
- * the gap is in the Personal Server, not in the install.
+ * A 404 here does not mean the answer is missing, it means the server has
+ * no derivative status route. The route ships in personal-server-ts 1.14.0
+ * and later (personal-server-ts-core answers GET /v1/derivatives/status);
+ * a server that answers 404 is running an older build. On the Desktop app
+ * the server version is whatever the app pins, so the fix is an app update
+ * once a release carries a new enough pin.
  *
- * Saying "Not found" sent people hunting for a lost answer, and telling them
- * to update the server sent them somewhere that does not help either.
+ * Measured with an unknown path as the control: an unknown path answers 404,
+ * /v1/derivatives/questions answers 401, /v1/derivatives/status answers 404
+ * on 1.12.0, which is what desktop 1.36.0 bundled.
  */
 function describeDerivativeFailure(
   what: "status" | "lineage",
@@ -260,8 +261,9 @@ function describeDerivativeFailure(
   const detail = error instanceof Error ? error.message : String(error);
   if (/not found|404/i.test(detail)) {
     return {
-      message: `${personalServerUrl} does not implement the derivative ${what} route, so it cannot report on an answer it may still be computing.`,
-      remedy: "read the derived scope directly once you expect it to be ready",
+      message: `${personalServerUrl} runs a Personal Server older than 1.14.0, which has no derivative ${what} route.`,
+      remedy:
+        "ask the owner to update their Personal Server (on the Desktop app, update the app); until then read the derived scope directly once you expect it to be ready",
     };
   }
   return { message: `Could not read the derivative ${what}: ${detail}` };
