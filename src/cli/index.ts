@@ -3566,12 +3566,22 @@ async function runServerSync(options: GlobalOptions): Promise<number> {
         !entry.scopeResults ||
         entry.scopeResults.every((sr) => sr.status === "stored"),
     );
-    emit.success(`Synced ${syncResult.syncedCount} dataset(s).`);
-    emit.blank();
-    if (allStored) {
-      emit.next("vana data list");
+    if (storedScopeCount === 0 && failedScopeCount > 0) {
+      // A success tick here reads as done to a person and exits 0 to a
+      // script, when in fact nothing reached the server at all.
+      emit.info(
+        `${renderer.theme.error("✗")} Synced nothing: ${failedScopeCount} scope(s) failed.`,
+      );
+      emit.blank();
+      emit.next("vana doctor");
     } else {
-      emit.next("vana server sync");
+      emit.success(
+        failedScopeCount > 0
+          ? `Synced ${syncResult.syncedCount} dataset(s), ${failedScopeCount} scope(s) failed.`
+          : `Synced ${syncResult.syncedCount} dataset(s).`,
+      );
+      emit.blank();
+      emit.next(allStored ? "vana data list" : "vana server sync");
     }
   }
   trackActiveTelemetryEvent("server_sync_completed", {
@@ -3579,7 +3589,9 @@ async function runServerSync(options: GlobalOptions): Promise<number> {
     failedScopeCount,
     metadata: { syncedSources: syncResult.syncedCount },
   });
-  return 0;
+  // Nothing stored and something failed is a failed run, whatever the
+  // per-scope lines said.
+  return storedScopeCount === 0 && failedScopeCount > 0 ? 1 : 0;
 }
 
 async function runServerData(
@@ -3656,6 +3668,12 @@ async function runServerData(
     if (target.state !== "available") {
       emit.detail(
         "Personal Server is not available. Showing locally-known scopes only.",
+      );
+    } else if (!didQueryRemoteScopes) {
+      // The server is up but was never asked, so an empty list here is not
+      // evidence that the server holds nothing.
+      emit.detail(
+        "The server was not queried, so this is only what this machine knows. Run `vana login` to read what the server actually holds.",
       );
     }
     return 0;

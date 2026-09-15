@@ -235,12 +235,30 @@ export async function runAppStatus(
     return emitAppOutcome(options, {
       status: "failed",
       code: "server_unavailable",
-      message: `Could not read the derivative status: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      ...describeDerivativeFailure("status", error, personalServerUrl),
       network: network.name,
     });
   }
+}
+
+/**
+ * A 404 from this route does not mean the answer is missing, it means the
+ * server has no derivative endpoints at all. Saying "Not found" sends people
+ * looking for a lost answer instead of at the server's version.
+ */
+function describeDerivativeFailure(
+  what: "status" | "lineage",
+  error: unknown,
+  personalServerUrl: string,
+): { message: string; remedy?: string } {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (/not found|404/i.test(detail)) {
+    return {
+      message: `${personalServerUrl} has no derivative ${what} endpoint, so it is too old to answer questions.`,
+      remedy: "update the Personal Server, then retry",
+    };
+  }
+  return { message: `Could not read the derivative ${what}: ${detail}` };
 }
 
 export async function runAppLineage(
@@ -273,9 +291,7 @@ export async function runAppLineage(
     return emitAppOutcome(options, {
       status: "failed",
       code: "server_unavailable",
-      message: `Could not read the lineage: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      ...describeDerivativeFailure("lineage", error, personalServerUrl),
       network: network.name,
     });
   }
