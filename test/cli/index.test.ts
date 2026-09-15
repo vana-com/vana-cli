@@ -73,6 +73,7 @@ let runConnectorEvents: Array<Record<string, unknown>> = [];
 const mockRunSelfHostedLoginFlow = vi.fn();
 const mockRunDeviceCodeFlow = vi.fn();
 const mockSaveCredentials = vi.fn();
+const mockLoadCredentials = vi.fn(() => null);
 
 vi.mock("../../src/runtime/index.js", () => ({
   findDataConnectorsDir: vi.fn(() => "/tmp/data-connectors"),
@@ -219,6 +220,15 @@ vi.mock("../../src/cli/auth.js", async () => {
     runDeviceCodeFlow: mockRunDeviceCodeFlow,
     runSelfHostedLoginFlow: mockRunSelfHostedLoginFlow,
     saveCredentials: mockSaveCredentials,
+    // Default to the real implementation; individual tests override it with
+    // mockReturnValueOnce when they need a specific credential state.
+    loadCredentials: (...args: unknown[]) =>
+      mockLoadCredentials(...(args as [])) ??
+      (
+        actual as {
+          loadCredentials: (...a: unknown[]) => unknown;
+        }
+      ).loadCredentials(...args),
   };
 });
 
@@ -863,6 +873,36 @@ describe("runCli", () => {
         process.env.VANA_APP_ROOT = originalAppRoot;
       }
     }
+  });
+
+  it("reports the Personal Server it would use, not a bare null", async () => {
+    // The account token flow never carries a Personal Server session, so the
+    // stored credential is null for everyone who logs in with an account.
+    // Printing that verbatim told people with a healthy running server that
+    // they had none.
+    mockLoadCredentials.mockReturnValueOnce({
+      account: {
+        address: "0xbffbd3316ef8c6d8b8046151228c09840ae08d48",
+        session_token: "t",
+        expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+      },
+      personal_server: null,
+    } as never);
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "available",
+      url: "http://localhost:8080",
+      source: "scan",
+    });
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "login", "--json"]);
+
+    expect(exitCode).toBe(0);
+    const payload = JSON.parse(stdout);
+    expect(payload.personal_server).toMatchObject({
+      url: "http://localhost:8080",
+      authenticated: false,
+    });
   });
 
   it("calls an npm install npm, not a development checkout", async () => {

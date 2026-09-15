@@ -3594,6 +3594,37 @@ async function runServerSync(options: GlobalOptions): Promise<number> {
   return storedScopeCount === 0 && failedScopeCount > 0 ? 1 : 0;
 }
 
+/**
+ * What `login` should say about the Personal Server.
+ *
+ * The stored `personal_server` credential is only ever filled by a
+ * self-hosted login, because the account token flow carries no Personal
+ * Server session. Reporting that field directly meant a person with a
+ * healthy, running server was told `personal_server: null`, which reads as
+ * "you do not have one". This reports the server the CLI would actually
+ * talk to, and says plainly whether the CLI holds a session for it.
+ */
+async function describeLoginPersonalServer(
+  credentialed: { url: string } | null | undefined,
+): Promise<{ url: string; authenticated: boolean; source: string } | null> {
+  if (credentialed?.url) {
+    return { url: credentialed.url, authenticated: true, source: "login" };
+  }
+  try {
+    const target = await detectPersonalServerTarget();
+    if (target.state === "available" && target.url) {
+      return {
+        url: target.url,
+        authenticated: false,
+        source: target.source ?? "detected",
+      };
+    }
+  } catch {
+    // Detection is a courtesy here; never fail a good login over it.
+  }
+  return null;
+}
+
 async function runServerData(
   scope: string | undefined,
   options: GlobalOptions,
@@ -6406,7 +6437,9 @@ async function runLogin(
         `${JSON.stringify({
           status: "authenticated",
           address: existing.account.address,
-          personal_server: existing.personal_server?.url ?? null,
+          personal_server: await describeLoginPersonalServer(
+            existing.personal_server,
+          ),
           expires_at: existing.account.expires_at,
         })}\n`,
       );
@@ -6415,11 +6448,16 @@ async function runLogin(
       emit.success(
         `Already logged in as ${formatAddress(existing.account.address)}`,
       );
-      if (existing.personal_server) {
+      const server = await describeLoginPersonalServer(
+        existing.personal_server,
+      );
+      if (server) {
         emit.keyValue(
           "Personal Server",
-          existing.personal_server.url,
-          "success",
+          server.authenticated
+            ? server.url
+            : `${server.url} (no session; run \`vana login --server ${server.url}\` to read it)`,
+          server.authenticated ? "success" : "warning",
         );
       }
       emit.info(
@@ -6486,7 +6524,9 @@ async function runLogin(
         `${JSON.stringify({
           status: "authenticated",
           address: creds.account.address,
-          personal_server: creds.personal_server?.url ?? null,
+          personal_server: await describeLoginPersonalServer(
+            creds.personal_server,
+          ),
           expires_at: creds.account.expires_at,
         })}\n`,
       );
