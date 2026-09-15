@@ -6494,7 +6494,7 @@ async function runLogin(
           );
         },
       },
-      { clientId },
+      { clientId, openBrowser: false },
     );
 
     if (creds) {
@@ -6606,7 +6606,10 @@ async function runLogin(
         renderer.next("vana login");
       },
     },
-    { clientId },
+    {
+      clientId,
+      openBrowser: Boolean(process.stdout.isTTY) && !options.noInput,
+    },
   );
 
   renderer.cleanup();
