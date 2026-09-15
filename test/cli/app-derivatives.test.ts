@@ -165,6 +165,27 @@ describe("vana app status", () => {
     );
   });
 
+  it("names the server version when the status route is missing", async () => {
+    // A 404 on /v1/derivatives/status means personal-server-ts older than
+    // 1.14.0, which is what an out-of-date Desktop app bundles. Saying
+    // "Not found" sent people looking for a lost answer.
+    const exitCode = await runAppStatus(
+      DERIVED,
+      { json: true },
+      {
+        resolveKey: () => appKey,
+        requests: storeWithGrant(),
+        status: (async () => {
+          throw new Error("Derivative status read failed: Not found");
+        }) as never,
+      },
+    );
+    expect(exitCode).toBe(5);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.message).toContain("older than 1.14.0");
+    expect(outcome.remedy).toContain("update");
+  });
+
   it("refuses with exit 3 when nothing grants the scope", async () => {
     const exitCode = await runAppStatus(
       DERIVED,
