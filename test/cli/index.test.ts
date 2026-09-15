@@ -4382,7 +4382,11 @@ describe("runCli", () => {
     const { runCli } = await import("../../src/cli/index.js");
     const exitCode = await runCli(["node", "vana", "server", "sync"]);
 
-    expect(exitCode).toBe(0);
+    // Every scope failed, so nothing reached the server. Claiming success
+    // here would exit 0 to a script that is checking whether the sync worked.
+    expect(exitCode).toBe(1);
+    expect(stdout).toContain("Synced nothing");
+    expect(stdout).not.toContain("Synced 1 dataset(s).");
     expect(stdout).toContain("youtube.playlist_items");
     expect(stdout).toContain("Unsupported scope");
     expect(stdout).toContain("Authentication required");
