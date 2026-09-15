@@ -83,7 +83,7 @@ export function registerAppCommands(
     .description("Read granted data from the owner's Personal Server")
     .option("--grant <id>", "Grant id covering the scope")
     .option("--pay", "Settle a 402 payment from escrow")
-    .option("--max-fee <vana>", "Refuse fees above this amount, in VANA")
+    .option("--max-fee <amount>", "Refuse fees above this, in the fee's asset")
     .option("--server <url>", "Explicit Personal Server URL")
     .action(
       async (
@@ -114,7 +114,7 @@ export function registerAppCommands(
   escrow
     .command("fund")
     .description(
-      "Deposit VANA into escrow (on-chain tx + gateway registration)",
+      "Deposit into escrow, native VANA or an ERC20 (on-chain tx + gateway registration)",
     )
     .option("--amount <amount>", "Amount to deposit, in the asset's units")
     .option("--asset <address>", "ERC20 to deposit instead of native VANA")
