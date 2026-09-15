@@ -287,6 +287,14 @@ export type DeviceCodePollResponse =
 
 export interface DeviceCodeFlowOptions {
   clientId?: string;
+  /**
+   * Whether this run may take over the user's browser. False for
+   * `--no-input`, `--json`, `--quiet` and anything without a TTY: those
+   * callers asked for a URL to hand somewhere else, and opening a tab there
+   * also starts a second attempt on the same one-time code, which makes
+   * whichever tab finishes second fail.
+   */
+  openBrowser?: boolean;
 }
 
 interface DeviceCodeFlowCallbacks {
@@ -733,8 +741,9 @@ export async function runDeviceCodeFlow(
 
     callbacks.onCode(deviceCode.user_code, flow.verificationUri);
 
-    // Try to open browser
-    openBrowser(flow.verificationUri);
+    if (options.openBrowser !== false) {
+      openBrowser(flow.verificationUri);
+    }
 
     callbacks.onWaiting();
 

@@ -598,7 +598,33 @@ describe("runCli", () => {
     expect(exitCode).toBe(0);
     expect(mockRunDeviceCodeFlow).toHaveBeenCalledWith(expect.any(Object), {
       clientId: "custom-cli",
+      // No TTY under the test runner, so the flow must not take over a
+      // browser: a second tab on a one-time code makes one of them fail.
+      openBrowser: false,
     });
+  });
+
+  it("does not open a browser when the caller asked for a URL instead", async () => {
+    mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+      const creds = {
+        account: {
+          address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          session_token: "vana_account_session",
+          expires_at: "2026-04-22T19:25:14.420Z",
+        },
+        personal_server: null,
+      };
+      await callbacks.onAuthorized(creds);
+      return creds;
+    });
+
+    const { runCli } = await import("../../src/cli/index.js");
+    await runCli(["node", "vana", "login", "--json"]);
+
+    expect(mockRunDeviceCodeFlow).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ openBrowser: false }),
+    );
   });
 
   it("keeps a pinned Personal Server URL when the same/no prior account logs in without PS info", async () => {
