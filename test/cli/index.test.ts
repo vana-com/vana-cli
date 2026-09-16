@@ -980,6 +980,61 @@ describe("runCli", () => {
     ).toBe("npx vana-cli@latest");
   });
 
+  it("schedules an absolute interpreter, never a name off PATH", async () => {
+    // A scheduler inherits no PATH. Scheduling the `vana` shim resolved its
+    // `#!/usr/bin/env node` shebang against launchd's PATH, found no node,
+    // and logged `env: node: No such file or directory` instead of running.
+    const { resolveScheduledCommand, ScheduleTargetUnstableError } =
+      await import("../../src/cli/index.js");
+
+    expect(
+      resolveScheduledCommand(
+        "installer",
+        "/home/x/.local/share/vana/current/app",
+        "",
+      ),
+    ).toEqual(["/home/x/.local/share/vana/current/app"]);
+
+    expect(
+      resolveScheduledCommand(
+        "npm",
+        "/Users/x/.nvm/versions/node/v24.14.1/bin/node",
+        "/work/proj/node_modules/vana-cli/dist/cli/bin.js",
+      ),
+    ).toEqual([
+      "/Users/x/.nvm/versions/node/v24.14.1/bin/node",
+      "/work/proj/node_modules/vana-cli/dist/cli/bin.js",
+    ]);
+
+    // npm is free to evict the npx cache, so that schedule would rot.
+    expect(() =>
+      resolveScheduledCommand(
+        "npm",
+        "/usr/local/bin/node",
+        "/Users/x/.npm/_npx/9a1/node_modules/vana-cli/dist/cli/bin.js",
+      ),
+    ).toThrow(ScheduleTargetUnstableError);
+
+    expect(() =>
+      resolveScheduledCommand("development", "/usr/local/bin/node", "vana"),
+    ).toThrow(ScheduleTargetUnstableError);
+  });
+
+  it("writes a launchd plist that resolves nothing at run time", async () => {
+    const { generateLaunchdPlist } = await import("../../src/cli/index.js");
+    const plist = generateLaunchdPlist(
+      ["/Users/x/.nvm/versions/node/v24.14.1/bin/node", "/opt/vana/bin.js"],
+      86400,
+    );
+
+    expect(plist).toContain(
+      "<string>/Users/x/.nvm/versions/node/v24.14.1/bin/node</string>",
+    );
+    expect(plist).toContain("<string>/opt/vana/bin.js</string>");
+    expect(plist).not.toMatch(/<string>(\/usr\/bin\/)?env<\/string>/);
+    expect(plist).toContain("<integer>86400</integer>");
+  });
+
   it("shows operational commands in top-level help", async () => {
     const { runCli } = await import("../../src/cli/index.js");
     const exitCode = await runCli(["node", "vana", "--help"]);

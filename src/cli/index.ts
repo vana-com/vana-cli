@@ -1760,8 +1760,8 @@ async function runConnect(
       successSummary = `Collected your ${displayName} data and saved it locally.`;
     }
 
-    // Auto-schedule collection if no schedule exists (non-blocking)
-    await maybeAutoSchedule(emit, options).catch(() => {});
+    const hasSchedule =
+      (await getExistingScheduleInterval().catch(() => null)) !== null;
 
     // --- Phase 7: Success summary ---
     renderer?.success(`Connected ${displayName}.`);
@@ -1794,6 +1794,12 @@ async function runConnect(
       renderer?.next("vana sources");
     } else {
       renderer?.next(`vana data show ${source}`);
+    }
+
+    if (!hasSchedule) {
+      renderer?.detail(
+        "Keep this fresh automatically — run `vana schedule add` to collect on a schedule.",
+      );
     }
 
     // Suggest skills if not yet installed
@@ -5529,6 +5535,17 @@ const LAUNCHD_PLIST_PATH = path.join(
 const CRONTAB_MARKER = "# vana-scheduled-collection";
 const WINDOWS_TASK_NAME = "VanaScheduledCollection";
 
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function quoteForShell(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function parseIntervalSeconds(interval: string): number {
   const lower = interval.toLowerCase().trim();
   const match = /^(\d+)\s*(h|d|m|w)$/i.exec(lower);
@@ -5552,22 +5569,40 @@ function formatIntervalHuman(seconds: number): string {
   return `${Math.round(seconds / 86400)}d`;
 }
 
-function resolveVanaBinaryPath(): string {
-  // For SEA binaries, process.execPath is the binary itself
-  const installMethod = getCliInstallMethod();
+export class ScheduleTargetUnstableError extends Error {}
+
+/**
+ * The argv a scheduler should run, every element an absolute path.
+ *
+ * launchd, cron and Task Scheduler inherit none of the shell's PATH, so the
+ * `vana` on `$PATH` is the wrong answer twice over: under npm it is a shim
+ * whose `#!/usr/bin/env node` shebang cannot find a version-managed node,
+ * and the scheduler only reports it as `env: node: No such file or
+ * directory`. Naming the interpreter and the script outright removes the
+ * lookup entirely.
+ */
+export function resolveScheduledCommand(
+  installMethod: CliInstallMethod = getCliInstallMethod(),
+  execPath = process.execPath,
+  entryScript = process.argv[1],
+): string[] {
+  // A SEA binary is its own interpreter; there is no script to pass.
   if (installMethod === "homebrew" || installMethod === "installer") {
-    return process.execPath;
+    return [execPath];
   }
-  // For development, try to find the vana binary via which/where
-  try {
-    const cmd = process.platform === "win32" ? "where vana" : "which vana";
-    const result = execSync(cmd, { encoding: "utf8" }).trim();
-    // `where` on Windows may return multiple lines; take the first
-    return result.split("\n")[0].trim();
-  } catch {
-    // Fall back to process.execPath + argv[1]
-    return `${process.execPath} ${process.argv[1]}`;
+  if (!entryScript || !path.isAbsolute(entryScript)) {
+    throw new ScheduleTargetUnstableError(
+      "Could not work out which file to schedule.",
+    );
   }
+  // npx unpacks into a cache npm is free to evict, so a schedule pointing
+  // there works until it silently does not.
+  if (normalizePathForMatch(entryScript).includes("/_npx/")) {
+    throw new ScheduleTargetUnstableError(
+      "This CLI is running from an npx cache, which npm may delete at any time.",
+    );
+  }
+  return [execPath, entryScript];
 }
 
 async function getExistingScheduleInterval(): Promise<number | null> {
@@ -5616,34 +5651,14 @@ async function getExistingScheduleInterval(): Promise<number | null> {
   return null;
 }
 
-async function maybeAutoSchedule(
-  emit: Emitter,
-  options: GlobalOptions,
-): Promise<void> {
-  // Skip if --no-input (detached/agent context shouldn't create schedules)
-  if (options.noInput) return;
-  // Skip unsupported platforms
-  if (!["darwin", "linux", "win32"].includes(process.platform)) return;
-
-  const existing = await getExistingScheduleInterval();
-  if (existing !== null) return; // Schedule already exists
-
-  await runScheduleAdd("daily", { json: false, quiet: true });
-  emit.detail("Auto-scheduled daily collection.");
-}
-
-function generateLaunchdPlist(
-  vanaBinary: string,
+export function generateLaunchdPlist(
+  vanaCommand: string[],
   intervalSeconds: number,
 ): string {
   const logsPath = path.join(getLogsDir(), "schedule.log");
-  // Handle the case where vanaBinary might contain a space (node + script)
-  const programArgs = vanaBinary.includes(" ")
-    ? vanaBinary
-        .split(" ")
-        .map((arg) => `    <string>${arg}</string>`)
-        .join("\n")
-    : `    <string>${vanaBinary}</string>`;
+  const programArgs = vanaCommand
+    .map((arg) => `    <string>${escapeXml(arg)}</string>`)
+    .join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -5662,9 +5677,9 @@ ${programArgs}
   <key>StartInterval</key>
   <integer>${intervalSeconds}</integer>
   <key>StandardOutPath</key>
-  <string>${logsPath}</string>
+  <string>${escapeXml(logsPath)}</string>
   <key>StandardErrorPath</key>
-  <string>${logsPath}</string>
+  <string>${escapeXml(logsPath)}</string>
   <key>RunAtLoad</key>
   <true/>
 </dict>
@@ -5673,7 +5688,7 @@ ${programArgs}
 }
 
 function generateCrontabEntry(
-  vanaBinary: string,
+  vanaCommand: string[],
   intervalHours: number,
 ): string {
   const logsPath = path.join(getLogsDir(), "schedule.log");
@@ -5681,7 +5696,8 @@ function generateCrontabEntry(
   const dayExpr = "*";
   const hourInterval =
     intervalHours >= 24 ? "0" : intervalHours >= 1 ? `*/${intervalHours}` : "*";
-  return `${hourExpr} ${hourInterval} ${dayExpr} * * ${vanaBinary} collect --all --quiet --no-input >> ${logsPath} 2>&1 ${CRONTAB_MARKER}`;
+  const program = vanaCommand.map((arg) => quoteForShell(arg)).join(" ");
+  return `${hourExpr} ${hourInterval} ${dayExpr} * * ${program} collect --all --quiet --no-input >> ${quoteForShell(logsPath)} 2>&1 ${CRONTAB_MARKER}`;
 }
 
 async function runScheduleAdd(
@@ -5691,13 +5707,26 @@ async function runScheduleAdd(
   const emit = createEmitter(options);
   const intervalSeconds = parseIntervalSeconds(interval);
   const intervalLabel = formatIntervalHuman(intervalSeconds);
-  const vanaBinary = resolveVanaBinaryPath();
+
+  let vanaCommand: string[];
+  try {
+    vanaCommand = resolveScheduledCommand();
+  } catch (error) {
+    if (!(error instanceof ScheduleTargetUnstableError)) {
+      throw error;
+    }
+    emit.info(`Cannot schedule collection. ${error.message}`);
+    emit.detail(
+      "Install the CLI first (`npm install -g vana-cli`), then run `vana schedule add` from that install.",
+    );
+    return 1;
+  }
 
   await fsp.mkdir(getLogsDir(), { recursive: true });
 
   if (process.platform === "darwin") {
     // macOS: launchd
-    const plist = generateLaunchdPlist(vanaBinary, intervalSeconds);
+    const plist = generateLaunchdPlist(vanaCommand, intervalSeconds);
     const plistDir = path.dirname(LAUNCHD_PLIST_PATH);
     await fsp.mkdir(plistDir, { recursive: true });
 
@@ -5743,7 +5772,7 @@ async function runScheduleAdd(
     // Linux: cron doesn't defer missed jobs (unlike launchd), so we run
     // hourly and let isCollectionDue() filter per-source. This way a
     // missed 2am tick self-heals at 3am instead of waiting 24h.
-    const entry = generateCrontabEntry(vanaBinary, 1);
+    const entry = generateCrontabEntry(vanaCommand, 1);
 
     try {
       // Read existing crontab, filter out old vana entries, add new one
@@ -5792,7 +5821,7 @@ async function runScheduleAdd(
   if (process.platform === "win32") {
     // Windows: Task Scheduler
     const intervalMinutes = Math.max(1, Math.round(intervalSeconds / 60));
-    const trCmd = `\\"${vanaBinary}\\" collect --all --quiet --no-input`;
+    const trCmd = `${vanaCommand.map((arg) => `\\"${arg}\\"`).join(" ")} collect --all --quiet --no-input`;
 
     try {
       try {
