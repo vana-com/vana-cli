@@ -304,7 +304,7 @@ Make sure your HTML includes `<link rel="manifest" href="/manifest.json">`.
 ## Connectors
 
 Available data connectors and their scopes (schema definitions):
-[`vana-com/data-connectors/schemas`](https://github.com/vana-com/data-connectors/tree/main/schemas)
+[`PDP-Connect/data-connectors/schemas`](https://github.com/PDP-Connect/data-connectors/tree/main/schemas)
 
 ## API Reference
 

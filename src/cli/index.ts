@@ -1144,6 +1144,72 @@ async function runTelemetryDisable(options: GlobalOptions): Promise<number> {
   return 0;
 }
 
+/**
+ * How long a phase may stay silent before it gets a spinner.
+ *
+ * Connect is deliberately quiet when everything is warm, so a line appears
+ * only once a phase outlives this. Past it the terminal would otherwise sit
+ * blank while the CLI waits on the network, on Chromium, or on a page load.
+ */
+const PHASE_PROGRESS_DELAY_MS = 400;
+
+interface PhaseProgress {
+  /** The phase succeeded: stop the timer, tick the line if one was drawn. */
+  settle(): void;
+  /**
+   * The phase failed: stop the timer but leave any drawn line active, so the
+   * renderer's own `fail` turns it into the cross that explains where it died.
+   */
+  abandon(): void;
+}
+
+function startPhaseProgress(
+  renderer: ConnectRenderer | null,
+  label: string,
+  delayMs = PHASE_PROGRESS_DELAY_MS,
+): PhaseProgress {
+  if (!renderer) {
+    return { settle() {}, abandon() {} };
+  }
+  let drawn = false;
+  let finished = false;
+  const timer = setTimeout(() => {
+    drawn = true;
+    renderer.scopeActive(label);
+  }, delayMs);
+  timer.unref?.();
+  return {
+    settle() {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      if (drawn) renderer.scopeDone(label);
+    },
+    abandon() {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+    },
+  };
+}
+
+export async function withPhaseProgress<T>(
+  renderer: ConnectRenderer | null,
+  label: string,
+  work: () => Promise<T>,
+  delayMs = PHASE_PROGRESS_DELAY_MS,
+): Promise<T> {
+  const progress = startPhaseProgress(renderer, label, delayMs);
+  try {
+    const result = await work();
+    progress.settle();
+    return result;
+  } catch (error) {
+    progress.abandon();
+    throw error;
+  }
+}
+
 async function runConnect(
   rawSource: string,
   options: GlobalOptions,
@@ -1165,7 +1231,11 @@ async function runConnect(
     // Title
     renderer?.title(displayName);
 
-    const target = await detectPersonalServerTarget();
+    const target = await withPhaseProgress(
+      renderer,
+      "Finding your Personal Server",
+      () => detectPersonalServerTarget(),
+    );
 
     // --- Phase 1: Runtime check (silent if installed) ---
     if (runtime.state !== "installed") {
@@ -1212,7 +1282,11 @@ async function runConnect(
       trackActiveTelemetryEvent("runtime_install_started", { source });
       let installResult: Awaited<ReturnType<typeof runtime.ensureInstalled>>;
       try {
-        installResult = await runtime.ensureInstalled(Boolean(options.yes));
+        installResult = await withPhaseProgress(
+          renderer,
+          "Installing browser engine (one time, ~150MB)",
+          () => runtime.ensureInstalled(Boolean(options.yes)),
+        );
       } catch (error) {
         trackActiveTelemetryEvent("runtime_install_failed", {
           source,
@@ -1226,7 +1300,6 @@ async function runConnect(
         runtime: installResult.runtime,
         logPath: installResult.logPath,
       });
-      renderer?.scopeDone("Runtime ready");
     } else {
       emit.event({
         type: "setup-check",
@@ -1241,7 +1314,11 @@ async function runConnect(
       ReturnType<ManagedPlaywrightRuntime["fetchConnector"]>
     >;
     try {
-      fetched = await runtime.fetchConnector(source, currentVersion);
+      fetched = await withPhaseProgress(
+        renderer,
+        `Getting the ${displayName} connector`,
+        () => runtime.fetchConnector(source, currentVersion),
+      );
     } catch (firstError) {
       const firstMessage =
         firstError instanceof Error ? firstError.message : "";
@@ -1256,10 +1333,15 @@ async function runConnect(
           const cacheDir = getConnectorCacheDir();
           const sourceCacheDir = path.join(cacheDir, source);
           await fsp.rm(sourceCacheDir, { recursive: true, force: true });
-          const resolution = await fetchConnectorToCache(
-            source,
-            cacheDir,
-            undefined, // force remote fetch, skip local data-connectors
+          const resolution = await withPhaseProgress(
+            renderer,
+            "Cached connector looks stale, downloading a fresh one",
+            () =>
+              fetchConnectorToCache(
+                source,
+                cacheDir,
+                undefined, // force remote fetch, skip local data-connectors
+              ),
           );
           fetched = {
             connectorPath: resolution.connectorPath,
@@ -1284,8 +1366,9 @@ async function runConnect(
             lastLogPath: getErrorLogPath(retryError),
           });
           renderer?.fail(`${displayName} connector could not be verified.`);
+          renderer?.detail(message);
           renderer?.detail(
-            `Try again later, or report: https://github.com/vana-com/data-connectors/issues`,
+            `Try again later, or report: https://github.com/PDP-Connect/data-connectors/issues`,
           );
           emit.event({
             type: "outcome",
@@ -1409,6 +1492,13 @@ async function runConnect(
         }>
       | undefined;
 
+    // Chromium start-up and the first page load happen before a connector
+    // reports anything, which is the longest silent stretch of a warm run.
+    const launchProgress = startPhaseProgress(
+      renderer,
+      `Opening ${displayName} in a browser`,
+    );
+
     // In IPC mode (--ipc), don’t provide an interactive callback.
     // The runtime will write a pending-input file and poll for the
     // response, letting an external agent handle credential collection.
@@ -1420,6 +1510,8 @@ async function runConnect(
           schema?: { properties?: Record<string, unknown> };
           responseInputPath: string;
         }) => {
+          // Settle first: a spinner repaint would overwrite the prompt.
+          launchProgress.settle();
           renderer?.pauseForPrompt();
 
           // Show connector’s prompt message
@@ -1467,6 +1559,10 @@ async function runConnect(
       emit.event(event);
       if (event.logPath) {
         runLogPath = event.logPath;
+      }
+      // status-update draws nothing, so it is not proof the browser is up.
+      if (event.type !== "status-update") {
+        launchProgress.settle();
       }
 
       if (pendingExitCode !== null && event.type !== "collection-complete") {
@@ -1628,10 +1724,10 @@ async function runConnect(
 
         collectedResult = true;
         resultPath = event.resultPath;
-        const ingestEvents = await ingestResult(
-          resolution.source,
-          resultPath,
-          target,
+        const ingestEvents = await withPhaseProgress(
+          renderer,
+          "Saving to your Personal Server",
+          () => ingestResult(resolution.source, resultPath, target),
         );
         for (const ingestEvent of ingestEvents) {
           emit.event(ingestEvent);
@@ -1687,6 +1783,8 @@ async function runConnect(
         }));
       }
     }
+
+    launchProgress.settle();
 
     if (pendingExitCode !== null && !collectedResult) {
       return pendingExitCode;
