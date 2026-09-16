@@ -12,12 +12,38 @@ vi.mock("node:child_process", () => ({
 }));
 
 import {
+  accountSessionToPreserve,
   getAuthTarget,
   loadCredentials,
   resolveOAuthClientId,
   runDeviceCodeFlow,
   runSelfHostedLoginFlow,
 } from "../../src/cli/auth.js";
+
+describe("accountSessionToPreserve", () => {
+  const account = {
+    address: "0xbffbd3316ef8c6d8b8046151228c09840ae08d48",
+    session_token: "live-token",
+    expires_at: "2099-01-01T00:00:00.000Z",
+  };
+
+  it("keeps a live account session across a personal server login", () => {
+    // Logging in to a server used to blank this token and adopt the server
+    // owner's address, signing the user out of their account silently.
+    expect(accountSessionToPreserve(account)).toEqual(account);
+  });
+
+  it("drops a tokenless account so the server owner can seed one", () => {
+    expect(accountSessionToPreserve({ ...account, session_token: "" })).toBe(
+      null,
+    );
+    expect(accountSessionToPreserve(undefined)).toBe(null);
+  });
+
+  it("never persists an env-sourced session to disk", () => {
+    expect(accountSessionToPreserve({ ...account, address: "env" })).toBe(null);
+  });
+});
 
 describe("getAuthTarget", () => {
   it("treats localhost personal servers as self-hosted", () => {

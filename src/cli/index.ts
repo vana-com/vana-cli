@@ -116,6 +116,7 @@ import {
   formatAddress,
   formatExpiresIn,
   getAuthTarget,
+  accountSessionToPreserve,
   resolvePersonalServerUrl,
   runDeviceCodeFlow,
   runSelfHostedLoginFlow,
@@ -6456,6 +6457,91 @@ async function runSkillShow(
 
 // ── Login / Logout ─────────────────────────────────────────────────────
 
+/**
+ * Trade a browser authorization for a session on a self-hosted Personal
+ * Server, then persist it alongside whatever account session already exists.
+ */
+async function loginToPersonalServer(
+  psUrl: string,
+  options: GlobalOptions,
+): Promise<number> {
+  const renderer =
+    !options.json && !options.quiet ? createLoginRenderer() : null;
+  const humanRenderer = createHumanRenderer();
+  renderer?.title(psUrl);
+
+  try {
+    const result = await runSelfHostedLoginFlow(psUrl, (url: string) => {
+      if (!options.json && !options.quiet) {
+        // Same emphasis rule as the cloud flow: the actionable URL
+        // carries the Vana accent, the label stays muted.
+        process.stderr.write(
+          `  ${humanRenderer.theme.muted("Open")}  ${humanRenderer.theme.accent(url)}\n`,
+        );
+      }
+      renderer?.scopeActive("Waiting for authorization");
+      // Try to open browser — use spawn with args array to prevent shell injection
+      // (a malicious self-hosted PS could return a URL with shell metacharacters).
+      // Interactive terminals only: agents, CI and the test suite must never
+      // pop a browser (a vitest run used to open the fixture URL for real).
+      const browserAllowed =
+        Boolean(process.stdout.isTTY) &&
+        !options.json &&
+        !options.noInput &&
+        !process.env.VANA_NO_BROWSER;
+      if (browserAllowed) {
+        try {
+          const { spawn } = require("node:child_process");
+          const opener =
+            process.platform === "darwin"
+              ? "open"
+              : process.platform === "win32"
+                ? "start"
+                : "xdg-open";
+          spawn(opener, [url], { detached: true, stdio: "ignore" }).unref();
+        } catch {
+          // Browser open failed — user will open manually
+        }
+      }
+    });
+
+    const liveAccount = accountSessionToPreserve(loadCredentials()?.account);
+
+    await saveCredentials({
+      account: liveAccount ?? {
+        address: result.address,
+        session_token: "",
+        expires_at: result.expires_at,
+      },
+      personal_server: {
+        url: psUrl,
+        session_token: result.session_token,
+        expires_at: result.expires_at,
+      },
+    });
+    await updateCliConfig({ personalServerUrl: psUrl });
+
+    renderer?.success(`Logged in to ${psUrl}`);
+    renderer?.detail("Credentials saved to ~/.vana/auth.json");
+    if (
+      liveAccount &&
+      liveAccount.address.toLowerCase() !== result.address.toLowerCase()
+    ) {
+      renderer?.detail(
+        `This server belongs to ${formatAddress(result.address)}; you stay signed in as ${formatAddress(liveAccount.address)}.`,
+      );
+    }
+    return 0;
+  } catch (err) {
+    renderer?.fail("Login failed");
+    renderer?.detail(err instanceof Error ? err.message : String(err));
+    renderer?.next(`vana login --server ${psUrl}`);
+    return 1;
+  } finally {
+    renderer?.cleanup();
+  }
+}
+
 async function runLogin(
   options: GlobalOptions,
   serverUrl?: string,
@@ -6467,71 +6553,7 @@ async function runLogin(
 
   // If self-hosted, use /auth/device flow against the PS
   if (authTarget === "self-hosted" && psUrl) {
-    const renderer =
-      !options.json && !options.quiet ? createLoginRenderer() : null;
-    const humanRenderer = createHumanRenderer();
-    renderer?.title(psUrl);
-
-    try {
-      const result = await runSelfHostedLoginFlow(psUrl, (url: string) => {
-        if (!options.json && !options.quiet) {
-          // Same emphasis rule as the cloud flow: the actionable URL
-          // carries the Vana accent, the label stays muted.
-          process.stderr.write(
-            `  ${humanRenderer.theme.muted("Open")}  ${humanRenderer.theme.accent(url)}\n`,
-          );
-        }
-        renderer?.scopeActive("Waiting for authorization");
-        // Try to open browser — use spawn with args array to prevent shell injection
-        // (a malicious self-hosted PS could return a URL with shell metacharacters).
-        // Interactive terminals only: agents, CI and the test suite must never
-        // pop a browser (a vitest run used to open the fixture URL for real).
-        const browserAllowed =
-          Boolean(process.stdout.isTTY) &&
-          !options.json &&
-          !options.noInput &&
-          !process.env.VANA_NO_BROWSER;
-        if (browserAllowed) {
-          try {
-            const { spawn } = require("node:child_process");
-            const opener =
-              process.platform === "darwin"
-                ? "open"
-                : process.platform === "win32"
-                  ? "start"
-                  : "xdg-open";
-            spawn(opener, [url], { detached: true, stdio: "ignore" }).unref();
-          } catch {
-            // Browser open failed — user will open manually
-          }
-        }
-      });
-
-      await saveCredentials({
-        account: {
-          address: result.address,
-          session_token: "",
-          expires_at: result.expires_at,
-        },
-        personal_server: {
-          url: psUrl,
-          session_token: result.session_token,
-          expires_at: result.expires_at,
-        },
-      });
-      await updateCliConfig({ personalServerUrl: psUrl });
-
-      renderer?.success(`Logged in to ${psUrl}`);
-      renderer?.detail("Credentials saved to ~/.vana/auth.json");
-      return 0;
-    } catch (err) {
-      renderer?.fail("Login failed");
-      renderer?.detail(err instanceof Error ? err.message : String(err));
-      renderer?.next(`vana login --server ${psUrl}`);
-      return 1;
-    } finally {
-      renderer?.cleanup();
-    }
+    return loginToPersonalServer(psUrl, options);
   }
 
   // Cloud flow (account.vana.org)
@@ -6578,6 +6600,19 @@ async function runLogin(
       const server = await describeLoginPersonalServer(
         existing.personal_server,
       );
+
+      // A live account session says nothing about the Personal Server, and a
+      // server with no session is exactly what `connect` fails to sync to.
+      // Finish that job here rather than printing this same command back.
+      if (
+        server &&
+        !server.authenticated &&
+        !options.noInput &&
+        getAuthTarget(server.url) === "self-hosted"
+      ) {
+        return loginToPersonalServer(server.url, options);
+      }
+
       if (server) {
         emit.keyValue(
           "Personal Server",
@@ -6591,7 +6626,7 @@ async function runLogin(
         `  Auth expires in ${formatExpiresIn(existing.account.expires_at)}`,
       );
       emit.blank();
-      emit.info("  Run `vana logout` first to re-authenticate.");
+      emit.info("  Run `vana logout` to sign in as someone else.");
     }
     return 0;
   }
