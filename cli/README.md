@@ -125,7 +125,7 @@ automation for each source.
 
 The CLI shares its connector format with
 [DataConnect](https://github.com/vana-com/data-connect) and the
-[data-connectors](https://github.com/vana-com/data-connectors) repository.
+[data-connectors](https://github.com/PDP-Connect/data-connectors) repository.
 
 Available: **GitHub**, **ChatGPT**, **Instagram**, **LinkedIn**, **Spotify**,
 **YouTube**, **Shop**, **Oura Ring**, **Uber**.

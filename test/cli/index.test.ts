@@ -1035,6 +1035,43 @@ describe("runCli", () => {
     expect(plist).toContain("<integer>86400</integer>");
   });
 
+  it("only draws a phase line once the phase looks stuck", async () => {
+    const { withPhaseProgress } = await import("../../src/cli/index.js");
+    const calls: string[] = [];
+    const renderer = {
+      scopeActive: (s: string) => calls.push(`active:${s}`),
+      scopeDone: (s: string) => calls.push(`done:${s}`),
+    } as unknown as Parameters<typeof withPhaseProgress>[0];
+
+    // A warm path returns before the delay, so connect stays quiet.
+    await withPhaseProgress(renderer, "Fetching", async () => "ok", 50);
+    expect(calls).toEqual([]);
+
+    await withPhaseProgress(
+      renderer,
+      "Fetching",
+      () => new Promise((resolve) => setTimeout(resolve, 60)),
+      10,
+    );
+    expect(calls).toEqual(["active:Fetching", "done:Fetching"]);
+
+    // A failed phase leaves its line active so `fail` can cross it out,
+    // which is what tells the user which step died.
+    calls.length = 0;
+    await expect(
+      withPhaseProgress(
+        renderer,
+        "Fetching",
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          throw new Error("boom");
+        },
+        10,
+      ),
+    ).rejects.toThrow("boom");
+    expect(calls).toEqual(["active:Fetching"]);
+  });
+
   it("shows operational commands in top-level help", async () => {
     const { runCli } = await import("../../src/cli/index.js");
     const exitCode = await runCli(["node", "vana", "--help"]);

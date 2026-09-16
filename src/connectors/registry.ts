@@ -4,13 +4,16 @@ import path from "node:path";
 
 import { getConnectorCacheDir } from "../core/paths.js";
 
+// The connector library moved to the PDP-Connect org on 2026-07-18;
+// vana-com/data-connectors is frozen at that commit and two of its recorded
+// checksums never matched their scripts, so those connectors fail to verify.
 const REGISTRY_URL =
-  "https://raw.githubusercontent.com/vana-com/data-connectors/main/registry.json";
+  "https://raw.githubusercontent.com/PDP-Connect/data-connectors/main/registry.json";
 // Connector script files live under `connectors/` in the data-connectors
 // repo. The registry.json `baseUrl` field also points here; we mirror it
 // as a constant so offline/local paths resolve correctly too.
 const BASE_URL =
-  "https://raw.githubusercontent.com/vana-com/data-connectors/main/connectors";
+  "https://raw.githubusercontent.com/PDP-Connect/data-connectors/main/connectors";
 
 export interface ConnectorRegistryEntry {
   id?: string;
