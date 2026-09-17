@@ -42,13 +42,21 @@ const packageManagersDir =
   args.get("package-managers-dir") ?? "artifacts/package-managers";
 const demoPreviewDir = args.get("demo-preview-dir") ?? "artifacts/demo-preview";
 
-const releaseFiles = listFiles(
-  releaseDir,
-  (filePath) =>
-    filePath.endsWith(".tar.gz") ||
-    filePath.endsWith(".zip") ||
-    filePath.endsWith(".sha256"),
-);
+// On the release workflow semantic-release has already uploaded the binaries,
+// so listing them again means re-uploading them with `--clobber`, which
+// deletes the good asset before replacing it. A transient upload 500 then
+// leaves the release advertising a checksum for a tarball that is gone.
+// Prereleases still need them here because semantic-release never runs there.
+const skipBinaries = args.get("skip-binaries") === "true";
+const releaseFiles = skipBinaries
+  ? []
+  : listFiles(
+      releaseDir,
+      (filePath) =>
+        filePath.endsWith(".tar.gz") ||
+        filePath.endsWith(".zip") ||
+        filePath.endsWith(".sha256"),
+    );
 const packageManagerFiles = listFiles(path.join(packageManagersDir, "homebrew"))
   .concat(
     listFiles(path.join(packageManagersDir, "winget"), (filePath) =>
