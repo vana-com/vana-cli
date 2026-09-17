@@ -19,6 +19,7 @@ vi.mock("../../src/cli/auth.js", async () => {
 
 import {
   detectPersonalServerTarget,
+  personalServerOwnerMismatch,
   resolvePersonalServerAuthConfig,
 } from "../../src/personal-server/index.js";
 
@@ -139,5 +140,91 @@ describe("detectPersonalServerTarget", () => {
         owner: "0x1234567890abcdef1234567890abcdef12345678",
       },
     });
+  });
+
+  it("prefers a scanned server the signed-in account owns over the first to answer", async () => {
+    const mine = "0x1234567890abcdef1234567890abcdef12345678";
+    const theirs = "0x99bf14e94de7edb022e08528c5cdb627f73a988d";
+    mocks.loadCredentials.mockReturnValue({
+      account: {
+        address: mine,
+        session_token: "t",
+        expires_at: "2026-04-22T00:00:00.000Z",
+      },
+      personal_server: null,
+    });
+
+    const health = (owner: string) =>
+      new Response(
+        JSON.stringify({
+          status: "healthy",
+          version: "1.0.0",
+          uptime: 1,
+          owner,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    // 8080 answers first but belongs to another identity.
+    fetchMock
+      .mockResolvedValueOnce(health(theirs))
+      .mockResolvedValueOnce(health(mine));
+
+    await expect(detectPersonalServerTarget()).resolves.toMatchObject({
+      url: "http://localhost:8081",
+      source: "scan",
+      health: { owner: mine },
+    });
+  });
+
+  it("falls back to a server owned by someone else when nothing of ours answers", async () => {
+    const theirs = "0x99bf14e94de7edb022e08528c5cdb627f73a988d";
+    mocks.loadCredentials.mockReturnValue({
+      account: {
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+        session_token: "t",
+        expires_at: "2026-04-22T00:00:00.000Z",
+      },
+      personal_server: null,
+    });
+
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "healthy",
+          version: "1.0.0",
+          uptime: 1,
+          owner: theirs,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await expect(detectPersonalServerTarget()).resolves.toMatchObject({
+      url: "http://localhost:8080",
+      source: "scan",
+      health: { owner: theirs },
+    });
+  });
+});
+
+describe("personalServerOwnerMismatch", () => {
+  const mine = "0xbffbd3316ef8c6d8b8046151228c09840ae08d48";
+  const theirs = "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d";
+
+  it("reports a server owned by another identity", () => {
+    expect(personalServerOwnerMismatch(theirs, mine)).toEqual({
+      owner: theirs,
+      account: mine,
+    });
+  });
+
+  it("ignores checksum casing", () => {
+    expect(personalServerOwnerMismatch(mine.toUpperCase(), mine)).toBe(null);
+  });
+
+  it("stays quiet when either side is unknown", () => {
+    expect(personalServerOwnerMismatch(null, mine)).toBe(null);
+    expect(personalServerOwnerMismatch(theirs, null)).toBe(null);
+    expect(personalServerOwnerMismatch(theirs, "env")).toBe(null);
   });
 });

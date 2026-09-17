@@ -202,6 +202,7 @@ export async function queryStatus(): Promise<StatusQueryResult> {
     personalServer: personalServer.state,
     personalServerUrl: personalServer.url,
     personalServerSource: personalServer.source,
+    personalServerOwner: personalServer.health?.owner ?? null,
     personalServerInfo: {
       url: personalServer.url,
       status: personalServer.state,
