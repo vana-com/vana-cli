@@ -827,6 +827,22 @@ export function getAuthTarget(psUrl: string | null): AuthTarget {
   return "self-hosted";
 }
 
+/**
+ * The account session to carry across a Personal Server login, or null when
+ * there is nothing worth keeping.
+ *
+ * `saveCredentials` rewrites the whole auth file, so a server login must not
+ * be allowed to blank a live account token or replace the CLI identity with
+ * the server owner's address. An env-sourced session is not ours to persist.
+ */
+export function accountSessionToPreserve(
+  stored: VanaCredentials["account"] | undefined,
+): VanaCredentials["account"] | null {
+  if (!stored?.session_token) return null;
+  if (stored.address === "env") return null;
+  return stored;
+}
+
 export function resolvePersonalServerUrl(): string | undefined {
   return (
     process.env.VANA_PS_URL ||
