@@ -5,6 +5,7 @@ const mockReadFileSync = vi.fn();
 const mockWriteFileSync = vi.fn();
 const mockReaddirSync = vi.fn();
 const mockExecFileSync = vi.fn();
+const mockReadlinkSync = vi.fn();
 
 vi.mock("node:fs", () => ({
   default: {
@@ -12,6 +13,7 @@ vi.mock("node:fs", () => ({
     readFileSync: mockReadFileSync,
     writeFileSync: mockWriteFileSync,
     readdirSync: mockReaddirSync,
+    readlinkSync: mockReadlinkSync,
   },
 }));
 
@@ -159,5 +161,56 @@ describe("importChromeCookies", () => {
       importChromeCookies("/profile", "/browser/chrome"),
     ).not.toThrow();
     expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe("readProfileLockOwner", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  async function load() {
+    return (await import("../../src/runtime/playwright/browser.js"))
+      .readProfileLockOwner;
+  }
+
+  it("reports the pid when the holding browser is still alive", async () => {
+    // A hostname may itself contain dashes; only the last segment is the pid.
+    mockReadlinkSync.mockReturnValue("Vana-Volodymyr-Isai-s-Mac.local-80496");
+    const readProfileLockOwner = await load();
+
+    expect(readProfileLockOwner("/profile/SingletonLock", () => true)).toBe(
+      80496,
+    );
+  });
+
+  it("treats a lock left by a dead process as stale", async () => {
+    mockReadlinkSync.mockReturnValue("some-host-4242");
+    const readProfileLockOwner = await load();
+
+    expect(readProfileLockOwner("/profile/SingletonLock", () => false)).toBe(
+      null,
+    );
+  });
+
+  it("treats a missing lock as unheld", async () => {
+    mockReadlinkSync.mockImplementation(() => {
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    const readProfileLockOwner = await load();
+
+    expect(readProfileLockOwner("/profile/SingletonLock", () => true)).toBe(
+      null,
+    );
+  });
+
+  it("ignores a lock target that carries no pid", async () => {
+    mockReadlinkSync.mockReturnValue("hostname-only");
+    const readProfileLockOwner = await load();
+
+    expect(readProfileLockOwner("/profile/SingletonLock", () => true)).toBe(
+      null,
+    );
   });
 });
