@@ -126,6 +126,8 @@ export const cliStatusSchema = z.object({
   personalServer: personalServerStateSchema,
   personalServerUrl: z.string().nullable(),
   personalServerSource: personalServerSourceSchema,
+  /** Wallet that owns the detected server, which need not be the signed-in one. */
+  personalServerOwner: z.string().nullable().optional(),
   personalServerInfo: z
     .object({
       url: z.string().nullable(),

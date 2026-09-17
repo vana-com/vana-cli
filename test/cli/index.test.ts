@@ -179,11 +179,17 @@ vi.mock("../../src/skills/index.js", () => ({
   isClaudeCodeInstalled: vi.fn(() => false),
 }));
 
-vi.mock("../../src/personal-server/index.js", () => ({
-  detectPersonalServerTarget: mockDetectPersonalServerTarget,
-  ingestResult: mockIngestResult,
-  resolvePersonalServerAuthConfig: mockResolvePersonalServerAuthConfig,
-}));
+vi.mock("../../src/personal-server/index.js", async () => {
+  const actual = await vi.importActual<object>(
+    "../../src/personal-server/index.js",
+  );
+  return {
+    ...actual,
+    detectPersonalServerTarget: mockDetectPersonalServerTarget,
+    ingestResult: mockIngestResult,
+    resolvePersonalServerAuthConfig: mockResolvePersonalServerAuthConfig,
+  };
+});
 
 vi.mock("../../src/personal-server/client.js", () => ({
   createPersonalServerClient: mockCreatePersonalServerClient,

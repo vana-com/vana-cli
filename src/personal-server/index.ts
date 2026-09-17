@@ -40,6 +40,23 @@ export interface IngestResultOptions {
   scopes?: string[];
 }
 
+/**
+ * The owner/account pair to warn about, or null when the server is ours.
+ *
+ * A Personal Server owned by another identity still accepts a device login
+ * and still reports a successful ingest, so a mismatch has to surface before
+ * data is written rather than after.
+ */
+export function personalServerOwnerMismatch(
+  owner: string | null | undefined,
+  accountAddress: string | null | undefined,
+): { owner: string; account: string } | null {
+  // An env-sourced session carries no real address to compare against.
+  if (!owner || !accountAddress || accountAddress === "env") return null;
+  if (owner.toLowerCase() === accountAddress.toLowerCase()) return null;
+  return { owner, account: accountAddress };
+}
+
 async function detectTargetAt(
   url: string,
   source: PersonalServerTarget["source"],
@@ -85,13 +102,28 @@ export async function detectPersonalServerTarget(): Promise<PersonalServerTarget
     }
   }
 
-  // 3. Localhost port scan
+  // 4. Localhost port scan. One machine can host servers for several
+  // identities, so the first port to answer is not necessarily ours; prefer
+  // one the signed-in account owns and only fall back to a stranger's.
+  const account = authCreds?.account?.address ?? null;
+  let unowned: PersonalServerTarget | null = null;
   for (const port of DEFAULT_PORTS) {
     const url = `http://localhost:${port}`;
     const health = await fetchHealth(url);
-    if (health) {
-      return { state: "available", url, source: "scan", health };
+    if (!health) continue;
+    const target: PersonalServerTarget = {
+      state: "available",
+      url,
+      source: "scan",
+      health,
+    };
+    if (!personalServerOwnerMismatch(health.owner, account)) {
+      return target;
     }
+    unowned ??= target;
+  }
+  if (unowned) {
+    return unowned;
   }
 
   return { state: "unavailable", url: null, source: null, health: null };

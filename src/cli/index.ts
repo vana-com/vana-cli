@@ -80,6 +80,7 @@ import {
 import {
   detectPersonalServerTarget,
   ingestResult,
+  personalServerOwnerMismatch,
   resolvePersonalServerAuthConfig,
 } from "../personal-server/index.js";
 import type {
@@ -1238,6 +1239,35 @@ async function runConnect(
       () => detectPersonalServerTarget(),
     );
 
+    // Collecting into a server owned by another identity looks like success
+    // and is not undoable, so settle ownership before touching the source.
+    const mismatch = personalServerOwnerMismatch(
+      target.health?.owner,
+      loadCredentials()?.account?.address,
+    );
+    if (mismatch) {
+      renderer?.detail(
+        `The Personal Server at ${target.url} belongs to ${formatAddress(mismatch.owner)}, but you are signed in as ${formatAddress(mismatch.account)}.`,
+      );
+      if (options.noInput || options.yes) {
+        renderer?.detail("Continuing; your data will be stored there.");
+      } else {
+        renderer?.cleanup();
+        const useIt = await confirm({
+          message: `Store your ${displayName} data in ${formatAddress(mismatch.owner)}'s Personal Server?`,
+          default: false,
+          ...vanaPromptTheme,
+        });
+        if (!useIt) {
+          renderer?.fail("Cancelled.");
+          renderer?.detail(
+            "Sign in as that identity, or start the Personal Server for this one, then run `vana connect` again.",
+          );
+          return CliExitCode.CONFIRMATION_REQUIRED;
+        }
+      }
+    }
+
     // --- Phase 1: Runtime check (silent if installed) ---
     if (runtime.state !== "installed") {
       if (options.noInput) {
@@ -2210,6 +2240,21 @@ async function runStatus(options: GlobalOptions): Promise<number> {
   } else {
     emit.keyValue("Account", "Not logged in", "muted");
     emit.keyValue("Auth", "Run `vana login` to authenticate", "muted");
+  }
+
+  const statusMismatch =
+    authCreds && !isExpired(authCreds)
+      ? personalServerOwnerMismatch(
+          status.personalServerOwner,
+          authCreds.account.address,
+        )
+      : null;
+  if (statusMismatch) {
+    emit.keyValue(
+      "Server owner",
+      `${statusMismatch.owner} (not this account)`,
+      "warning",
+    );
   }
 
   const trackedSources = status.sources.filter(shouldDisplaySourceInStatus);
