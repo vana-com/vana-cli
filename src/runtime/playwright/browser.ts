@@ -284,6 +284,43 @@ export function resolveBrowserPath(): string {
   return browserPath;
 }
 
+function processIsRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but belongs to someone else.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * The pid still holding a Chromium profile, or null when nothing holds it.
+ *
+ * Chromium writes `SingletonLock` as a symlink whose target is
+ * `<hostname>-<pid>`, and the hostname itself may contain dashes, so only the
+ * final segment is the pid. A lock pointing at a dead process is stale.
+ */
+export function readProfileLockOwner(
+  lockPath: string,
+  isRunning: (pid: number) => boolean = processIsRunning,
+): number | null {
+  let target: string;
+  try {
+    target = fs.readlinkSync(lockPath);
+  } catch {
+    // Absent, or not a symlink: nothing live is claiming the profile.
+    return null;
+  }
+
+  const pid = Number(target.slice(target.lastIndexOf("-") + 1));
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return null;
+  }
+
+  return isRunning(pid) ? pid : null;
+}
+
 export async function launchPersistentContext(
   userDataDir: string,
   headless: boolean,
@@ -291,11 +328,19 @@ export async function launchPersistentContext(
 ): Promise<BrowserContext> {
   fs.mkdirSync(userDataDir, { recursive: true });
 
-  // Remove stale SingletonLock left by a previous crashed browser.
-  // Chromium creates this file to prevent multiple instances on the same
-  // profile. If the process was interrupted, the lock is never cleaned up
-  // and subsequent launches fail with "Failed to create a ProcessSingleton."
+  // Chromium refuses to share a profile between instances. A lock left by a
+  // crashed browser is safe to clear, but one held by a live process is not:
+  // removing it lets a second Chromium onto the same profile, which is the
+  // corruption the lock exists to prevent.
   const lockPath = path.join(userDataDir, "SingletonLock");
+  const holder = readProfileLockOwner(lockPath);
+  if (holder !== null) {
+    throw new Error(
+      `Another Vana browser session (pid ${holder}) is already using the profile at ${userDataDir}. ` +
+        `That is usually an earlier \`vana connect\` still waiting for you to finish signing in. ` +
+        `Finish that sign-in, or stop it with \`kill ${holder}\`, then try again.`,
+    );
+  }
   try {
     fs.rmSync(lockPath, { force: true });
   } catch {
