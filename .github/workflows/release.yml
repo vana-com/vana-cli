@@ -250,13 +250,28 @@ jobs:
           RELEASE_TAG=$(gh api repos/${GITHUB_REPOSITORY}/releases/latest --jq .tag_name)
           PACKAGE_VERSION="${RELEASE_TAG#v}"
           pnpm package-managers:generate -- --release-tag "$RELEASE_TAG" --package-version "$PACKAGE_VERSION"
+      # Only the assets semantic-release does not upload itself. Clobbering
+      # its binaries cost v0.24.0 two tarballs when the upload API returned a
+      # 500 after `--clobber` had already deleted them.
       - name: Attach release assets
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           RELEASE_TAG=$(gh api repos/${GITHUB_REPOSITORY}/releases/latest --jq .tag_name)
-          mapfile -t RELEASE_FILES < <(node ./scripts/collect-release-assets.mjs)
-          gh release upload "$RELEASE_TAG" "${RELEASE_FILES[@]}" --clobber
+          mapfile -t RELEASE_FILES < <(node ./scripts/collect-release-assets.mjs --skip-binaries)
+
+          # The uploads API returns 500 often enough to have failed this step
+          # twice in a row on v0.24.0, once on a 50KB gif. Losing the step
+          # also skips publish-npm, so a transient blip strands the npm
+          # release behind a GitHub release that already shipped.
+          for attempt in 1 2 3; do
+            if gh release upload "$RELEASE_TAG" "${RELEASE_FILES[@]}" --clobber; then
+              exit 0
+            fi
+            echo "Asset upload attempt ${attempt} failed; retrying."
+            sleep $((attempt * 15))
+          done
+          exit 1
 
   # Phase 4: npm, on purpose after the GitHub release and on purpose unable
   # to fail the release. npm has been the flakiest link in this pipeline -
