@@ -214,3 +214,103 @@ describe("readProfileLockOwner", () => {
     );
   });
 });
+
+describe("readBrowserMajorVersion", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  async function load() {
+    return (await import("../../src/runtime/playwright/browser.js"))
+      .readBrowserMajorVersion;
+  }
+
+  it("reads the major version from Chrome's --version output", async () => {
+    const readBrowserMajorVersion = await load();
+
+    expect(
+      readBrowserMajorVersion(
+        "/chrome",
+        () => "Google Chrome 153.0.8010.48 \n",
+      ),
+    ).toBe(153);
+  });
+
+  it("reads the major version from a Playwright Chromium build", async () => {
+    const readBrowserMajorVersion = await load();
+
+    expect(
+      readBrowserMajorVersion(
+        "/chromium",
+        () => "Google Chrome for Testing 140.0.7339.16",
+      ),
+    ).toBe(140);
+  });
+
+  it("reports an unknown version when the browser prints nothing", async () => {
+    const readBrowserMajorVersion = await load();
+
+    expect(readBrowserMajorVersion("/chrome.exe", () => "")).toBe(null);
+  });
+
+  it("reports an unknown version when the browser cannot be run", async () => {
+    const readBrowserMajorVersion = await load();
+
+    expect(
+      readBrowserMajorVersion("/missing", () => {
+        throw new Error("ENOENT");
+      }),
+    ).toBe(null);
+  });
+
+  it("reports an unknown version when no browser path is known", async () => {
+    const readBrowserMajorVersion = await load();
+
+    expect(readBrowserMajorVersion(null, () => "Google Chrome 1.2.3.4")).toBe(
+      null,
+    );
+  });
+});
+
+describe("buildUserAgent", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  async function load() {
+    return (await import("../../src/runtime/playwright/browser.js"))
+      .buildUserAgent;
+  }
+
+  it("carries the running browser's version, not a fixed one", async () => {
+    const buildUserAgent = await load();
+
+    expect(buildUserAgent(153, true, "darwin")).toBe(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+    );
+  });
+
+  it("never announces a headless browser", async () => {
+    const buildUserAgent = await load();
+
+    expect(buildUserAgent(153, true, "linux")).not.toContain("Headless");
+    expect(buildUserAgent(null, true, "linux")).not.toContain("Headless");
+  });
+
+  it("matches the platform the browser really runs on", async () => {
+    const buildUserAgent = await load();
+
+    expect(buildUserAgent(153, false, "win32")).toContain(
+      "Windows NT 10.0; Win64; x64",
+    );
+    expect(buildUserAgent(153, false, "linux")).toContain("X11; Linux x86_64");
+  });
+
+  it("leaves a headed browser's own user agent alone when the version is unknown", async () => {
+    const buildUserAgent = await load();
+
+    expect(buildUserAgent(null, false, "darwin")).toBeUndefined();
+  });
+});
