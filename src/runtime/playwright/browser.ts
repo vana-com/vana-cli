@@ -321,6 +321,75 @@ export function readProfileLockOwner(
   return isRunning(pid) ? pid : null;
 }
 
+/**
+ * The major version of the browser at `browserPath`, or null when it cannot
+ * be read. `--version` prints e.g. `Google Chrome 153.0.8010.48`; on Windows
+ * it prints nothing, so an undetectable version is an expected outcome.
+ */
+export function readBrowserMajorVersion(
+  browserPath: string | null,
+  readVersion: (executable: string) => string = (executable) =>
+    execFileSync(executable, ["--version"], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }),
+): number | null {
+  if (!browserPath) {
+    return null;
+  }
+
+  try {
+    const match = /(\d+)\.\d+\.\d+\.\d+/.exec(readVersion(browserPath));
+    return match ? Number(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Playwright's bundled Chromium, used when no browser path was resolved. */
+function safeChromiumExecutablePath(): string | null {
+  try {
+    return chromium.executablePath() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The user agent to present, or undefined to leave the browser's own.
+ *
+ * Headless Chromium announces itself as `HeadlessChrome`, which sites block,
+ * so the user agent is overridden. The override must carry the version of the
+ * browser actually running: sites that enforce a supported-browser floor
+ * (Slack answers 403 "your browser is not supported") reject a stale one, and
+ * a version that disagrees with the client hints is itself a bot signal. The
+ * string follows Chrome's reduced format, where only the major version varies.
+ */
+export function buildUserAgent(
+  majorVersion: number | null,
+  headless: boolean,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (majorVersion === null) {
+    // A headed browser's own user agent is already truthful. Headless has no
+    // good answer without a version, so keep the historical floor.
+    if (!headless) {
+      return undefined;
+    }
+    majorVersion = 120;
+  }
+
+  const platformToken =
+    platform === "win32"
+      ? "Windows NT 10.0; Win64; x64"
+      : platform === "darwin"
+        ? "Macintosh; Intel Mac OS X 10_15_7"
+        : "X11; Linux x86_64";
+
+  return `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`;
+}
+
 export async function launchPersistentContext(
   userDataDir: string,
   headless: boolean,
@@ -355,9 +424,15 @@ export async function launchPersistentContext(
         "--disable-features=MediaRouter,DialMediaRouteProvider",
       ],
       viewport: { width: 1280, height: 800 },
-      userAgent:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     };
+
+  const userAgent = buildUserAgent(
+    readBrowserMajorVersion(browserPath ?? safeChromiumExecutablePath()),
+    headless,
+  );
+  if (userAgent) {
+    launchOptions.userAgent = userAgent;
+  }
 
   if (browserPath) {
     launchOptions.executablePath = browserPath;
