@@ -7,13 +7,18 @@ import { getConnectorCacheDir } from "../core/paths.js";
 // The connector library moved to the PDP-Connect org on 2026-07-18;
 // vana-com/data-connectors is frozen at that commit and two of its recorded
 // checksums never matched their scripts, so those connectors fail to verify.
-const REGISTRY_URL =
-  "https://raw.githubusercontent.com/PDP-Connect/data-connectors/main/registry.json";
+//
+// PDP-Connect then retired the Playwright format on 2026-09-22: main no
+// longer has registry.json or any *-playwright.js script, so reading main
+// left every installed CLI with no sources. This is the last commit that has
+// them, and a pinned commit also means a push to main can never change what
+// an installed CLI runs.
+const LEGACY_CONNECTORS_COMMIT = "fad4316d5577b7c47352e659ed7c2f12432e5177";
+const REGISTRY_URL = `https://raw.githubusercontent.com/PDP-Connect/data-connectors/${LEGACY_CONNECTORS_COMMIT}/registry.json`;
 // Connector script files live under `connectors/` in the data-connectors
-// repo. The registry.json `baseUrl` field also points here; we mirror it
-// as a constant so offline/local paths resolve correctly too.
-const BASE_URL =
-  "https://raw.githubusercontent.com/PDP-Connect/data-connectors/main/connectors";
+// repo. The registry.json `baseUrl` field points at main, which no longer
+// has them, so the pinned commit is used instead.
+const BASE_URL = `https://raw.githubusercontent.com/PDP-Connect/data-connectors/${LEGACY_CONNECTORS_COMMIT}/connectors`;
 
 export interface ConnectorRegistryEntry {
   id?: string;
