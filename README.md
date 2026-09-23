@@ -23,8 +23,9 @@ curl -fsSL https://raw.githubusercontent.com/vana-com/vana-cli/main/install/inst
 vana status
 ```
 
-Windows uses `install/install.ps1`. Homebrew (`brew tap vana-com/tap && brew
-install vana`) is still published but lags the installer.
+Windows uses `install/install.ps1`. The Homebrew tap (`vana-com/tap`) is
+no longer updated and ships a months-old canary, so use one of the routes
+above instead.
 
 The npm route runs under your own Node, which some endpoint security
 products prefer over an unknown executable; the installer gives you a
@@ -90,41 +91,51 @@ claude mcp add vana -- vana mcp
 
 ## The SDK
 
-## What problem this solves
+The same package is also a JavaScript SDK for apps that ask their users for
+data from a web page. Which one to use:
 
-Your users already have rich personal data — ChatGPT conversations, Instagram activity, Gmail, purchase history — but it's locked inside the platforms that collected it. As a builder, you can't easily use that data to personalize onboarding, tailor recommendations, or skip lengthy signup forms.
+- **A web app** whose users approve access in the browser: use the SDK below.
+- **A script, a backend job or an agent** working from a terminal: use
+  `vana app request` and `vana app read` above. They cover the same consent
+  and add escrow payment, derived answers and exit codes an agent can
+  branch on.
 
-**Data portability** means users can export their data from these platforms and grant your app scoped access to it — with their explicit consent, cryptographic verification, and full control over what's shared and when to revoke it.
+### What problem this solves
+
+Your users already have rich personal data (ChatGPT conversations, Instagram activity, Gmail, purchase history), but it's locked inside the platforms that collected it. As a builder, you can't easily use that data to personalize onboarding, tailor recommendations, or skip lengthy signup forms.
+
+**Data portability** means users can export their data from these platforms and grant your app scoped access to it, with their explicit consent, cryptographic verification, and full control over what's shared and when to revoke it.
 
 Today, getting access to user data means asking for manual file uploads (high friction), scraping on their behalf (fragile and legally risky), or negotiating enterprise API deals (slow and expensive). This SDK gives you a standardized way to request and receive personal data through Vana's [Data Portability Protocol](https://docs.vana.org/), handling session creation, grant verification, and data fetching in three function calls.
 
-## How it works
+### How it works
 
 ```
 Your App                         Vana Protocol
-──────────────────────────────   ──────────────────────────────
+------------------------------   ------------------------------
 
 1. connect({ scopes })
-   → creates session
-   → returns deep link      ──▶  2. User opens DataConnect
+   creates a session
+   returns a connect URL    -->  2. User opens the Vana app,
                                     reviews scopes, exports data,
-                                    approves grant
+                                    approves the grant
 
-3. Poll resolves with grant  ◀──  Grant signed & registered
+3. Poll resolves with grant  <--  Grant signed and registered
 
-4. getData({ grant })        ──▶  5. Personal Server returns
-   → structured JSON                 user data over TLS
+4. getData({ grant })        -->  5. Personal Server returns
+   structured JSON                   user data over TLS
 ```
 
 The [Data Portability Protocol](https://docs.vana.org/) defines how users collect data from platforms, store it under their control (on-device or hosted), and grant third-party apps scoped access. This SDK handles session creation, cryptographic request signing, polling, and data fetching. You write three function calls; the protocol handles the rest.
 
-## Getting started
+### Try the example app
 
-The fastest way to get up and running is with the `examples/nextjs-starter` — a complete working app which uses the development environment and has full flow of data portability wired up:
+`examples/nextjs-starter` is a complete working app wired to the development
+environment:
 
 ```bash
 git clone https://github.com/vana-com/vana-cli.git
-cd vana-connect/examples/nextjs-starter
+cd vana-cli/examples/nextjs-starter
 cp .env.local.example .env.local
 ```
 
@@ -135,76 +146,27 @@ VANA_PRIVATE_KEY=0x3c05ac1a00546bc0b1b8d3a11fb908409005fac3f26d25f70711e4f632e72
 APP_URL=http://localhost:3001
 ```
 
-Install and run
+Install and run:
 
-```
+```bash
 pnpm install
 pnpm dev
 ```
 
-Note that while testing this example app, you should have a development version of the [DataConnect app](https://github.com/vana-com/data-connect?tab=readme-ov-file#development).
+The example's own [README](./examples/nextjs-starter/README.md) walks
+through approving a request as the end user.
 
-There is one caveat in development: the deep-link for DataConnect app doesn't open the dev version of the app.
-This means that when testing your app from the end user perspective, once you see this screen:
-<img width="627" height="560" alt="Screenshot 2026-02-21 at 15 02 58" src="https://github.com/user-attachments/assets/477ae78f-d84d-4178-a1e9-48abedf36946" />
+### Add it to your app
 
-Instead of clicking the "Launch DataConnect" button, you should right-click on it and copy its address. The address will be something like `vana://connect?sessionId=...`.
-
-Then, in your dev version of DataConnect (likely built from the `main` branch) you will see a place to copy the link in the right-bottom corner of the app:
-
-<img width="348" height="258" alt="Screenshot 2026-02-21 at 15 09 18" src="https://github.com/user-attachments/assets/9f9d7a14-c92e-4185-bdc2-a2d93282c748" />
-
----
-
-## Manual integration
-
-If you prefer to integrate the SDK into an existing project, follow the steps below.
-
-## Headless CLI
-
-`vana-connect` now also ships a local collection CLI for connector setup and data export flows.
-
-If you only care about the CLI, start with [docs/CLI-README.md](./docs/CLI-README.md).
-
-For the full CLI review surface, use:
-
-- [CLI review surface](./docs/CLI-REVIEW-SURFACE.md)
-- [CLI transcripts](./docs/transcripts/README.md)
-- [CLI demos](./docs/vhs/README.md)
-
-`pnpm build:sea` uses Node 25's `--build-sea` flow to create a small `vana` launcher and packages the real app payload next to it under `app/`.
-It produces a platform-specific release directory plus a release archive and matching checksum file under `artifacts/sea/`.
-
-### Programmatic runtime access
-
-If you are building an app surface like DataConnect Desktop or a hosted orchestration layer, use the SDK modules instead of shelling out to the CLI where possible.
-
-```ts
-import { ManagedPlaywrightRuntime } from "vana-cli/runtime";
-import { listAvailableSources } from "vana-cli/connectors";
-```
-
-Intended split:
-
-- app surfaces consume SDK/runtime APIs
-- agent skills consume the CLI
-- `data-connectors` remains the connector and schema source of truth
-
-### Installation
+#### Installation
 
 ```bash
-pnpm add vana-cli
+npm install vana-cli
 ```
 
-### Package manager
-
-This repo is pnpm-only for local development and examples. Use `pnpm` commands, not `npm`.
-
-### Prerequisites
+#### Prerequisites
 
 First, register your app in the [Developer Portal](https://vana-developers.replit.app/). You will need to provide the URL where your app will be deployed, and then be given a private key after registration.
-
-### Quickstart
 
 #### 1. Create a session (server)
 
@@ -219,9 +181,9 @@ const session = await connect({
 });
 
 // Return to your frontend:
-// session.sessionId  — used for polling
-// session.connectUrl — opens the Vana account page → launches DataConnect
-// session.expiresAt  — ISO 8601 expiration
+// session.sessionId  - used for polling
+// session.connectUrl - where the user reviews and approves the request
+// session.expiresAt  - ISO 8601 expiration
 ```
 
 #### 2. Poll for user approval (client)
@@ -275,7 +237,7 @@ const conversations = data["chatgpt.conversations"];
 
 #### Web App Manifest
 
-The DataConnect App verifies your identity by fetching your manifest. Use `signVanaManifest()` to generate it:
+The Vana app verifies your identity by fetching your manifest. Use `signVanaManifest()` to generate it:
 
 ```typescript
 import { signVanaManifest } from "vana-cli/server";
@@ -301,22 +263,23 @@ const manifest = {
 
 Make sure your HTML includes `<link rel="manifest" href="/manifest.json">`.
 
-## Connectors
+### API Reference
 
-Available data connectors and their scopes (schema definitions):
-[`PDP-Connect/data-connectors/schemas`](https://github.com/PDP-Connect/data-connectors/tree/main/schemas)
+#### Entrypoints
 
-## API Reference
+| Import                | Environment | Exports                                                             |
+| --------------------- | ----------- | ------------------------------------------------------------------- |
+| `vana-cli/server`     | Node.js     | `connect()`, `getData()`, `signVanaManifest()`, low-level clients   |
+| `vana-cli/react`      | Browser     | `useVanaConnect()`, `useVanaData()`, `ConnectButton`                |
+| `vana-cli/core`       | Universal   | Types, `ConnectError`, constants                                    |
+| `vana-cli/runtime`    | Node.js     | `ManagedPlaywrightRuntime`, the browser runtime `vana connect` uses |
+| `vana-cli/connectors` | Node.js     | `listAvailableSources()` and the connector catalog                  |
+| `vana-cli/cli`        | Node.js     | `runCli()`, to run the CLI in-process                               |
 
-### Entrypoints
+`runtime` and `connectors` are for app surfaces such as the Vana desktop
+app that collect data themselves; prefer them over shelling out to the CLI.
 
-| Import            | Environment | Exports                                                           |
-| ----------------- | ----------- | ----------------------------------------------------------------- |
-| `vana-cli/server` | Node.js     | `connect()`, `getData()`, `signVanaManifest()`, low-level clients |
-| `vana-cli/react`  | Browser     | `useVanaConnect()`, `useVanaData()`, `ConnectButton`              |
-| `vana-cli/core`   | Universal   | Types, `ConnectError`, constants                                  |
-
-### `connect(config): Promise<SessionInitResult>`
+#### `connect(config): Promise<SessionInitResult>`
 
 Creates a session on the Session Relay. Returns `sessionId`, `connectUrl`, and `expiresAt`.
 
@@ -327,7 +290,7 @@ Creates a session on the Session Relay. Returns `sessionId`, `connectUrl`, and `
 | `webhookUrl` | `string`            | No       | Public HTTPS URL for grant event notifications (localhost is rejected) |
 | `appUserId`  | `string`            | No       | Your app's user ID for correlation                                     |
 
-### `getData(config): Promise<Record<string, unknown>>`
+#### `getData(config): Promise<Record<string, unknown>>`
 
 Fetches user data from their Personal Server using a signed grant.
 
@@ -336,7 +299,7 @@ Fetches user data from their Personal Server using a signed grant.
 | `privateKey` | `` `0x${string}` `` | Yes      | Builder private key          |
 | `grant`      | `GrantPayload`      | Yes      | Grant from the approval step |
 
-### `useVanaConnect(config?): UseVanaConnectResult`
+#### `useVanaConnect(config?): UseVanaConnectResult`
 
 React hook that polls the Session Relay and manages connection state.
 
@@ -344,9 +307,9 @@ React hook that polls the Session Relay and manages connection state.
 const { connect, status, grant, error, connectUrl, reset } = useVanaConnect();
 ```
 
-`status` transitions: `idle` &rarr; `connecting` &rarr; `waiting` &rarr; `approved` | `denied` | `expired` | `error`
+`status` transitions: `idle`, then `connecting`, then `waiting`, then one of `approved`, `denied`, `expired` or `error`.
 
-### `GrantPayload`
+#### `GrantPayload`
 
 Returned when a user approves access:
 
@@ -361,7 +324,7 @@ interface GrantPayload {
 }
 ```
 
-### Low-level clients
+#### Low-level clients
 
 For full control over individual protocol interactions:
 
@@ -372,6 +335,25 @@ import {
   createDataClient, // Data Gateway HTTP client
 } from "vana-cli/server";
 ```
+
+## Connectors
+
+Available data connectors and their scopes (schema definitions):
+[`PDP-Connect/data-connectors/schemas`](https://github.com/PDP-Connect/data-connectors/tree/main/schemas)
+
+## Contributing
+
+This repo uses pnpm for local development and the examples; the npm and
+npx commands above are only for installing the published package.
+
+`pnpm build:sea` uses Node 25's `--build-sea` flow to create a small `vana` launcher and packages the real app payload next to it under `app/`.
+It produces a platform-specific release directory plus a release archive and matching checksum file under `artifacts/sea/`.
+
+Review material for the CLI:
+
+- [CLI review surface](./docs/CLI-REVIEW-SURFACE.md)
+- [CLI transcripts](./docs/CLI-TRANSCRIPTS.md)
+- [CLI demos](./docs/vhs/README.md)
 
 ## License
 
