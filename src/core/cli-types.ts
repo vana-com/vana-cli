@@ -62,6 +62,7 @@ export const sourceStatusSchema = z.object({
   company: z.string().optional(),
   description: z.string().optional(),
   authMode: z.enum(["automated", "interactive", "legacy"]).optional(),
+  runtime: z.enum(["legacy", "pdpp"]).optional(),
   connectorVersion: z.string().optional(),
   exportFrequency: z.string().optional(),
   lastCollectedAt: z.string().optional(),
@@ -90,6 +91,15 @@ export const sourceStatusSchema = z.object({
       }),
     )
     .optional(),
+  skippedStreams: z
+    .array(
+      z.object({
+        stream: z.string().optional(),
+        reason: z.string().optional(),
+        message: z.string().optional(),
+      }),
+    )
+    .optional(),
   syncedScopeCount: z.number().optional(),
   failedScopeCount: z.number().optional(),
   suggestedNextCollectionAt: z.string().optional(),
@@ -104,6 +114,7 @@ export const listedSourceSchema = z
     company: z.string().optional(),
     description: z.string().optional(),
     authMode: z.enum(["automated", "interactive", "legacy"]).optional(),
+    runtime: z.enum(["legacy", "pdpp"]).optional(),
     installed: z.boolean(),
     dataState: dataStateSchema.optional(),
     lastRunOutcome: z.string().nullable().optional(),
@@ -322,6 +333,7 @@ export const cliEventTypeSchema = z.enum([
   "setup-check",
   "setup-complete",
   "status-update",
+  "stream-skipped",
 ]);
 export type CliEventType = z.infer<typeof cliEventTypeSchema>;
 
@@ -389,6 +401,10 @@ export const cliEventSchema = z.object({
   count: z.number().optional(),
   phase: progressPhaseSchema.optional(),
   scopeResults: z.array(scopeResultSchema).optional(),
+  /** Collection Profile stream a skip or progress line is about. */
+  stream: z.string().optional(),
+  pendingInputPath: z.string().optional(),
+  responseInputPath: z.string().optional(),
 });
 export type CliEvent = z.infer<typeof cliEventSchema>;
 

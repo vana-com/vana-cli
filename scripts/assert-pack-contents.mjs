@@ -4,6 +4,7 @@ const requiredPaths = [
   "dist/cli/bin.js",
   "dist/cli/index.js",
   "dist/runtime/managed-playwright.js",
+  "dist/vendor/pdpp-connector-manager/index.mjs",
 ];
 
 const raw = runNpmPackDryRun();
