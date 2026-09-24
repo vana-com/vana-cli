@@ -1,0 +1,13 @@
+{
+  "name": "vana-cli-personal-server-runtime",
+  "private": true,
+  "type": "module",
+  "description": "The Personal Server vana-cli runs on its own. Installed with npm ci from this lockfile so every install is the same.",
+  "dependencies": {
+    "@opendatalabs/personal-server-ts": "1.24.6"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "secp256k1@5.0.2": true
+  }
+}

@@ -27,7 +27,8 @@ src/
 |   |-- receipts.ts       # durable payment nonces + stored X-PAYMENT headers
 |   |-- requests-store.ts # access requests, persisted at creation
 |   `-- assets.ts         # ERC20 symbol/decimals resolution for fees
-|-- personal-server/  # resolving and talking to a person's server
+|-- personal-server/  # resolving and talking to a person's server;
+|                     # local/ runs one for `vana server start`
 |-- connectors/       # the source catalog
 |-- runtime/          # managed Playwright for browser-based collection
 |-- pdpp/             # PDPP Collection Profile connectors: pins, install +
@@ -96,6 +97,9 @@ pnpm cli -- <args>  # run the built CLI
 - **Never pass PDPP\_\* through to a Collection Profile connector.** A remote
   CDP URL makes its runtime attach to that browser and close every tab in
   it; `src/pdpp/runtime.ts` strips them all before spawning.
+- **`vana server start` never shares Vana Desktop's data dir.** It runs the
+  pinned server from `~/.vana/cli/personal-server/<network>`, local only, and
+  uses a server this account already runs instead of starting a second one.
 - **Legacy connectors are read from a pinned data-connectors commit.**
   PDP-Connect deleted the Playwright format from main on 2026-09-22; moving
   the pin forward means checking that commit still has `registry.json`.

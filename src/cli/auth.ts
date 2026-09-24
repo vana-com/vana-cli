@@ -359,7 +359,8 @@ function resolveCredentialExpiry(params: {
   return new Date(Date.now() + expiresIn * 1000).toISOString();
 }
 
-function getAccountUrl(): string {
+/** The Vana Account the CLI signs in to; `VANA_ACCOUNT_URL` overrides it. */
+export function getAccountUrl(): string {
   return (
     process.env.VANA_ACCOUNT_URL?.replace(/\/+$/, "") ??
     "https://account.vana.org"

@@ -40,6 +40,7 @@ vana login                  # Vana account, or --server <url> for a self-hosted 
 vana connect github         # managed browser, collects, syncs to your server
 vana data show github       # what was collected
 vana server status          # your server, local and registered URLs
+vana server start           # run your own server here when Vana Desktop is not
 ```
 
 **Builder side** is what an app or an agent uses to work with someone
