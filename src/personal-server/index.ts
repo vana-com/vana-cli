@@ -229,8 +229,24 @@ export function resolvePersonalServerAuthConfig(
   return undefined;
 }
 
-function urlsMatch(left: string, right: string): boolean {
-  return left.replace(/\/+$/, "") === right.replace(/\/+$/, "");
+// localhost, 127.0.0.1 and ::1 are the same server: a server reports one
+// spelling and a port scan or a saved URL often uses another.
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+function normalizeServerUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (LOOPBACK_HOSTS.has(url.hostname)) {
+      url.hostname = "localhost";
+    }
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return value.replace(/\/+$/, "");
+  }
+}
+
+export function urlsMatch(left: string, right: string): boolean {
+  return normalizeServerUrl(left) === normalizeServerUrl(right);
 }
 
 async function fetchHealth(

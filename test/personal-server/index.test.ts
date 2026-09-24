@@ -228,3 +228,23 @@ describe("personalServerOwnerMismatch", () => {
     expect(personalServerOwnerMismatch(theirs, "env")).toBe(null);
   });
 });
+
+describe("urlsMatch", () => {
+  it("treats every loopback spelling as the same server", async () => {
+    const { urlsMatch } = await import("../../src/personal-server/index.js");
+    expect(urlsMatch("http://127.0.0.1:8080", "http://localhost:8080/")).toBe(
+      true,
+    );
+    expect(urlsMatch("http://[::1]:8080", "http://localhost:8080")).toBe(true);
+  });
+
+  it("still tells different ports and hosts apart", async () => {
+    const { urlsMatch } = await import("../../src/personal-server/index.js");
+    expect(urlsMatch("http://localhost:8080", "http://localhost:8082")).toBe(
+      false,
+    );
+    expect(urlsMatch("https://ps.example", "http://localhost:8080")).toBe(
+      false,
+    );
+  });
+});
