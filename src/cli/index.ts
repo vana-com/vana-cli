@@ -682,6 +682,7 @@ Examples:
 Examples:
   vana server
   vana server start
+  vana server start --public
   vana server set-url http://localhost:8080
   vana server set-url https://ps-abc123.server.vana.org
   vana server clear-url
@@ -736,8 +737,12 @@ Examples:
       "--port <port>",
       "Port to listen on (its neighbour hosts the approval page)",
     )
+    .option(
+      "--public",
+      "Register the server on-chain and open its public URL, so apps can reach it",
+    )
     .option("--json", "Output machine-readable JSON")
-    .action(async (startOptions: { port?: string }) => {
+    .action(async (startOptions: { port?: string; public?: boolean }) => {
       process.exitCode = await runCommandWithTelemetry(
         { ...telemetryBaseContext, command: "server", subcommand: "start" },
         async () => {
@@ -757,6 +762,7 @@ Examples:
               port,
               noInput: parsedOptions.noInput,
               yes: parsedOptions.yes,
+              public: startOptions.public,
             },
             {
               say: (line) => {

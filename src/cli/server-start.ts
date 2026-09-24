@@ -24,10 +24,25 @@ import {
 import {
   choosePort,
   findRunningServers,
+  nextMessage,
+  readPublicMarker,
   startLocalServer,
+  writePublicMarker,
   type LocalServerHandle,
+  type PublicMarker,
   type RunningServer,
+  type ServerMessage,
 } from "../personal-server/local/server.js";
+import {
+  installFrpc,
+  resolveFrpc,
+  type FrpcResolution,
+} from "../personal-server/local/frpc.js";
+import {
+  RegistrationNeedsBrowserError,
+  signServerRegistration,
+  type RegistrationRequest,
+} from "../personal-server/local/registration.js";
 import {
   getAccountUrl,
   isExpired,
@@ -62,6 +77,14 @@ export interface ServerStartDeps {
   ensureRuntime: (node: ResolvedNode, logPath: string) => Promise<string>;
   choosePort: (requested?: number) => Promise<number | null>;
   start: typeof startLocalServer;
+  resolveFrpc: () => Promise<FrpcResolution>;
+  installFrpc: (logPath: string) => Promise<string>;
+  signRegistration: typeof signServerRegistration;
+  readPublicMarker: (network: VanaNetworkName) => PublicMarker | null;
+  writePublicMarker: (
+    network: VanaNetworkName,
+    marker: PublicMarker,
+  ) => Promise<void>;
   /** Resolves when the person asks the server to stop (Ctrl+C). */
   waitForStop: (handle: LocalServerHandle) => Promise<"stopped" | "exited">;
 }
@@ -80,6 +103,11 @@ export function defaultServerStartDeps(): ServerStartDeps {
     ensureRuntime: (node, logPath) => ensureRuntime(node, logPath),
     choosePort,
     start: startLocalServer,
+    resolveFrpc: () => resolveFrpc(),
+    installFrpc: (logPath) => installFrpc(logPath),
+    signRegistration: signServerRegistration,
+    readPublicMarker,
+    writePublicMarker,
     waitForStop: (handle) =>
       new Promise((resolve) => {
         // Stay subscribed until the process ends: a second Ctrl+C while the
@@ -106,6 +134,8 @@ export async function runServerStart(
     port?: number;
     noInput?: boolean;
     yes?: boolean;
+    /** Register the server and open its public URL, so apps can reach it. */
+    public?: boolean;
   },
   io: ServerStartIo,
   deps: ServerStartDeps = defaultServerStartDeps(),
@@ -193,13 +223,33 @@ export async function runServerStart(
     deps.secrets.set(secretKey, binding);
   }
 
-  // One-time installs: Node 24 and the pinned server.
+  // Public: asked for now, or registered before. A registered server must
+  // come back reachable, or apps keep finding a URL that never answers.
+  const marker = deps.readPublicMarker(options.network);
+  let frpc: FrpcResolution | null = null;
+  if (options.public || marker) {
+    frpc = await deps.resolveFrpc();
+    if (frpc.kind === "unavailable") {
+      if (options.public) {
+        io.say(frpc.reason);
+        io.event({ type: "server-tunnel-unavailable", reason: frpc.reason });
+        return CliExitCode.NOT_READY;
+      }
+      io.say(
+        `This server is registered, but ${frpc.reason} It starts local only.`,
+      );
+    }
+  }
+
+  // One-time installs: Node 24, the pinned server, the tunnel client.
   let node = await deps.findNode(NODE_RANGE);
   const runtimeReady = deps.runtimeInstalled();
-  if (!node || !runtimeReady) {
+  const frpcNeeded = frpc?.kind === "installable";
+  if (!node || !runtimeReady || frpcNeeded) {
     const needs = [
       ...(node ? [] : ["Node.js 24, which the server runs on"]),
       ...(runtimeReady ? [] : ["the Personal Server itself (~175 MB)"]),
+      ...(frpcNeeded ? ["the tunnel client, frpc (~15 MB)"] : []),
     ];
     if (options.noInput && !options.yes) {
       io.say(
@@ -228,6 +278,11 @@ export async function runServerStart(
   }
   if (!runtimeReady) io.say("Installing the Personal Server (one time)...");
   const runtimeDir = await deps.ensureRuntime(node, logPath);
+  let frpcPath: string | null = frpc?.kind === "ready" ? frpc.path : null;
+  if (frpcNeeded) {
+    io.say("Installing the tunnel client (one time)...");
+    frpcPath = await deps.installFrpc(logPath);
+  }
 
   const port = await deps.choosePort(options.port);
   if (!port) {
@@ -248,6 +303,7 @@ export async function runServerStart(
       binding,
       port,
       logPath,
+      frpcPath,
     });
   } catch (error) {
     io.say(error instanceof Error ? error.message : String(error));
@@ -268,16 +324,34 @@ export async function runServerStart(
 
   io.say(`Personal Server running at ${url}`);
   io.say(`Owner ${binding.signerAddress}, network ${options.network}.`);
-  io.say(
-    "Local only: not registered and not reachable from other devices yet.",
-  );
+
+  let registered = false;
+  let publicUrl: string | null = null;
+  if (frpcPath) {
+    const outcome = await goPublic(handle, {
+      ...options,
+      accountUrl,
+      accessToken: account.session_token,
+      ownerAddress: account.address,
+      binding,
+      io,
+      deps,
+    });
+    registered = outcome.registered;
+    publicUrl = outcome.publicUrl;
+  } else {
+    io.say(
+      "Local only: not registered and not reachable from other devices. Add --public to change that.",
+    );
+  }
   io.say("Collect into it with `vana connect <source>`. Press Ctrl+C to stop.");
   io.event({
     type: "server-ready",
     url,
     owner: binding.signerAddress,
     network: options.network,
-    registered: false,
+    registered,
+    publicUrl,
     logPath,
   });
 
@@ -291,4 +365,141 @@ export async function runServerStart(
   io.say("Stopped.");
   io.event({ type: "server-stopped" });
   return CliExitCode.OK;
+}
+
+/**
+ * Bring a server with a tunnel client online for apps: register it when asked
+ * and not yet registered, then report the public URL once the relay answers.
+ * Nothing here stops the server; a failure leaves it running local only.
+ */
+async function goPublic(
+  handle: LocalServerHandle,
+  input: {
+    network: VanaNetworkName;
+    public?: boolean;
+    noInput?: boolean;
+    accountUrl: string;
+    accessToken: string;
+    ownerAddress: string;
+    binding: OwnerBinding;
+    io: ServerStartIo;
+    deps: ServerStartDeps;
+  },
+): Promise<{ registered: boolean; publicUrl: string | null }> {
+  const { io, deps } = input;
+  let state: ServerMessage;
+  try {
+    // The server checks the gateway and reserves its URL before answering.
+    state = await nextMessage(handle, ["public"], 90_000);
+  } catch (error) {
+    io.say(error instanceof Error ? error.message : String(error));
+    return { registered: false, publicUrl: null };
+  }
+  const publicUrl =
+    typeof state.serverUrl === "string" ? state.serverUrl : null;
+  const serverAddress =
+    typeof state.serverAddress === "string" ? state.serverAddress : null;
+
+  // Report the tunnel whenever it settles; the command keeps running.
+  const unsubscribe = handle.onMessage((message) => {
+    if (message.type !== "tunnel") return;
+    unsubscribe();
+    if (message.status === "connected") {
+      io.say(`Reachable by apps at ${String(message.url)}`);
+    } else {
+      io.say(
+        `The public URL is not answering yet: ${String(message.warning ?? message.status)}`,
+      );
+    }
+    io.event({
+      type: "server-tunnel",
+      status: message.status,
+      url: message.url ?? null,
+      warning: message.warning ?? null,
+    });
+  });
+
+  if (state.registered === true) {
+    io.say(`Registered. Opening ${publicUrl ?? "the public URL"}...`);
+    return { registered: true, publicUrl };
+  }
+  if (!input.public) {
+    io.say(
+      "This server is not registered, so apps cannot find it. Run with --public to register it.",
+    );
+    return { registered: false, publicUrl: null };
+  }
+  if (!publicUrl || !serverAddress) {
+    io.say("The server did not reserve a public URL, so it stays local only.");
+    return { registered: false, publicUrl: null };
+  }
+
+  io.say(
+    `Registering ${publicUrl} as your Personal Server. This is recorded on-chain and cannot be undone.`,
+  );
+  try {
+    handle.send({ type: "prepare-registration" });
+    const prepared = await nextMessage(
+      handle,
+      ["registration-request", "command-failed"],
+      30_000,
+    );
+    if (prepared.type === "command-failed") {
+      throw new Error(String(prepared.message));
+    }
+    const signed = await deps.signRegistration(
+      {
+        accountUrl: input.accountUrl,
+        accessToken: input.accessToken,
+        trustToken: input.binding.trustToken,
+        request: prepared.request as RegistrationRequest,
+        allowBrowser: !input.noInput,
+      },
+      {
+        openBrowser: deps.openBrowser,
+        onConfirmationUrl: (url) =>
+          io.say(`Confirm the registration in your browser: ${url}`),
+      },
+    );
+    if (
+      signed.signerAddress &&
+      signed.signerAddress.toLowerCase() !== input.ownerAddress.toLowerCase()
+    ) {
+      throw new Error(
+        `The registration came back signed by ${signed.signerAddress}, not ${input.ownerAddress}. Nothing was submitted.`,
+      );
+    }
+    handle.send({ type: "submit-registration", signature: signed.signature });
+    const submitted = await nextMessage(
+      handle,
+      ["registration-submitted", "command-failed"],
+      60_000,
+    );
+    if (submitted.type === "command-failed") {
+      throw new Error(String(submitted.message));
+    }
+    await deps.writePublicMarker(input.network, {
+      serverAddress,
+      serverUrl: publicUrl,
+      registeredAt: new Date().toISOString(),
+    });
+    io.say(`Registered. Opening ${publicUrl}...`);
+    io.event({
+      type: "server-registered",
+      serverAddress,
+      serverUrl: publicUrl,
+      serverId: submitted.serverId ?? null,
+      signing: signed.via,
+    });
+    return { registered: true, publicUrl };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    io.say(`Not registered: ${message} The server keeps running, local only.`);
+    io.event({
+      type: "server-registration-failed",
+      needsBrowser: error instanceof RegistrationNeedsBrowserError,
+      message,
+    });
+    return { registered: false, publicUrl: null };
+  }
 }

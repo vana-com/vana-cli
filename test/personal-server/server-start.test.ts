@@ -13,6 +13,8 @@ import type { VanaCredentials } from "../../src/cli/auth.js";
 import {
   acquireDataDirLock,
   choosePort,
+  type LocalServerHandle,
+  type ServerMessage,
 } from "../../src/personal-server/local/server.js";
 
 const OWNER = "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d";
@@ -30,6 +32,68 @@ function credentials(
     },
     personal_server: null,
   };
+}
+
+const PUBLIC_URL = "https://0xserver.server-dev.vana.org";
+
+/**
+ * A running server that says whether it is registered once someone listens,
+ * and answers the registration commands the way entry.mjs does.
+ */
+function fakeServer(options: { registered?: boolean } = {}) {
+  const listeners = new Set<(message: ServerMessage) => void>();
+  const sent: Array<Record<string, unknown>> = [];
+  const emit = (message: ServerMessage) => {
+    for (const listener of [...listeners]) listener(message);
+  };
+  let announced = false;
+  const handle: LocalServerHandle = {
+    url: "http://localhost:8080",
+    port: 8080,
+    accessToken: "ps_token",
+    exited: new Promise<number | null>(() => {}),
+    send: (command) => {
+      sent.push(command);
+      queueMicrotask(() => {
+        if (command.type === "prepare-registration") {
+          emit({
+            type: "registration-request",
+            request: {
+              typedData: {
+                domain: { chainId: 14800 },
+                message: {
+                  serverAddress: "0xserver",
+                  publicKey: "0x04",
+                  serverUrl: PUBLIC_URL,
+                },
+              },
+            },
+          });
+        }
+        if (command.type === "submit-registration") {
+          emit({ type: "registration-submitted", serverId: "42" });
+          emit({ type: "tunnel", status: "connected", url: PUBLIC_URL });
+        }
+      });
+    },
+    onMessage: (listener) => {
+      listeners.add(listener);
+      if (!announced) {
+        announced = true;
+        queueMicrotask(() =>
+          emit({
+            type: "public",
+            registered: Boolean(options.registered),
+            serverAddress: "0xserver",
+            serverUrl: PUBLIC_URL,
+          }),
+        );
+      }
+      return () => void listeners.delete(listener);
+    },
+    stop: vi.fn(async () => {}),
+  };
+  return { handle, sent };
 }
 
 function harness(overrides: Partial<ServerStartDeps> = {}) {
@@ -59,13 +123,20 @@ function harness(overrides: Partial<ServerStartDeps> = {}) {
     runtimeInstalled: vi.fn(() => true),
     ensureRuntime: vi.fn(async () => "/runtime"),
     choosePort: vi.fn(async () => 8080),
-    start: vi.fn(async () => ({
-      url: "http://localhost:8080",
-      port: 8080,
-      accessToken: "ps_token",
-      exited: new Promise<number | null>(() => {}),
-      stop: vi.fn(async () => {}),
+    start: vi.fn(async () => fakeServer().handle),
+    resolveFrpc: vi.fn(async () => ({
+      kind: "ready" as const,
+      path: "/frpc",
+      source: "managed" as const,
     })),
+    installFrpc: vi.fn(async () => "/installed/frpc"),
+    signRegistration: vi.fn(async () => ({
+      signature: "0xreg",
+      signerAddress: OWNER,
+      via: "silent" as const,
+    })),
+    readPublicMarker: vi.fn(() => null),
+    writePublicMarker: vi.fn(async () => {}),
     waitForStop: vi.fn(async () => "stopped" as const),
     ...overrides,
   };
@@ -205,6 +276,107 @@ describe("runServerStart", () => {
       "server-stopped",
     ]);
     expect(h.events[0]).toMatchObject({ registered: false, owner: OWNER });
+  });
+
+  it("stays local and never looks for a tunnel client without --public", async () => {
+    const h = harness();
+    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
+    expect(h.deps.resolveFrpc).not.toHaveBeenCalled();
+    expect(h.deps.start).toHaveBeenCalledWith(
+      expect.objectContaining({ frpcPath: null }),
+    );
+  });
+
+  it("--public stops before anything starts when no tunnel client may run", async () => {
+    const h = harness({
+      resolveFrpc: vi.fn(async () => ({
+        kind: "unavailable" as const,
+        reason: "No tunnel client signed by Vana is available on this Mac yet.",
+      })),
+    });
+    expect(
+      await runServerStart({ network: "moksha", public: true }, h.io, h.deps),
+    ).toBe(6);
+    expect(h.deps.start).not.toHaveBeenCalled();
+  });
+
+  it("--public installs the tunnel client, registers, and remembers it", async () => {
+    const server = fakeServer();
+    const h = harness({
+      resolveFrpc: vi.fn(async () => ({ kind: "installable" as const })),
+      start: vi.fn(async () => server.handle),
+    });
+    expect(
+      await runServerStart({ network: "moksha", public: true }, h.io, h.deps),
+    ).toBe(0);
+    expect(h.deps.installFrpc).toHaveBeenCalled();
+    expect(h.deps.start).toHaveBeenCalledWith(
+      expect.objectContaining({ frpcPath: "/installed/frpc" }),
+    );
+    expect(h.deps.signRegistration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trustToken: "trust",
+        allowBrowser: true,
+        accessToken: "token",
+      }),
+      expect.anything(),
+    );
+    expect(server.sent).toEqual([
+      { type: "prepare-registration" },
+      { type: "submit-registration", signature: "0xreg" },
+    ]);
+    expect(h.deps.writePublicMarker).toHaveBeenCalledWith(
+      "moksha",
+      expect.objectContaining({
+        serverAddress: "0xserver",
+        serverUrl: PUBLIC_URL,
+      }),
+    );
+    expect(
+      h.events.find((event) => event.type === "server-ready"),
+    ).toMatchObject({ registered: true, publicUrl: PUBLIC_URL });
+  });
+
+  it("submits nothing when the registration comes back signed by someone else", async () => {
+    const server = fakeServer();
+    const h = harness({
+      start: vi.fn(async () => server.handle),
+      signRegistration: vi.fn(async () => ({
+        signature: "0xreg",
+        signerAddress: OTHER,
+        via: "silent" as const,
+      })),
+    });
+    expect(
+      await runServerStart({ network: "moksha", public: true }, h.io, h.deps),
+    ).toBe(0);
+    expect(server.sent).toEqual([{ type: "prepare-registration" }]);
+    expect(h.deps.writePublicMarker).not.toHaveBeenCalled();
+    expect(
+      h.events.find((event) => event.type === "server-registration-failed"),
+    ).toBeDefined();
+    expect(
+      h.events.find((event) => event.type === "server-ready"),
+    ).toMatchObject({ registered: false, publicUrl: null });
+  });
+
+  it("brings a registered server back public without signing again", async () => {
+    const server = fakeServer({ registered: true });
+    const h = harness({
+      start: vi.fn(async () => server.handle),
+      readPublicMarker: vi.fn(() => ({
+        serverAddress: "0xserver",
+        serverUrl: PUBLIC_URL,
+        registeredAt: "2026-09-24T00:00:00.000Z",
+      })),
+    });
+    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
+    expect(h.deps.resolveFrpc).toHaveBeenCalled();
+    expect(h.deps.signRegistration).not.toHaveBeenCalled();
+    expect(server.sent).toEqual([]);
+    expect(
+      h.events.find((event) => event.type === "server-ready"),
+    ).toMatchObject({ registered: true, publicUrl: PUBLIC_URL });
   });
 
   it("reports a server that dies on its own", async () => {

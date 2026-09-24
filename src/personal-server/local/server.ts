@@ -123,13 +123,50 @@ export async function acquireDataDirLock(
   throw new Error(`Could not lock ${dir}.`);
 }
 
+/** One JSON line the server process writes on stdout. */
+export interface ServerMessage {
+  type: string;
+  [key: string]: unknown;
+}
+
 export interface LocalServerHandle {
   url: string;
   port: number;
   accessToken: string;
   /** Resolves when the server process exits, for whatever reason. */
   exited: Promise<number | null>;
+  /** Send one command line to the server process. */
+  send(command: Record<string, unknown>): void;
+  /** Every message from now on; returns an unsubscribe. */
+  onMessage(listener: (message: ServerMessage) => void): () => void;
   stop(): Promise<void>;
+}
+
+/** The next message of one of `types`, or a timeout error. */
+export function nextMessage(
+  handle: Pick<LocalServerHandle, "onMessage" | "exited">,
+  types: string[],
+  timeoutMs: number,
+): Promise<ServerMessage> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      unsubscribe();
+      reject(
+        new Error(`The Personal Server did not answer (${types.join(", ")}).`),
+      );
+    }, timeoutMs);
+    const unsubscribe = handle.onMessage((message) => {
+      if (!types.includes(message.type)) return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(message);
+    });
+    void handle.exited.then(() => {
+      clearTimeout(timer);
+      unsubscribe();
+      reject(new Error("The Personal Server exited."));
+    });
+  });
 }
 
 /**
@@ -143,6 +180,8 @@ export async function startLocalServer(input: {
   binding: OwnerBinding;
   port: number;
   logPath: string;
+  /** A tunnel client to run; absent = local only. */
+  frpcPath?: string | null;
   readyTimeoutMs?: number;
 }): Promise<LocalServerHandle> {
   const dataDir = localServerDataDir(input.network);
@@ -156,7 +195,7 @@ export async function startLocalServer(input: {
     PATH: `${path.dirname(input.node.path)}${path.delimiter}${process.env.PATH ?? ""}`,
     NODE_ENV: "production",
     PS_ACCESS_TOKEN: accessToken,
-    TUNNEL_ENABLED: "false",
+    TUNNEL_ENABLED: input.frpcPath ? "true" : "false",
     ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
   };
   const child: ChildProcess = spawn(input.node.path, ["entry.mjs"], {
@@ -175,6 +214,7 @@ export async function startLocalServer(input: {
     });
   });
 
+  const listeners = new Set<(message: ServerMessage) => void>();
   const ready = new Promise<string>((resolve, reject) => {
     let buffer = "";
     child.stdout?.setEncoding("utf8");
@@ -187,12 +227,19 @@ export async function startLocalServer(input: {
         newline = buffer.indexOf("\n");
         if (!line) continue;
         try {
-          const message = JSON.parse(line) as {
-            type?: string;
+          const message = JSON.parse(line) as ServerMessage & {
             url?: string;
             message?: string;
           };
-          log.write(`[entry] ${line}\n`);
+          // The server's own pino lines carry no type: keep them whole. An
+          // entry message is logged by type only, since a command's answer
+          // can carry typed data.
+          log.write(
+            typeof message.type === "string"
+              ? `[entry] ${message.type}\n`
+              : `${line}\n`,
+          );
+          for (const listener of [...listeners]) listener(message);
           if (message.type === "ready")
             resolve(message.url ?? `http://localhost:${input.port}`);
           if (message.type === "error")
@@ -229,11 +276,24 @@ export async function startLocalServer(input: {
         contracts: network.contracts,
         storageApiUrl: network.storageApiUrl,
       },
+      tunnel: input.frpcPath
+        ? { binaryPath: input.frpcPath, ...network.tunnel }
+        : null,
     })}\n`,
   );
-  child.stdin?.end();
+  // Stdin stays open: it carries the registration commands.
+  const send = (command: Record<string, unknown>) => {
+    if (child.stdin?.writable) {
+      child.stdin.write(`${JSON.stringify(command)}\n`);
+    }
+  };
+  const onMessage = (listener: (message: ServerMessage) => void) => {
+    listeners.add(listener);
+    return () => void listeners.delete(listener);
+  };
 
   const stop = async () => {
+    child.stdin?.end();
     if (child.exitCode !== null || child.signalCode !== null) return;
     child.kill("SIGINT");
     const killer = setTimeout(() => child.kill("SIGKILL"), 10_000);
@@ -257,11 +317,65 @@ export async function startLocalServer(input: {
         );
       }),
     ]);
-    return { url, port: input.port, accessToken, exited, stop };
+    return {
+      url,
+      port: input.port,
+      accessToken,
+      exited,
+      send,
+      onMessage,
+      stop,
+    };
   } catch (error) {
     await stop();
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/** What the CLI remembers about a server it registered. */
+export interface PublicMarker {
+  serverAddress: string;
+  serverUrl: string;
+  registeredAt: string;
+}
+
+function publicMarkerPath(network: VanaNetworkName): string {
+  return path.join(localServerDataDir(network), ".vana-cli-public.json");
+}
+
+/**
+ * A registered server stays public: registrations cannot be removed, so once
+ * apps may look for it, every later start brings its tunnel back.
+ */
+export function readPublicMarker(
+  network: VanaNetworkName,
+): PublicMarker | null {
+  try {
+    const value = JSON.parse(
+      fs.readFileSync(publicMarkerPath(network), "utf8"),
+    ) as Partial<PublicMarker>;
+    return typeof value.serverAddress === "string" &&
+      typeof value.serverUrl === "string"
+      ? {
+          serverAddress: value.serverAddress,
+          serverUrl: value.serverUrl,
+          registeredAt: String(value.registeredAt ?? ""),
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function writePublicMarker(
+  network: VanaNetworkName,
+  marker: PublicMarker,
+): Promise<void> {
+  await fsp.writeFile(
+    publicMarkerPath(network),
+    `${JSON.stringify(marker, null, 2)}\n`,
+    { mode: 0o600 },
+  );
 }

@@ -43,6 +43,13 @@ vana server status          # your server, local and registered URLs
 vana server start           # run your own server here when Vana Desktop is not
 ```
 
+`vana server start` is local only: `vana connect` writes to it, apps cannot
+reach it. `vana server start --public` registers it on-chain for your
+account, opens a public URL through Vana's relay, syncs to Vana storage, and
+stays public on every later start. A registration cannot be removed, so this
+is a step you take on purpose. On a Mac the tunnel client is a build of frpc
+signed and notarized by Vana (or Vana Desktop's copy, when installed).
+
 **Builder side** is what an app or an agent uses to work with someone
 else's data, with their consent:
 
