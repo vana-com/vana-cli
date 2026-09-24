@@ -93,15 +93,30 @@ async function startLoopbackCallback(expectedState: string): Promise<{
   };
 }
 
+/** What Account returns when an exchange is redeemed. */
+export interface RedeemedExchange {
+  status?: string;
+  signature?: string;
+  signerAddress?: string;
+  desktopSigningTrustToken?: string;
+  typedData?: unknown;
+}
+
 /**
- * Get the owner-binding signature through Account's signing exchange: Account
- * never signs silently for the CLI, so the person confirms in the browser,
- * and the result comes back to a one-time loopback listener.
+ * Run one Account signing exchange: the person confirms in the browser, and
+ * the result comes back to a one-time loopback listener, bound to this
+ * process by state and PKCE. `step` names the request in error messages.
  */
-export async function runOwnerBindingExchange(
-  input: { accountUrl: string; accessToken: string },
+export async function runSigningExchange(
+  input: {
+    accountUrl: string;
+    accessToken: string;
+    intent: string;
+    payload?: Record<string, unknown>;
+    step: string;
+  },
   deps: OwnerBindingDeps,
-): Promise<OwnerBinding> {
+): Promise<RedeemedExchange> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const account = input.accountUrl.replace(/\/+$/, "");
   const state = base64url(crypto.randomBytes(32));
@@ -119,7 +134,8 @@ export async function runOwnerBindingExchange(
         authorization: `Bearer ${input.accessToken}`,
       },
       body: JSON.stringify({
-        intent: OWNER_BINDING_INTENT,
+        intent: input.intent,
+        ...(input.payload ? { payload: input.payload } : {}),
         redirectUri: callback.redirectUri,
         state,
         codeChallenge,
@@ -128,7 +144,7 @@ export async function runOwnerBindingExchange(
     });
     if (!created.ok) {
       throw new Error(
-        await describeFailure("start the owner confirmation", created),
+        await describeFailure(`start the ${input.step}`, created),
       );
     }
     const { confirmationUrl } = (await created.json()) as {
@@ -172,31 +188,41 @@ export async function runOwnerBindingExchange(
     );
     if (!redeemed.ok) {
       throw new Error(
-        await describeFailure("finish the owner confirmation", redeemed),
+        await describeFailure(`finish the ${input.step}`, redeemed),
       );
     }
-    const body = (await redeemed.json()) as {
-      status?: string;
-      signature?: string;
-      signerAddress?: string;
-      desktopSigningTrustToken?: string;
-    };
+    const body = (await redeemed.json()) as RedeemedExchange;
     if (body.status !== "signed" || !body.signature || !body.signerAddress) {
       throw new Error(
-        "Account answered the owner confirmation without a signature.",
+        `Account answered the ${input.step} without a signature.`,
       );
     }
-    return {
-      signature: body.signature,
-      signerAddress: body.signerAddress,
-      trustToken: body.desktopSigningTrustToken ?? null,
-    };
+    return body;
   } finally {
     callback.close();
   }
 }
 
-async function describeFailure(
+/**
+ * Get the owner-binding signature through Account's signing exchange: Account
+ * never signs it silently for the CLI, so the person confirms in the browser.
+ */
+export async function runOwnerBindingExchange(
+  input: { accountUrl: string; accessToken: string },
+  deps: OwnerBindingDeps,
+): Promise<OwnerBinding> {
+  const body = await runSigningExchange(
+    { ...input, intent: OWNER_BINDING_INTENT, step: "owner confirmation" },
+    deps,
+  );
+  return {
+    signature: body.signature as string,
+    signerAddress: body.signerAddress as string,
+    trustToken: body.desktopSigningTrustToken ?? null,
+  };
+}
+
+export async function describeFailure(
   step: string,
   response: Response,
 ): Promise<string> {
