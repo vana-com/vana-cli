@@ -1748,6 +1748,76 @@ describe("runCli", () => {
     expect(stderr).toContain("Run this command in a desktop terminal.");
   });
 
+  it("says a login expired instead of naming its old identity when the server has another owner", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ]);
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "available",
+      url: "http://localhost:8080",
+      source: "scan",
+      health: {
+        status: "healthy",
+        version: "1.19.0",
+        uptime: 1,
+        owner: "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d",
+      },
+    });
+    mockLoadCredentials.mockReturnValue({
+      account: {
+        address: "0xbffbd3316ef8c6d8b8046151228c09840ae08d48",
+        session_token: "expired",
+        expires_at: "2026-01-01T00:00:00.000Z",
+      },
+      personal_server: null,
+    });
+    mockConfirm.mockResolvedValueOnce(false);
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "connect", "github"]);
+
+    expect(exitCode).toBe(7);
+    expect(stderr).toContain("Your vana login has expired");
+    expect(stderr).toContain("Run `vana login` to check.");
+    expect(stderr).not.toContain("you are signed in as");
+    mockLoadCredentials.mockReset();
+    mockLoadCredentials.mockReturnValue(null);
+  });
+
+  it("still names the signed-in identity when the login is current", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ]);
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "available",
+      url: "http://localhost:8080",
+      source: "scan",
+      health: {
+        status: "healthy",
+        version: "1.19.0",
+        uptime: 1,
+        owner: "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d",
+      },
+    });
+    mockLoadCredentials.mockReturnValue({
+      account: {
+        address: "0xbffbd3316ef8c6d8b8046151228c09840ae08d48",
+        session_token: "current",
+        expires_at: "2999-01-01T00:00:00.000Z",
+      },
+      personal_server: null,
+    });
+    mockConfirm.mockResolvedValueOnce(false);
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "connect", "github"]);
+
+    expect(exitCode).toBe(7);
+    expect(stderr).toContain("but you are signed in as");
+    mockLoadCredentials.mockReset();
+    mockLoadCredentials.mockReturnValue(null);
+  });
+
   it("guides recovery for runtime errors during connect", async () => {
     mockListAvailableSources.mockResolvedValue([
       {
