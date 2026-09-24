@@ -66,9 +66,9 @@ describe("resolveFrpc", () => {
     fs.writeFileSync(desktop, "");
     const deps = { ...base(), platform: "darwin" as const, arch: "arm64" };
 
+    // Unsigned: skipped, and the Vana-signed download is offered instead.
     expect(await resolveFrpc({ ...deps, desktopPaths: [desktop] })).toEqual({
-      kind: "unavailable",
-      reason: expect.stringContaining("signed by Vana"),
+      kind: "installable",
     });
 
     const signedByTeam = vi.fn(async () => true);
@@ -78,10 +78,12 @@ describe("resolveFrpc", () => {
     expect(signedByTeam).toHaveBeenCalledWith(desktop, VANA_APPLE_TEAM_ID);
   });
 
-  it("never offers the ad-hoc upstream download on a Mac", () => {
-    expect(
-      Object.keys(FRPC_ARTIFACTS).some((key) => key.startsWith("darwin")),
-    ).toBe(false);
+  it("downloads only Vana's signed build on a Mac, never upstream's", () => {
+    for (const key of ["darwin-arm64", "darwin-x64"]) {
+      expect(FRPC_ARTIFACTS[key].url).toMatch(
+        /^https:\/\/github\.com\/vana-com\/vana-cli\/releases\/download\/frpc-v/,
+      );
+    }
   });
 });
 
@@ -137,6 +139,40 @@ describe("installFrpc", () => {
       ).toBe(sha256);
     } finally {
       pinned.sha256 = original;
+    }
+  });
+});
+
+describe("installFrpc on a Mac", () => {
+  it("refuses a pinned download that Vana did not sign", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vana-frpc-mac-"));
+    try {
+      const inner = `frp_${FRPC_VERSION}_darwin_arm64`;
+      fs.mkdirSync(path.join(dir, "src", inner), { recursive: true });
+      fs.writeFileSync(path.join(dir, "src", inner, "frpc"), "");
+      const file = path.join(dir, "frp.tar.gz");
+      await tar.c({ gzip: true, file, cwd: path.join(dir, "src") }, [inner]);
+      const body = fs.readFileSync(file);
+      const pinned = FRPC_ARTIFACTS["darwin-arm64"];
+      const original = pinned.sha256;
+      pinned.sha256 = crypto.createHash("sha256").update(body).digest("hex");
+      const managedDir = path.join(dir, "managed");
+      try {
+        await expect(
+          installFrpc(path.join(dir, "log"), {
+            platform: "darwin",
+            arch: "arm64",
+            managedDir,
+            signedByTeam: async () => false,
+            fetchImpl: (async () => new Response(body)) as typeof fetch,
+          }),
+        ).rejects.toThrow(/not signed by Vana/);
+        expect(fs.existsSync(managedDir)).toBe(false);
+      } finally {
+        pinned.sha256 = original;
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

@@ -108,7 +108,9 @@ pnpm cli -- <args>  # run the built CLI
 - **Never run upstream's macOS frpc.** It is ad-hoc signed, and endpoint
   security flags an ad-hoc binary run from the home directory. A Mac runs
   only an frpc signed by team `G7QNBSSW44`: the one `sign-frpc.yml`
-  publishes (pin its sha256 in `frpc.ts`), or Vana Desktop's.
+  publishes on a `frpc-v<version>` tag (pinned by sha256 in `frpc.ts`, and
+  checked with codesign after install), or Vana Desktop's. A new frpc
+  version is a new tag, then new pins; never re-sign an existing one.
 - **Legacy connectors are read from a pinned data-connectors commit.**
   PDP-Connect deleted the Playwright format from main on 2026-09-22; moving
   the pin forward means checking that commit still has `registry.json`.

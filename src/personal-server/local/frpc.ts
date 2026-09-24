@@ -37,14 +37,30 @@ function upstream(name: string, ext: string, sha256: string): FrpcArtifact {
   };
 }
 
+function signed(name: string, sha256: string): FrpcArtifact {
+  const base = `frp_${FRPC_VERSION}_${name}`;
+  return {
+    url: `https://github.com/vana-com/vana-cli/releases/download/frpc-v${FRPC_VERSION}/${base}.tar.gz`,
+    sha256,
+    entry: `${base}/frpc`,
+  };
+}
+
 /**
- * Pinned downloads per platform. macOS has none yet on purpose: the upstream
- * binary is ad-hoc signed, and endpoint security on managed Macs treats an
- * ad-hoc binary run from the home directory as persistence. macOS gets a
- * build signed with Vana's Developer ID (the sign-frpc workflow) once it is
- * published; until then a Mac uses Vana Desktop's signed copy or none.
+ * Pinned downloads per platform. A Mac never gets upstream's build: it is
+ * ad-hoc signed, and endpoint security on managed Macs treats an ad-hoc
+ * binary run from the home directory as persistence. Macs download the copy
+ * the sign-frpc workflow signed and notarized with Vana's Developer ID.
  */
 export const FRPC_ARTIFACTS: Record<string, FrpcArtifact> = {
+  "darwin-arm64": signed(
+    "darwin_arm64",
+    "e0a45a02b8be7d2e0e3221b1e1deb242b490a1e6a685beeff04bcd96cb42a9f1",
+  ),
+  "darwin-x64": signed(
+    "darwin_amd64",
+    "106f023c440b395cf7d21283536a87156c69f26ebf40fd0084f11fc01de8f6a4",
+  ),
   "linux-x64": upstream(
     "linux_amd64",
     "tar.gz",
@@ -130,7 +146,8 @@ function isFile(file: string): boolean {
 /**
  * Find a tunnel client this machine may run, without downloading anything.
  * `VANA_FRPC_PATH` wins; then the CLI's own verified install; then, on a
- * Mac, Vana Desktop's copy when it carries Vana's signature.
+ * Mac, Vana Desktop's copy when it carries Vana's signature, which saves a
+ * download.
  */
 export async function resolveFrpc(
   overrides: Partial<FrpcDeps> = {},
@@ -175,10 +192,7 @@ export async function resolveFrpc(
   if (artifact) return { kind: "installable" };
   return {
     kind: "unavailable",
-    reason:
-      deps.platform === "darwin"
-        ? "No tunnel client signed by Vana is available on this Mac yet. Install Vana Desktop, or set VANA_FRPC_PATH."
-        : `No tunnel client is pinned for ${deps.platform}-${deps.arch}. Set VANA_FRPC_PATH.`,
+    reason: `No tunnel client is pinned for ${deps.platform}-${deps.arch}. Set VANA_FRPC_PATH.`,
   };
 }
 
@@ -228,6 +242,14 @@ export async function installFrpc(
     const target = path.join(installed, binaryName(deps.platform));
     await fsp.rename(path.join(staging, artifact.entry), target);
     if (deps.platform !== "win32") await fsp.chmod(target, 0o755);
+    // The hash already pins it; the signature check is what endpoint
+    // security will judge, so refuse anything it would flag.
+    if (
+      deps.platform === "darwin" &&
+      !(await deps.signedByTeam(target, VANA_APPLE_TEAM_ID))
+    ) {
+      throw new Error("The tunnel client is not signed by Vana.");
+    }
     await fsp.writeFile(
       path.join(installed, ".installed"),
       `${artifact.sha256}\n`,
