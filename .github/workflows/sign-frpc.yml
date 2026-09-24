@@ -1,0 +1,101 @@
+name: Sign frpc
+
+# Publishes the macOS tunnel client `vana server start --public` runs, signed
+# and notarized with the CLI's own Developer ID. Upstream's macOS frpc is
+# ad-hoc signed, and endpoint security on managed Macs reads an ad-hoc binary
+# run from the home directory as persistence (Vana Desktop signs its bundled
+# copy for the same reason).
+#
+# Run once per frpc version by pushing a `frpc-v<version>` tag. The release
+# it creates is immutable on purpose: the CLI pins the sha256 of each archive
+# in src/personal-server/local/frpc.ts, and a re-sign would change it.
+
+on:
+  push:
+    tags: ["frpc-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  sign:
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - name: Resolve version
+        run: echo "FRPC_VERSION=${GITHUB_REF_NAME#frpc-v}" >> "$GITHUB_ENV"
+
+      - name: Import Apple signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_BUILD_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_BUILD_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_ASC_API_KEY_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_ASC_API_KEY_ID }}
+        run: |
+          # Unlike a CLI release there is no ad-hoc fallback: an unsigned
+          # frpc is exactly what this workflow exists to replace.
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "Apple signing secrets are not available." >&2
+            exit 1
+          fi
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          API_KEY_PATH=$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
+          echo -n "$APPLE_API_KEY" | base64 --decode -o $API_KEY_PATH
+          security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" $KEYCHAIN_PATH
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$APPLE_CERTIFICATE_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          echo "APPLE_API_KEY_PATH=$API_KEY_PATH" >> $GITHUB_ENV
+
+      - name: Download, verify, sign and notarize
+        env:
+          APPLE_SIGNING_IDENTITY: "${{ format('Developer ID Application: Corsali, Inc ({0})', secrets.APPLE_TEAM_ID) }}"
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_ASC_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_ASC_API_KEY_ISSUER_UUID }}
+        run: |
+          set -euo pipefail
+          mkdir -p out work
+          curl -fsSL -o work/checksums.txt \
+            "https://github.com/fatedier/frp/releases/download/v${FRPC_VERSION}/frp_sha256_checksums.txt"
+          for arch in arm64 amd64; do
+            name="frp_${FRPC_VERSION}_darwin_${arch}"
+            curl -fsSL -o "work/${name}.tar.gz" \
+              "https://github.com/fatedier/frp/releases/download/v${FRPC_VERSION}/${name}.tar.gz"
+            # Upstream's own checksum file, so a swapped archive fails here.
+            (cd work && grep " ${name}.tar.gz\$" checksums.txt | shasum -a 256 -c -)
+            tar -xzf "work/${name}.tar.gz" -C work
+            binary="work/${name}/frpc"
+
+            codesign --force --options runtime --timestamp \
+              --sign "$APPLE_SIGNING_IDENTITY" "$binary"
+            codesign --verify --strict --verbose=2 "$binary"
+
+            ditto -c -k --keepParent "$binary" "work/${name}.notarize.zip"
+            xcrun notarytool submit "work/${name}.notarize.zip" \
+              --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER" --wait
+
+            # Same layout as upstream (frp_<v>_darwin_<arch>/frpc), which is
+            # what the CLI's installer unpacks.
+            mkdir -p "work/pack/${name}"
+            cp "$binary" "work/pack/${name}/frpc"
+            tar -czf "out/${name}.tar.gz" -C work/pack "${name}"
+          done
+          (cd out && shasum -a 256 *.tar.gz | tee sha256.txt)
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Never "latest": the installer and the release job resolve the
+          # latest release as the latest CLI.
+          gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/sha256.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "frpc ${FRPC_VERSION}, signed for macOS" \
+            --notes "frpc ${FRPC_VERSION} from fatedier/frp, checked against upstream checksums, signed with Vana's Developer ID and notarized. Used by \`vana server start --public\`. Checksums in sha256.txt." \
+            --latest=false

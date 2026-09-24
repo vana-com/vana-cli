@@ -100,6 +100,15 @@ pnpm cli -- <args>  # run the built CLI
 - **`vana server start` never shares Vana Desktop's data dir.** It runs the
   pinned server from `~/.vana/cli/personal-server/<network>`, local only, and
   uses a server this account already runs instead of starting a second one.
+- **Only `--public` registers, and only a tunnel URL.** Without a tunnel the
+  server offers its localhost origin as the registration URL; registering
+  that would leave a push-only entry no app can reach. A registered server
+  keeps its tunnel on every later start (`.vana-cli-public.json` in the data
+  dir).
+- **Never run upstream's macOS frpc.** It is ad-hoc signed, and endpoint
+  security flags an ad-hoc binary run from the home directory. A Mac runs
+  only an frpc signed by team `G7QNBSSW44`: the one `sign-frpc.yml`
+  publishes (pin its sha256 in `frpc.ts`), or Vana Desktop's.
 - **Legacy connectors are read from a pinned data-connectors commit.**
   PDP-Connect deleted the Playwright format from main on 2026-09-22; moving
   the pin forward means checking that commit still has `registry.json`.

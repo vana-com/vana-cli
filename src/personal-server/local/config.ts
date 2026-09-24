@@ -10,10 +10,12 @@ export interface LocalServerNetwork {
   gatewayUrl: string;
   storageApiUrl: string;
   contracts: Record<string, string>;
+  /** The relay frpc dials to give the server its public URL. */
+  tunnel: { serverAddr: string; serverPort: number };
 }
 
-// Same deployment on both chains. Mirrors the `contracts` block of Vana
-// Desktop's packages/app-runtime/src/personal-server/environments.json.
+// Same deployment on both chains. Mirrors the `contracts` and tunnel entries
+// of Vana Desktop's packages/app-runtime/src/personal-server/environments.json.
 const CONTRACTS: Record<string, string> = {
   dataPortabilityEscrow: "0x07d7769081adc3a3DBe91f5E4B98E9A5a6B292e3",
   dataPortabilityGrantees: "0x8325C0A0948483EdA023A1A2Fd895e62C5131234",
@@ -31,6 +33,7 @@ const NETWORKS: Record<VanaNetworkName, LocalServerNetwork> = {
     gatewayUrl: "https://dp-rpc.moksha.vana.org",
     storageApiUrl: "https://storage-dev.vana.org",
     contracts: CONTRACTS,
+    tunnel: { serverAddr: "frpc.server-dev.vana.org", serverPort: 7000 },
   },
   mainnet: {
     name: "mainnet",
@@ -38,6 +41,7 @@ const NETWORKS: Record<VanaNetworkName, LocalServerNetwork> = {
     gatewayUrl: "https://dp-rpc.vana.org",
     storageApiUrl: "https://storage.vana.org",
     contracts: CONTRACTS,
+    tunnel: { serverAddr: "frpc.server.vana.org", serverPort: 7000 },
   },
 };
 
