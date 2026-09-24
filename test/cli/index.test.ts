@@ -78,6 +78,13 @@ const mockLoadCredentials = vi.fn(() => null);
 vi.mock("../../src/runtime/index.js", () => ({
   findDataConnectorsDir: vi.fn(() => "/tmp/data-connectors"),
   ManagedPlaywrightRuntime: class {
+    get installSummary() {
+      return {
+        lines: ["Connector runner", "Chromium browser engine"],
+        phase: "Installing browser engine (one time, ~150MB)",
+      };
+    }
+
     get capabilities() {
       return {
         supportsHeaded: true,

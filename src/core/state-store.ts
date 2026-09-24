@@ -37,6 +37,12 @@ export interface StoredSourceState {
     syncedAt?: string;
     error?: string;
   }>;
+  /** Streams a Collection Profile run skipped; their earlier data was kept. */
+  skippedStreams?: Array<{
+    stream?: string;
+    reason?: string;
+    message?: string;
+  }>;
 }
 
 export interface CliConfig {

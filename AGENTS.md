@@ -30,6 +30,9 @@ src/
 |-- personal-server/  # resolving and talking to a person's server
 |-- connectors/       # the source catalog
 |-- runtime/          # managed Playwright for browser-based collection
+|-- pdpp/             # PDPP Collection Profile connectors: pins, install +
+|                     # verify, the stdio protocol, per-owner state, --from
+|-- vendor/           # PDP-Connect's connector installer, unmodified
 `-- skills/           # agent skills shipped with the CLI
 ```
 
@@ -90,3 +93,9 @@ pnpm cli -- <args>  # run the built CLI
   the owner in order.
 - **The browser may only auto-open on a real TTY**, or the test suite pops
   real tabs.
+- **Never pass PDPP\_\* through to a Collection Profile connector.** A remote
+  CDP URL makes its runtime attach to that browser and close every tab in
+  it; `src/pdpp/runtime.ts` strips them all before spawning.
+- **Legacy connectors are read from a pinned data-connectors commit.**
+  PDP-Connect deleted the Playwright format from main on 2026-09-22; moving
+  the pin forward means checking that commit still has `registry.json`.

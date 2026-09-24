@@ -79,6 +79,8 @@ export interface RuntimeInputRequest {
   };
   fields: string[];
   responseInputPath: string;
+  /** Collection Profile interaction kind; `manual_action` has no fields to fill. */
+  kind?: string;
 }
 
 export interface ConnectorRunRequest {

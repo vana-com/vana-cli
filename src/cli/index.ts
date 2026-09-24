@@ -91,6 +91,8 @@ import {
   findDataConnectorsDir,
   ManagedPlaywrightRuntime,
 } from "../runtime/index.js";
+import { getPdppProfileRoot } from "../pdpp/host.js";
+import { isPdppSource, PdppRuntime } from "../pdpp/runtime.js";
 import {
   listAvailableSkills,
   installSkill,
@@ -239,6 +241,7 @@ interface SourceMetadataMap {
     company?: string;
     description?: string;
     authMode?: "automated" | "interactive" | "legacy";
+    runtime?: "legacy" | "pdpp";
   };
 }
 
@@ -413,19 +416,31 @@ More:
     .option("--yes", "Approve safe setup prompts automatically")
     .option("--quiet", "Reduce non-essential output")
     .option("--detach", "Run in the background")
-    .action(async (source?: string) => {
-      process.exitCode = await runCommandWithTelemetry(
-        { ...telemetryBaseContext, command: "connect", source },
-        async () => {
-          if (parsedOptions.detach && source) {
-            return runDetached("connect", source, parsedOptions);
-          }
-          return source
-            ? runConnect(source, parsedOptions)
-            : runConnectEntry(parsedOptions);
-        },
-      );
-    });
+    .option(
+      "--from <checkout>",
+      "Run a Collection Profile connector from a data-connectors checkout",
+    )
+    .action(
+      async (source: string | undefined, commandOptions: ConnectOptions) => {
+        process.exitCode = await runCommandWithTelemetry(
+          { ...telemetryBaseContext, command: "connect", source },
+          async () => {
+            if (commandOptions.from && (!source || parsedOptions.detach)) {
+              process.stderr.write(
+                "--from needs a source and cannot be combined with --detach.\n",
+              );
+              return CliExitCode.USAGE;
+            }
+            if (parsedOptions.detach && source) {
+              return runDetached("connect", source, parsedOptions);
+            }
+            return source
+              ? runConnect(source, parsedOptions, { from: commandOptions.from })
+              : runConnectEntry(parsedOptions);
+          },
+        );
+      },
+    );
   connectCommand.addHelpText(
     "after",
     `
@@ -434,6 +449,7 @@ Examples:
   vana connect github
   vana connect github --json --no-input
   vana connect github --json --ipc
+  vana connect instinct --from ~/src/data-connectors
 `,
   );
 
@@ -1212,12 +1228,18 @@ export async function withPhaseProgress<T>(
   }
 }
 
+interface ConnectOptions {
+  /** A data-connectors checkout to run a Collection Profile connector from. */
+  from?: string;
+}
+
 async function runConnect(
   rawSource: string,
   options: GlobalOptions,
+  connectOptions: ConnectOptions = {},
 ): Promise<number> {
   const source = rawSource.toLowerCase();
-  const runtime = new ManagedPlaywrightRuntime();
+  const isPdpp = isPdppSource(source, { from: connectOptions.from });
   const emit = createEmitter(options);
   const renderer: ConnectRenderer | null =
     !options.json && !options.quiet ? createConnectRenderer() : null;
@@ -1273,6 +1295,15 @@ async function runConnect(
       }
     }
 
+    // Collection Profile state is kept per server owner, so it has to be
+    // settled here, after the server is known.
+    const runtime = isPdpp
+      ? new PdppRuntime({
+          from: connectOptions.from,
+          owner: target.health?.owner ?? loadCredentials()?.account?.address,
+        })
+      : new ManagedPlaywrightRuntime();
+
     // --- Phase 1: Runtime check (silent if installed) ---
     if (runtime.state !== "installed") {
       if (options.noInput) {
@@ -1290,10 +1321,11 @@ async function runConnect(
       if (!options.yes) {
         renderer?.cleanup();
         process.stderr.write("\n");
-        process.stderr.write("Vana Connect needs a local browser runtime.\n\n");
+        process.stderr.write("Vana Connect needs a local runtime.\n\n");
         process.stderr.write("This will install:\n");
-        process.stderr.write("  \u2022 Connector runner\n");
-        process.stderr.write("  \u2022 Chromium browser engine\n");
+        for (const line of runtime.installSummary.lines) {
+          process.stderr.write(`  \u2022 ${line}\n`);
+        }
         process.stderr.write("  \u2022 Local files under ~/.vana/\n\n");
         process.stderr.write("Your credentials stay on this machine.\n\n");
 
@@ -1320,7 +1352,7 @@ async function runConnect(
       try {
         installResult = await withPhaseProgress(
           renderer,
-          "Installing browser engine (one time, ~150MB)",
+          runtime.installSummary.phase,
           () => runtime.ensureInstalled(Boolean(options.yes)),
         );
       } catch (error) {
@@ -1346,9 +1378,7 @@ async function runConnect(
     // --- Phase 2: Connector fetch (silent if cached/fast) ---
     const preState = await readCliState();
     const currentVersion = preState.sources[source]?.connectorVersion;
-    let fetched: Awaited<
-      ReturnType<ManagedPlaywrightRuntime["fetchConnector"]>
-    >;
+    let fetched: Awaited<ReturnType<typeof runtime.fetchConnector>>;
     try {
       fetched = await withPhaseProgress(
         renderer,
@@ -1364,7 +1394,9 @@ async function runConnect(
 
       // Auto-retry on stale cache: clear cached connector and re-fetch
       // from remote (skip local data-connectors dir which may be stale).
-      if (isChecksumError) {
+      // Collection Profiles verify against a signed digest instead, and a
+      // failure there must never fall back to the legacy cache.
+      if (isChecksumError && !isPdpp) {
         try {
           const cacheDir = getConnectorCacheDir();
           const sourceCacheDir = path.join(cacheDir, source);
@@ -1469,10 +1501,12 @@ async function runConnect(
     });
 
     // --- Phase 3: Pre-connection validation (silent) ---
-    const profilePath = path.join(
-      getBrowserProfilesDir(),
-      `${path.basename(resolution.connectorPath, path.extname(resolution.connectorPath))}`,
-    );
+    const profilePath = isPdpp
+      ? path.join(getPdppProfileRoot(), source)
+      : path.join(
+          getBrowserProfilesDir(),
+          `${path.basename(resolution.connectorPath, path.extname(resolution.connectorPath))}`,
+        );
 
     if (
       sourceDetails?.authMode === "legacy" &&
@@ -1519,6 +1553,11 @@ async function runConnect(
     let resultPath = getSourceResultPath(source);
     let collectedResult = false;
     let blockedByRequiredInput = false;
+    const skippedStreams: Array<{
+      stream?: string;
+      reason?: string;
+      message?: string;
+    }> = [];
     let ingestScopeResults:
       | Array<{
           scope: string;
@@ -1545,10 +1584,38 @@ async function runConnect(
           fields: string[];
           schema?: { properties?: Record<string, unknown> };
           responseInputPath: string;
+          kind?: string;
         }) => {
           // Settle first: a spinner repaint would overwrite the prompt.
           launchProgress.settle();
           renderer?.pauseForPrompt();
+
+          // A manual step happens in the browser window the connector opened;
+          // the prompt only waits for the person to say it is done.
+          if (needInput.kind === "manual_action") {
+            process.stderr.write(
+              `\n${needInput.message ?? `Sign in to ${displayName} in the browser window.`}\n\n`,
+            );
+            let finished: boolean;
+            try {
+              finished = await confirm({
+                message: "Done in the browser?",
+                default: true,
+                ...vanaPromptTheme,
+              });
+            } catch (error) {
+              if (isPromptCancelled(error)) {
+                throw new Error("__vana_prompt_cancelled__");
+              }
+              throw error;
+            }
+            if (!finished) {
+              throw new Error("__vana_prompt_cancelled__");
+            }
+            process.stderr.write("\n");
+            renderer?.resumeAfterPrompt();
+            return {};
+          }
 
           // Show connector’s prompt message
           if (renderer) {
@@ -1560,7 +1627,12 @@ async function runConnect(
           const values: Record<string, string> = {};
           try {
             for (const field of needInput.fields) {
-              const isPasswordField = field.toLowerCase().includes("password");
+              const fieldSchema = needInput.schema?.properties?.[field] as
+                | { format?: unknown }
+                | undefined;
+              const isPasswordField =
+                field.toLowerCase().includes("password") ||
+                fieldSchema?.format === "password";
               if (isPasswordField) {
                 values[field] = await password({
                   message: humanizeField(field),
@@ -1649,6 +1721,15 @@ async function runConnect(
 
       if (event.type === "status-update") {
         // Status updates are silent in the new design
+        continue;
+      }
+
+      if (event.type === "stream-skipped") {
+        skippedStreams.push({
+          stream: event.stream,
+          reason: event.reason,
+          message: event.message,
+        });
         continue;
       }
 
@@ -1865,6 +1946,7 @@ async function runConnect(
         pendingExitCode !== null ? undefined : "collection-complete",
       connectionHealthRetryable: undefined,
       ingestScopes: ingestScopeResults,
+      skippedStreams: skippedStreams.length > 0 ? skippedStreams : undefined,
     });
 
     // Build scope-aware success summary
@@ -1900,6 +1982,11 @@ async function runConnect(
     // --- Phase 7: Success summary ---
     renderer?.success(`Connected ${displayName}.`);
     renderer?.detail(successSummary);
+    for (const skip of skippedStreams) {
+      renderer?.detail(
+        `Skipped ${skip.stream ?? "part of the run"}: ${skip.message ?? skip.reason ?? "no reason given"}. Earlier data for it was kept.`,
+      );
+    }
 
     // Partial sync guidance
     if (failedCount > 0 && storedCount > 0) {
@@ -2130,6 +2217,9 @@ async function runList(options: GlobalOptions): Promise<number> {
         } else {
           badges.push({ text: "local", tone: "muted" });
         }
+        if (source.runtime === "pdpp") {
+          badges.push({ text: "collection profile", tone: "muted" });
+        }
         emit.sourceTitle(source.name, badges);
         emit.detail(
           `Inspect with ${emit.code(`vana data show ${source.id}`)}.`,
@@ -2146,6 +2236,9 @@ async function runList(options: GlobalOptions): Promise<number> {
         recommendedSource.authMode !== "legacy"
       ) {
         badges.push({ text: "recommended", tone: "accent" });
+      }
+      if (source.runtime === "pdpp") {
+        badges.push({ text: "collection profile", tone: "muted" });
       }
       emit.sourceTitle(source.name, badges);
       if (source.description) {
@@ -2409,6 +2502,12 @@ function formatHumanStatusDetail(source: SourceStatus): string | null {
   }
   if (source.lastRunOutcome === CliOutcomeStatus.CONNECTOR_UNAVAILABLE) {
     return "No connector available. Run `vana sources`.";
+  }
+  if (source.skippedStreams && source.skippedStreams.length > 0) {
+    const streams = source.skippedStreams
+      .map((skip) => skip.stream ?? "the whole run")
+      .join(", ");
+    return `Skipped last run: ${streams}. Earlier data for them was kept. Details: \`vana logs ${source.source}\`.`;
   }
   return null;
 }
@@ -4231,8 +4330,12 @@ export async function gatherSourceStatuses(
   return [...sourceNames]
     .map((source): SourceStatus => {
       const stored = storedSources[source] ?? {};
-      const installed = installedFiles.some((file) => file.source === source);
       const details = metadata[source];
+      // Collection Profiles live outside the legacy connector cache, so their
+      // install is known only from the last connect.
+      const installed =
+        installedFiles.some((file) => file.source === source) ||
+        (details?.runtime === "pdpp" && stored.connectorInstalled === true);
       const dataState: SourceStatus["dataState"] =
         stored.dataState === "ingested_personal_server"
           ? "ingested_personal_server"
@@ -4266,6 +4369,7 @@ export async function gatherSourceStatuses(
         description: details?.description,
         authMode:
           details?.authMode ?? inferInstalledAuthMode(installedFiles, source),
+        runtime: details?.runtime,
         connectorVersion: stored.connectorVersion,
         exportFrequency: stored.exportFrequency,
         lastCollectedAt: stored.lastCollectedAt,
@@ -4282,6 +4386,7 @@ export async function gatherSourceStatuses(
         lastResultPath: stored.lastResultPath ?? null,
         lastLogPath: stored.lastLogPath ?? null,
         ingestScopes,
+        skippedStreams: stored.skippedStreams,
         syncedScopeCount: syncedScopeCount > 0 ? syncedScopeCount : undefined,
         failedScopeCount: failedScopeCount > 0 ? failedScopeCount : undefined,
         suggestedNextCollectionAt,
@@ -5063,6 +5168,7 @@ export function createSourceMetadataMap(
     company?: string;
     description?: string;
     authMode?: "automated" | "interactive" | "legacy";
+    runtime?: "legacy" | "pdpp";
   }>,
 ): SourceMetadataMap {
   return Object.fromEntries(
@@ -5073,6 +5179,7 @@ export function createSourceMetadataMap(
         company: source.company,
         description: source.description,
         authMode: source.authMode,
+        runtime: source.runtime,
       },
     ]),
   );

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { getConnectorCacheDir } from "../core/paths.js";
+import { PDPP_PINS } from "../pdpp/pins.js";
 
 // The connector library moved to the PDP-Connect org on 2026-07-18;
 // vana-com/data-connectors is frozen at that commit and two of its recorded
@@ -65,6 +66,8 @@ export interface AvailableSource {
   exportFrequency?: string;
   scopeLabels?: string[];
   authMode?: "automated" | "interactive" | "legacy";
+  /** `pdpp` runs a signed Collection Profile; `legacy` a Playwright script. */
+  runtime?: "legacy" | "pdpp";
 }
 
 export async function listAvailableSources(
@@ -83,9 +86,27 @@ export async function listAvailableSources(
     }),
   );
 
-  return sources
+  const pinned = new Set(PDPP_PINS.map((pin) => pin.id));
+  // A pinned Collection Profile replaces a legacy connector with the same id,
+  // as it does in Vana Desktop.
+  const legacy = sources
     .filter((value): value is AvailableSource => Boolean(value))
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .filter((source) => !pinned.has(source.id))
+    .map((source) => ({ ...source, runtime: "legacy" as const }));
+  const collectionProfiles: AvailableSource[] = PDPP_PINS.map((pin) => ({
+    id: pin.id,
+    name: pin.name,
+    company: pin.company,
+    description: pin.description,
+    version: pin.version,
+    // Every pinned connector signs in through a browser window the owner uses.
+    authMode: "legacy",
+    runtime: "pdpp",
+  }));
+
+  return [...legacy, ...collectionProfiles].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
 }
 
 export async function resolveConnector(

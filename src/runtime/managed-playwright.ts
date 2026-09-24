@@ -47,9 +47,20 @@ export interface NeedInputEvent {
   };
   fields: string[];
   responseInputPath: string;
+  /** Collection Profile interaction kind; `manual_action` has no fields to fill. */
+  kind?: string;
 }
 
 export class ManagedPlaywrightRuntime {
+  readonly kind = "playwright" as const;
+
+  get installSummary(): { lines: string[]; phase: string } {
+    return {
+      lines: ["Connector runner", "Chromium browser engine"],
+      phase: "Installing browser engine (one time, ~150MB)",
+    };
+  }
+
   get capabilities(): RuntimeCapabilities {
     return {
       supportsHeaded:
