@@ -93,6 +93,7 @@ import {
 } from "../runtime/index.js";
 import { getPdppProfileRoot } from "../pdpp/host.js";
 import { runServerStart } from "./server-start.js";
+import { stopLocalServer } from "../personal-server/local/detach.js";
 import { isPdppSource, PdppRuntime } from "../pdpp/runtime.js";
 import {
   listAvailableSkills,
@@ -682,7 +683,8 @@ Examples:
 Examples:
   vana server
   vana server start
-  vana server start --public
+  vana server start --detach
+  vana server stop
   vana server set-url http://localhost:8080
   vana server set-url https://ps-abc123.server.vana.org
   vana server clear-url
@@ -738,11 +740,12 @@ Examples:
       "Port to listen on (its neighbour hosts the approval page)",
     )
     .option(
-      "--public",
-      "Register the server on-chain and open its public URL, so apps can reach it",
+      "--local",
+      "Stay local only: no public URL, no on-chain registration, apps cannot reach it",
     )
+    .option("--detach", "Run in the background; stop with `vana server stop`")
     .option("--json", "Output machine-readable JSON")
-    .action(async (startOptions: { port?: string; public?: boolean }) => {
+    .action(async (startOptions: { port?: string; local?: boolean }) => {
       process.exitCode = await runCommandWithTelemetry(
         { ...telemetryBaseContext, command: "server", subcommand: "start" },
         async () => {
@@ -762,7 +765,8 @@ Examples:
               port,
               noInput: parsedOptions.noInput,
               yes: parsedOptions.yes,
-              public: startOptions.public,
+              local: startOptions.local,
+              detach: parsedOptions.detach,
             },
             {
               say: (line) => {
@@ -776,6 +780,36 @@ Examples:
                 confirm({ message, default: true, ...vanaPromptTheme }),
             },
           );
+        },
+      );
+    });
+
+  server
+    .command("stop")
+    .description("Stop the Personal Server `vana server start` runs here")
+    .option("--json", "Output machine-readable JSON")
+    .action(async () => {
+      process.exitCode = await runCommandWithTelemetry(
+        { ...telemetryBaseContext, command: "server", subcommand: "stop" },
+        async () => {
+          const network = resolveNetwork(parsedOptions.network).name;
+          const result = await stopLocalServer(network);
+          if (parsedOptions.json) {
+            process.stdout.write(
+              `${JSON.stringify({ type: "server-stop", result, network })}\n`,
+            );
+          } else {
+            process.stderr.write(
+              `${
+                result === "stopped"
+                  ? "Stopped."
+                  : result === "not-running"
+                    ? `No Personal Server started by vana is running (${network}).`
+                    : "The server did not stop in time."
+              }\n`,
+            );
+          }
+          return result === "timeout" ? CliExitCode.FAILURE : CliExitCode.OK;
         },
       );
     });

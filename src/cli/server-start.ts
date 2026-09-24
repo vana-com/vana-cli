@@ -34,6 +34,10 @@ import {
   type ServerMessage,
 } from "../personal-server/local/server.js";
 import {
+  startDetachedServer,
+  type DetachedStart,
+} from "../personal-server/local/detach.js";
+import {
   installFrpc,
   resolveFrpc,
   type FrpcResolution,
@@ -85,6 +89,7 @@ export interface ServerStartDeps {
     network: VanaNetworkName,
     marker: PublicMarker,
   ) => Promise<void>;
+  startDetached: typeof startDetachedServer;
   /** Resolves when the person asks the server to stop (Ctrl+C). */
   waitForStop: (handle: LocalServerHandle) => Promise<"stopped" | "exited">;
 }
@@ -108,6 +113,7 @@ export function defaultServerStartDeps(): ServerStartDeps {
     signRegistration: signServerRegistration,
     readPublicMarker,
     writePublicMarker,
+    startDetached: startDetachedServer,
     waitForStop: (handle) =>
       new Promise((resolve) => {
         // Stay subscribed until the process ends: a second Ctrl+C while the
@@ -134,8 +140,10 @@ export async function runServerStart(
     port?: number;
     noInput?: boolean;
     yes?: boolean;
-    /** Register the server and open its public URL, so apps can reach it. */
-    public?: boolean;
+    /** Stay local: no tunnel, no registration, nothing apps can reach. */
+    local?: boolean;
+    /** Start in the background and return once it answers. */
+    detach?: boolean;
   },
   io: ServerStartIo,
   deps: ServerStartDeps = defaultServerStartDeps(),
@@ -223,21 +231,21 @@ export async function runServerStart(
     deps.secrets.set(secretKey, binding);
   }
 
-  // Public: asked for now, or registered before. A registered server must
-  // come back reachable, or apps keep finding a URL that never answers.
+  // Public unless asked to stay local, as Desktop's server is. A registered
+  // server started --local stays registered, and apps find it offline.
   const marker = deps.readPublicMarker(options.network);
   let frpc: FrpcResolution | null = null;
-  if (options.public || marker) {
+  if (options.local) {
+    if (marker) {
+      io.say(
+        "This server is registered; while it runs local only, apps find it offline.",
+      );
+    }
+  } else {
     frpc = await deps.resolveFrpc();
     if (frpc.kind === "unavailable") {
-      if (options.public) {
-        io.say(frpc.reason);
-        io.event({ type: "server-tunnel-unavailable", reason: frpc.reason });
-        return CliExitCode.NOT_READY;
-      }
-      io.say(
-        `This server is registered, but ${frpc.reason} It starts local only.`,
-      );
+      io.say(`${frpc.reason} The server starts local only.`);
+      io.event({ type: "server-tunnel-unavailable", reason: frpc.reason });
     }
   }
 
@@ -282,6 +290,20 @@ export async function runServerStart(
   if (frpcNeeded) {
     io.say("Installing the tunnel client (one time)...");
     frpcPath = await deps.installFrpc(logPath);
+  }
+
+  // Everything that needed a person is done: the rest runs in the
+  // background, as a second `vana server start` that outlives this one.
+  if (options.detach) {
+    io.say("Starting in the background...");
+    return reportDetached(
+      await deps.startDetached({
+        network: options.network,
+        port: options.port,
+        local: options.local,
+      }),
+      io,
+    );
   }
 
   const port = await deps.choosePort(options.port);
@@ -340,9 +362,7 @@ export async function runServerStart(
     registered = outcome.registered;
     publicUrl = outcome.publicUrl;
   } else {
-    io.say(
-      "Local only: not registered and not reachable from other devices. Add --public to change that.",
-    );
+    io.say("Local only: not registered and not reachable from other devices.");
   }
   io.say("Collect into it with `vana connect <source>`. Press Ctrl+C to stop.");
   io.event({
@@ -376,7 +396,6 @@ async function goPublic(
   handle: LocalServerHandle,
   input: {
     network: VanaNetworkName;
-    public?: boolean;
     noInput?: boolean;
     accountUrl: string;
     accessToken: string;
@@ -422,12 +441,6 @@ async function goPublic(
   if (state.registered === true) {
     io.say(`Registered. Opening ${publicUrl ?? "the public URL"}...`);
     return { registered: true, publicUrl };
-  }
-  if (!input.public) {
-    io.say(
-      "This server is not registered, so apps cannot find it. Run with --public to register it.",
-    );
-    return { registered: false, publicUrl: null };
   }
   if (!publicUrl || !serverAddress) {
     io.say("The server did not reserve a public URL, so it stays local only.");
@@ -502,4 +515,58 @@ async function goPublic(
     });
     return { registered: false, publicUrl: null };
   }
+}
+
+/** Say what the background server reported, and whether it came up. */
+function reportDetached(start: DetachedStart, io: ServerStartIo): number {
+  for (const event of start.events) {
+    io.event(event);
+    const text = (key: string) => String(event[key] ?? "");
+    switch (event.type) {
+      case "server-ready":
+        io.say(`Personal Server running at ${text("url")}`);
+        io.say(`Owner ${text("owner")}, network ${text("network")}.`);
+        if (!event.publicUrl) {
+          io.say(
+            "Local only: not registered and not reachable from other devices.",
+          );
+        }
+        break;
+      case "server-registered":
+        io.say(`Registered ${text("serverUrl")}.`);
+        break;
+      case "server-tunnel":
+        io.say(
+          event.status === "connected"
+            ? `Reachable by apps at ${text("url")}`
+            : `The public URL is not answering yet: ${text("warning") || text("status")}`,
+        );
+        break;
+      case "server-registration-failed":
+        io.say(
+          event.needsBrowser
+            ? "Not registered: this account confirms registration in a browser. Run `vana server start` once in the foreground."
+            : `Not registered: ${text("message")}`,
+        );
+        break;
+      case "server-tunnel-unavailable":
+        io.say(`${text("reason")} The server runs local only.`);
+        break;
+      case "server-already-running":
+        io.say(`Your Personal Server is already running at ${text("url")}.`);
+        break;
+      default:
+        break;
+    }
+  }
+  if (!start.ready) {
+    io.say(`The background server did not start. See ${start.logPath}.`);
+    return start.events.some((event) => event.type === "server-already-running")
+      ? CliExitCode.OK
+      : CliExitCode.FAILURE;
+  }
+  io.say(
+    `Running in the background (pid ${start.pid}). Stop it with \`vana server stop\`.`,
+  );
+  return CliExitCode.OK;
 }
