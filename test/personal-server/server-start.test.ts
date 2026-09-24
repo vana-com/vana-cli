@@ -137,6 +137,22 @@ function harness(overrides: Partial<ServerStartDeps> = {}) {
     })),
     readPublicMarker: vi.fn(() => null),
     writePublicMarker: vi.fn(async () => {}),
+    startDetached: vi.fn(async () => ({
+      events: [
+        {
+          type: "server-ready",
+          url: "http://localhost:8080",
+          owner: OWNER,
+          network: "moksha",
+          registered: true,
+          publicUrl: PUBLIC_URL,
+        },
+        { type: "server-tunnel", status: "connected", url: PUBLIC_URL },
+      ],
+      ready: true,
+      pid: 4242,
+      logPath: "/log",
+    })),
     waitForStop: vi.fn(async () => "stopped" as const),
     ...overrides,
   };
@@ -254,7 +270,9 @@ describe("runServerStart", () => {
 
   it("starts the server, hands its token to vana connect, and stops on Ctrl+C", async () => {
     const h = harness();
-    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
+    expect(
+      await runServerStart({ network: "moksha", local: true }, h.io, h.deps),
+    ).toBe(0);
     expect(h.deps.start).toHaveBeenCalledWith(
       expect.objectContaining({
         network: "moksha",
@@ -278,37 +296,38 @@ describe("runServerStart", () => {
     expect(h.events[0]).toMatchObject({ registered: false, owner: OWNER });
   });
 
-  it("stays local and never looks for a tunnel client without --public", async () => {
+  it("stays local and never looks for a tunnel client with --local", async () => {
     const h = harness();
-    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
+    expect(
+      await runServerStart({ network: "moksha", local: true }, h.io, h.deps),
+    ).toBe(0);
     expect(h.deps.resolveFrpc).not.toHaveBeenCalled();
     expect(h.deps.start).toHaveBeenCalledWith(
       expect.objectContaining({ frpcPath: null }),
     );
   });
 
-  it("--public stops before anything starts when no tunnel client may run", async () => {
+  it("starts local only when no tunnel client may run here", async () => {
     const h = harness({
       resolveFrpc: vi.fn(async () => ({
         kind: "unavailable" as const,
         reason: "No tunnel client signed by Vana is available on this Mac yet.",
       })),
     });
-    expect(
-      await runServerStart({ network: "moksha", public: true }, h.io, h.deps),
-    ).toBe(6);
-    expect(h.deps.start).not.toHaveBeenCalled();
+    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
+    expect(h.deps.start).toHaveBeenCalledWith(
+      expect.objectContaining({ frpcPath: null }),
+    );
+    expect(h.deps.signRegistration).not.toHaveBeenCalled();
   });
 
-  it("--public installs the tunnel client, registers, and remembers it", async () => {
+  it("by default installs the tunnel client, registers, and remembers it", async () => {
     const server = fakeServer();
     const h = harness({
       resolveFrpc: vi.fn(async () => ({ kind: "installable" as const })),
       start: vi.fn(async () => server.handle),
     });
-    expect(
-      await runServerStart({ network: "moksha", public: true }, h.io, h.deps),
-    ).toBe(0);
+    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
     expect(h.deps.installFrpc).toHaveBeenCalled();
     expect(h.deps.start).toHaveBeenCalledWith(
       expect.objectContaining({ frpcPath: "/installed/frpc" }),
@@ -347,9 +366,7 @@ describe("runServerStart", () => {
         via: "silent" as const,
       })),
     });
-    expect(
-      await runServerStart({ network: "moksha", public: true }, h.io, h.deps),
-    ).toBe(0);
+    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
     expect(server.sent).toEqual([{ type: "prepare-registration" }]);
     expect(h.deps.writePublicMarker).not.toHaveBeenCalled();
     expect(
@@ -377,6 +394,36 @@ describe("runServerStart", () => {
     expect(
       h.events.find((event) => event.type === "server-ready"),
     ).toMatchObject({ registered: true, publicUrl: PUBLIC_URL });
+  });
+
+  it("--detach confirms ownership here, then hands the server to the background", async () => {
+    const h = harness();
+    expect(
+      await runServerStart({ network: "moksha", detach: true }, h.io, h.deps),
+    ).toBe(0);
+    expect(h.deps.exchange).toHaveBeenCalledTimes(1);
+    expect(h.deps.start).not.toHaveBeenCalled();
+    expect(h.deps.startDetached).toHaveBeenCalledWith(
+      expect.objectContaining({ network: "moksha" }),
+    );
+    const said = h.said.join("\n");
+    expect(said).toContain(`Reachable by apps at ${PUBLIC_URL}`);
+    expect(said).toContain("vana server stop");
+  });
+
+  it("--detach reports a background server that did not come up", async () => {
+    const h = harness({
+      startDetached: vi.fn(async () => ({
+        events: [{ type: "server-failed", logPath: "/x" }],
+        ready: false,
+        pid: 1,
+        logPath: "/detached.log",
+      })),
+    });
+    expect(
+      await runServerStart({ network: "moksha", detach: true }, h.io, h.deps),
+    ).toBe(1);
+    expect(h.said.join("\n")).toContain("/detached.log");
   });
 
   it("reports a server that dies on its own", async () => {
