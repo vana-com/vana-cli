@@ -573,6 +573,9 @@ describe("runDeviceCodeFlow", () => {
     expect((deviceInit.body as URLSearchParams).get("scope")).toBe(
       "openid profile offline_access",
     );
+    expect((deviceInit.body as URLSearchParams).get("audience")).toBe(
+      "account.vana.org",
+    );
 
     const [, tokenInit] = fetchMock.mock.calls[2] as [string, RequestInit];
     expect(fetchMock.mock.calls[2][0]).toBe(
@@ -583,6 +586,69 @@ describe("runDeviceCodeFlow", () => {
     );
     expect((tokenInit.body as URLSearchParams).get("client_id")).toBe(
       "vana-cli-dev",
+    );
+  });
+
+  it("still signs in when Account's CLI client does not allow the audience yet", async () => {
+    process.env.VANA_ACCOUNT_URL = "https://account-dev.vana.org";
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            device_authorization_endpoint:
+              "https://account-dev.vana.org/oauth/device/code",
+            token_endpoint: "https://account-dev.vana.org/oauth/token",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "invalid_request" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            device_code: "oauth-device-456",
+            user_code: "ABCD-5678",
+            verification_uri: "https://account-dev.vana.org/device",
+            expires_in: 300,
+            interval: 5,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "vana_account_oauth_token",
+            expires_at: "2026-04-22T00:00:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+    const promise = runDeviceCodeFlow({
+      onCode: vi.fn(),
+      onWaiting: vi.fn(),
+      onAuthorized: vi.fn(),
+      onExpired: vi.fn(),
+      onError: vi.fn(),
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(promise).resolves.toMatchObject({
+      account: { session_token: "vana_account_oauth_token" },
+    });
+    const withAudience = fetchMock.mock.calls[1][1] as RequestInit;
+    const withoutAudience = fetchMock.mock.calls[2][1] as RequestInit;
+    expect((withAudience.body as URLSearchParams).get("audience")).toBe(
+      "account.vana.org",
+    );
+    expect((withoutAudience.body as URLSearchParams).has("audience")).toBe(
+      false,
     );
   });
 

@@ -1241,13 +1241,18 @@ async function runConnect(
 
     // Collecting into a server owned by another identity looks like success
     // and is not undoable, so settle ownership before touching the source.
+    const credentials = loadCredentials();
     const mismatch = personalServerOwnerMismatch(
       target.health?.owner,
-      loadCredentials()?.account?.address,
+      credentials?.account?.address,
     );
     if (mismatch) {
+      // An expired login names whoever signed in last, which may be long
+      // gone; say that, rather than claim a current identity.
       renderer?.detail(
-        `The Personal Server at ${target.url} belongs to ${formatAddress(mismatch.owner)}, but you are signed in as ${formatAddress(mismatch.account)}.`,
+        credentials && isExpired(credentials)
+          ? `Your vana login has expired, so the CLI cannot check that the Personal Server at ${target.url} (owner ${formatAddress(mismatch.owner)}) is yours. Run \`vana login\` to check.`
+          : `The Personal Server at ${target.url} belongs to ${formatAddress(mismatch.owner)}, but you are signed in as ${formatAddress(mismatch.account)}.`,
       );
       if (options.noInput || options.yes) {
         renderer?.detail("Continuing; your data will be stored there.");

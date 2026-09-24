@@ -340,6 +340,9 @@ interface StartedDeviceCodeFlow {
 
 const OAUTH_DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 const DEFAULT_OAUTH_SCOPE = "openid profile offline_access";
+// Account signs for a Personal Server (owner binding, registration) only for
+// a token issued to its own audience.
+const DEFAULT_OAUTH_AUDIENCE = "account.vana.org";
 
 function resolveCredentialExpiry(params: {
   expiresAt?: string;
@@ -463,11 +466,32 @@ async function requestOAuthDeviceCode(
   endpoint: string,
   clientId: string,
 ): Promise<DeviceCodeResponse> {
+  const audience = process.env.VANA_OAUTH_AUDIENCE ?? DEFAULT_OAUTH_AUDIENCE;
+  const response = await postDeviceCodeRequest(endpoint, clientId, audience);
+  // An Account whose CLI client does not allow the audience yet rejects the
+  // whole request; signing in still works without it, only running a server
+  // of your own does not.
+  if (!response.ok && audience && response.status === 400) {
+    return readDeviceCodeResponse(
+      await postDeviceCodeRequest(endpoint, clientId, ""),
+    );
+  }
+  return readDeviceCodeResponse(response);
+}
+
+function postDeviceCodeRequest(
+  endpoint: string,
+  clientId: string,
+  audience: string,
+): Promise<Response> {
   const body = new URLSearchParams({
     client_id: clientId,
     scope: process.env.VANA_OAUTH_SCOPE ?? DEFAULT_OAUTH_SCOPE,
   });
-  const response = await fetch(endpoint, {
+  if (audience) {
+    body.set("audience", audience);
+  }
+  return fetch(endpoint, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -475,7 +499,11 @@ async function requestOAuthDeviceCode(
     },
     body,
   });
+}
 
+async function readDeviceCodeResponse(
+  response: Response,
+): Promise<DeviceCodeResponse> {
   if (!response.ok) {
     const detail = await readOAuthErrorDetail(response);
     throw new Error(
