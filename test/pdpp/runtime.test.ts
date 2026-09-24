@@ -44,7 +44,13 @@ function write(file: string, content: string) {
   fs.writeFileSync(file, content);
 }
 
-describe("PdppRuntime from a local checkout", () => {
+// The fake connector is TypeScript, run the way a checkout's connectors are:
+// by Node's own type stripping (22.6+). Real runs always use Node 24; CI's
+// Node 20 leg cannot load a .ts entry at all.
+const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
+const stripsTypes = nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 6);
+
+describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
   let home: string;
   let checkout: string;
   const saved = {
