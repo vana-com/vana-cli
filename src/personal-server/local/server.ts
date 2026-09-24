@@ -231,8 +231,14 @@ export async function startLocalServer(input: {
             url?: string;
             message?: string;
           };
-          // Never log a command's answer verbatim: it can carry typed data.
-          log.write(`[entry] ${message.type}\n`);
+          // The server's own pino lines carry no type: keep them whole. An
+          // entry message is logged by type only, since a command's answer
+          // can carry typed data.
+          log.write(
+            typeof message.type === "string"
+              ? `[entry] ${message.type}\n`
+              : `${line}\n`,
+          );
           for (const listener of [...listeners]) listener(message);
           if (message.type === "ready")
             resolve(message.url ?? `http://localhost:${input.port}`);
