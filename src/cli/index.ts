@@ -92,6 +92,7 @@ import {
   ManagedPlaywrightRuntime,
 } from "../runtime/index.js";
 import { getPdppProfileRoot } from "../pdpp/host.js";
+import { runServerStart } from "./server-start.js";
 import { isPdppSource, PdppRuntime } from "../pdpp/runtime.js";
 import {
   listAvailableSkills,
@@ -680,6 +681,7 @@ Examples:
     `
 Examples:
   vana server
+  vana server start
   vana server set-url http://localhost:8080
   vana server set-url https://ps-abc123.server.vana.org
   vana server clear-url
@@ -722,6 +724,53 @@ Examples:
       process.exitCode = await runCommandWithTelemetry(
         { ...telemetryBaseContext, command: "server", subcommand: "clear-url" },
         async () => runServerClearUrl(parsedOptions),
+      );
+    });
+
+  server
+    .command("start")
+    .description(
+      "Run your own Personal Server here, in the foreground, when Vana Desktop is not running one",
+    )
+    .option(
+      "--port <port>",
+      "Port to listen on (its neighbour hosts the approval page)",
+    )
+    .option("--json", "Output machine-readable JSON")
+    .action(async (startOptions: { port?: string }) => {
+      process.exitCode = await runCommandWithTelemetry(
+        { ...telemetryBaseContext, command: "server", subcommand: "start" },
+        async () => {
+          const port = startOptions.port
+            ? Number(startOptions.port)
+            : undefined;
+          if (
+            port !== undefined &&
+            !(Number.isInteger(port) && port > 0 && port < 65535)
+          ) {
+            process.stderr.write("--port needs a port number.\n");
+            return CliExitCode.USAGE;
+          }
+          return runServerStart(
+            {
+              network: resolveNetwork(parsedOptions.network).name,
+              port,
+              noInput: parsedOptions.noInput,
+              yes: parsedOptions.yes,
+            },
+            {
+              say: (line) => {
+                if (!parsedOptions.json) process.stderr.write(`${line}\n`);
+              },
+              event: (event) => {
+                if (parsedOptions.json)
+                  process.stdout.write(`${JSON.stringify(event)}\n`);
+              },
+              confirm: (message) =>
+                confirm({ message, default: true, ...vanaPromptTheme }),
+            },
+          );
+        },
       );
     });
 
@@ -6911,7 +6960,10 @@ async function runLogin(
           );
         } else {
           renderer.detail("No Personal Server found for this account yet.");
-          renderer.next("vana server set-url <url>");
+          renderer.next("vana server start");
+          renderer.detail(
+            "Or point at one you already run: vana server set-url <url>",
+          );
         }
         renderer.detail("Credentials saved to ~/.vana/auth.json");
       },
