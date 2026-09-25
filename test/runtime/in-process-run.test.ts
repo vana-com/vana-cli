@@ -327,6 +327,52 @@ describe("startInProcessConnectorRun", () => {
     }
   });
 
+  it("also sends a connector that asks for an emailed code to the browser (Oura)", async () => {
+    createFakeRuntime();
+    const previousDisplay = process.env.DISPLAY;
+    const previousTty = [process.stdin.isTTY, process.stdout.isTTY] as const;
+    process.env.DISPLAY = ":99";
+    setTty(true, true);
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  if (typeof page.requestInput === "function") {
+    await page.requestInput({ message: "Log in to Oura", schema: { type: "object", properties: {
+      email: { type: "string" }
+    } } });
+    return { signedInWith: "terminal" };
+  }
+  await page.showBrowser("https://cloud.ouraring.com/user/sign-in");
+  await page.promptUser("Sign in to Oura in the browser window.", async () => true, 1);
+  return { signedInWith: "browser" };
+})();
+`);
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const onNeedInput = vi.fn(async () => ({ email: "person@example.com" }));
+      const handle = startInProcessConnectorRun({
+        request: { connectorPath, source: "oura", noInput: false, onNeedInput },
+        logPath: path.join(os.tmpdir(), "vana-connect-oura-browser.log"),
+      });
+      const events = [];
+      for await (const event of handle.events()) {
+        events.push(event);
+      }
+      expect(onNeedInput).not.toHaveBeenCalled();
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "headed-required",
+            message: "Sign in to Oura in the browser window.",
+          }),
+        ]),
+      );
+    } finally {
+      restoreEnv("DISPLAY", previousDisplay);
+      setTty(...previousTty);
+    }
+  });
+
   it("keeps the password prompt on a Linux host where no browser window can open", async () => {
     createFakeRuntime();
     const originalPlatform = process.platform;

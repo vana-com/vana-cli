@@ -82,14 +82,17 @@ function asksForPassword(schema: PendingInputRequest["schema"]): boolean {
 }
 
 /**
- * True for a legacy connector that can sign in two ways: by asking for a
- * password, or by letting the person sign in in a visible browser. Every such
- * connector checks for `page.requestInput` before its login block and signs
- * in through the browser when it is missing, sending nothing to the site.
+ * True for a legacy connector that can sign in two ways: by asking in the
+ * terminal (a password, an emailed code, an API key), or by letting the
+ * person sign in in a visible browser. Such a connector checks for
+ * `page.requestInput` before its login block and signs in through the browser
+ * when it is missing, sending nothing to the site. In the browser the person
+ * handles whatever the site asks, including choices a connector gets wrong
+ * (Oura's connector picks "Use passkey" over "Email me a code").
  */
 export function signsInThroughBrowser(connectorCode: string): boolean {
   return (
-    /format\s*:\s*["']password["']/.test(connectorCode) &&
+    /typeof\s+page\.requestInput\b/.test(connectorCode) &&
     /page\.(showBrowser|promptUser)\(/.test(connectorCode)
   );
 }
@@ -388,9 +391,9 @@ export function startInProcessConnectorRun({
         writeLog,
       });
 
-      // At a terminal, a password typed into the CLI is the worse path: the
-      // site often asks for 2FA the connector cannot answer, and it teaches
-      // people to hand their password to a command-line tool. Without
+      // At a terminal, signing in through the CLI is the worse path: the site
+      // often asks for 2FA or offers a passkey the connector cannot handle,
+      // and it teaches people to hand their password to a command-line tool. Without
       // requestInput these connectors sign in through the visible browser.
       // Agents (no onNeedInput) and --no-input runs keep today's behaviour.
       // Only where a person can act in a browser window: a real terminal
