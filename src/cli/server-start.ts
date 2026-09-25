@@ -341,6 +341,7 @@ export async function runServerStart(
       url,
       session_token: handle.accessToken,
       expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      started_by: "vana-server-start",
     },
   });
 

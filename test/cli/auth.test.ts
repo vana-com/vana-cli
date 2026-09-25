@@ -15,6 +15,7 @@ import {
   accountSessionToPreserve,
   getAuthTarget,
   loadCredentials,
+  resolveLoginServerUrl,
   resolveOAuthClientId,
   runDeviceCodeFlow,
   runSelfHostedLoginFlow,
@@ -838,5 +839,59 @@ describe("loadCredentials", () => {
         expires_at: "2099-01-01T00:00:00.000Z",
       },
     });
+  });
+});
+
+describe("resolveLoginServerUrl", () => {
+  const originalHome = process.env.HOME;
+  const originalPsUrl = process.env.VANA_PS_URL;
+  let tempHome: string;
+
+  beforeEach(async () => {
+    tempHome = await mkdtemp(join(tmpdir(), "vana-login-target-"));
+    process.env.HOME = tempHome;
+    delete process.env.VANA_PS_URL;
+  });
+
+  afterEach(async () => {
+    process.env.HOME = originalHome;
+    if (originalPsUrl === undefined) delete process.env.VANA_PS_URL;
+    else process.env.VANA_PS_URL = originalPsUrl;
+    await rm(tempHome, { recursive: true, force: true });
+  });
+
+  async function store(personalServer: Record<string, unknown>) {
+    await mkdir(join(tempHome, ".vana"), { recursive: true });
+    await writeFile(
+      join(tempHome, ".vana", "auth.json"),
+      JSON.stringify({
+        account: {
+          address: "0xabc123",
+          session_token: "vana_sess_123",
+          expires_at: "2099-01-01T00:00:00.000Z",
+        },
+        personal_server: {
+          session_token: "ps",
+          expires_at: "2099-01-01T00:00:00.000Z",
+          ...personalServer,
+        },
+      }),
+    );
+  }
+
+  it("logs in to a server set with set-url", async () => {
+    await store({ url: "https://ps.example" });
+    expect(resolveLoginServerUrl()).toBe("https://ps.example");
+  });
+
+  it("never logs in to the server vana server start runs", async () => {
+    await store({
+      url: "http://localhost:8082",
+      started_by: "vana-server-start",
+    });
+    expect(resolveLoginServerUrl()).toBeUndefined();
+    expect(loadCredentials()?.personal_server?.started_by).toBe(
+      "vana-server-start",
+    );
   });
 });
