@@ -434,6 +434,40 @@ export function startInProcessConnectorRun({
   };
 }
 
+/**
+ * What the run log may say about a setData value. Status and error text are
+ * kept, since that is how a failed run is diagnosed. Everything else is the
+ * person's data (health records, profiles, messages): only its shape goes to
+ * the log, and for the result its keys, summary and error reasons.
+ */
+export function describeDataForLog(key: string, value: unknown): string {
+  if ((key === "status" || key === "error") && typeof value === "string") {
+    return value;
+  }
+  if (key === "result" && value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const errors = Array.isArray(record.errors) ? record.errors : [];
+    const reasons = errors
+      .map((entry) =>
+        entry && typeof entry === "object"
+          ? (entry as Record<string, unknown>).reason
+          : undefined,
+      )
+      .filter((reason): reason is string => typeof reason === "string");
+    return JSON.stringify({
+      keys: Object.keys(record),
+      exportSummary: record.exportSummary ?? null,
+      errors: reasons,
+    });
+  }
+  if (Array.isArray(value)) return `<array of ${value.length}>`;
+  if (value && typeof value === "object") {
+    return `<object with ${Object.keys(value).length} keys>`;
+  }
+  if (typeof value === "string") return `<string of ${value.length} chars>`;
+  return `<${value === null ? "null" : typeof value}>`;
+}
+
 function buildConnectorFunction(
   connectorCode: string,
 ): (page: unknown) => Promise<unknown> {
@@ -670,9 +704,7 @@ function createPageApi({
           });
         }
       }
-      writeLog(
-        `[data] ${key}=${typeof value === "string" ? value : JSON.stringify(value)}`,
-      );
+      writeLog(`[data] ${key}=${describeDataForLog(key, value)}`);
     },
 
     setProgress: async ({

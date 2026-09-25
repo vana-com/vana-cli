@@ -314,6 +314,75 @@ describe("startInProcessConnectorRun", () => {
     expect(log).not.toContain("person@example.com");
   });
 
+  it("sends fill to the page opened for the visible browser, not the old headless one", async () => {
+    const first = createFakeRuntime();
+    const headedPage = {
+      ...first.page,
+      fill: vi.fn(async () => undefined),
+      goto: vi.fn(async () => undefined),
+    };
+    const headedContext = {
+      ...first.context,
+      pages: vi.fn(() => [headedPage]),
+      newPage: vi.fn(async () => headedPage),
+    };
+    launchPersistentContext
+      .mockResolvedValueOnce(first.context)
+      .mockResolvedValueOnce(headedContext);
+    const previousDisplay = process.env.DISPLAY;
+    process.env.DISPLAY = ":99";
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  await page.showBrowser("https://example.com/login");
+  await page.fill("#email", "person@example.com");
+  await page.setData("result", { ok: true });
+})();
+`);
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const handle = startInProcessConnectorRun({
+        request: { connectorPath, source: "example", noInput: false },
+        logPath: path.join(os.tmpdir(), "vana-connect-page-swap.log"),
+      });
+      for await (const _event of handle.events()) {
+        void _event;
+      }
+      expect(headedPage.fill).toHaveBeenCalledWith(
+        "#email",
+        "person@example.com",
+        {},
+      );
+      expect(first.page.fill).not.toHaveBeenCalled();
+    } finally {
+      if (previousDisplay === undefined) delete process.env.DISPLAY;
+      else process.env.DISPLAY = previousDisplay;
+    }
+  });
+
+  it("logs the shape of collected data, never the data", async () => {
+    const { describeDataForLog } =
+      await import("../../src/runtime/playwright/in-process-run.js");
+    expect(describeDataForLog("status", "Signing in...")).toBe("Signing in...");
+    expect(describeDataForLog("error", "Could not fill email form")).toBe(
+      "Could not fill email form",
+    );
+    const result = describeDataForLog("result", {
+      exportSummary: { count: 2, label: "days of Oura data" },
+      "oura.sleep": [{ score: 81, bedtime: "23:10" }],
+      errors: [{ reason: "readiness timed out", disposition: "omitted" }],
+    });
+    expect(result).toContain("oura.sleep");
+    expect(result).toContain("readiness timed out");
+    expect(result).not.toContain("23:10");
+    expect(describeDataForLog("profile", { name: "Person" })).toBe(
+      "<object with 1 keys>",
+    );
+    expect(describeDataForLog("note", "private text")).toBe(
+      "<string of 12 chars>",
+    );
+  });
+
   it("writes a result and emits collection-complete", async () => {
     createFakeRuntime();
     const connectorPath = await writeConnector(`
