@@ -383,6 +383,12 @@ describe("startInProcessConnectorRun", () => {
         errors: [{ reason: "Could not load posts for @someone" }],
       }),
     ).toContain("Could not load posts for @<user>");
+    expect(
+      describeDataForLog("error", "No repositories for @alice-smith"),
+    ).toBe("No repositories for @<user>");
+    expect(describeDataForLog("status", "Fetching @a")).toBe(
+      "Fetching @<user>",
+    );
     expect(describeDataForLog("error", "Timed out after 30s")).toBe(
       "Timed out after 30s",
     );

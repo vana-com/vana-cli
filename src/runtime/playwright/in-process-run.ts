@@ -444,7 +444,7 @@ export function startInProcessConnectorRun({
 // a@b.com", "@handle has no posts"). Emails and handles are masked; a plain
 // name in free text cannot be told apart and is not.
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-const HANDLE = /(^|[\s("'])@[A-Za-z0-9._]{2,}/g;
+const HANDLE = /(^|[\s("'])@[A-Za-z0-9._-]+/g;
 
 function maskIdentifiers(text: string): string {
   return text.replace(EMAIL, "<email>").replace(HANDLE, "$1@<user>");
