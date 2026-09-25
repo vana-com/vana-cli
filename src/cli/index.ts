@@ -746,7 +746,7 @@ Examples:
   server
     .command("start")
     .description(
-      "Run your own Personal Server here, in the foreground, when Vana Desktop is not running one",
+      "Run your own Personal Server in the background (no Vana Desktop needed); stop with `vana server stop`",
     )
     .option(
       "--port <port>",
