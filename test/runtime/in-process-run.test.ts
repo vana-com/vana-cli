@@ -373,6 +373,36 @@ describe("startInProcessConnectorRun", () => {
     }
   });
 
+  it("goes back headless on the page the person signed in on, not a blank page", async () => {
+    const { page } = createFakeRuntime();
+    page.url.mockReturnValue("https://cloud.ouraring.com/dashboard");
+    const previousDisplay = process.env.DISPLAY;
+    process.env.DISPLAY = ":99";
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  await page.showBrowser("https://cloud.ouraring.com/user/sign-in");
+  await page.promptUser("Sign in to Oura in the browser window.", async () => true, 1);
+  await page.goHeadless();
+  await page.setData("result", { ok: true });
+})();
+`);
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const handle = startInProcessConnectorRun({
+        request: { connectorPath, source: "oura", noInput: false },
+        logPath: path.join(os.tmpdir(), "vana-connect-go-headless.log"),
+      });
+      for await (const event of handle.events()) {
+        void event;
+      }
+      const lastGoto = page.goto.mock.calls.at(-1);
+      expect(lastGoto?.[0]).toBe("https://cloud.ouraring.com/dashboard");
+    } finally {
+      restoreEnv("DISPLAY", previousDisplay);
+    }
+  });
+
   it("keeps the password prompt on a Linux host where no browser window can open", async () => {
     createFakeRuntime();
     const originalPlatform = process.platform;

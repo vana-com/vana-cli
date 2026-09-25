@@ -879,6 +879,17 @@ function createPageApi({
     },
 
     goHeadless: async () => {
+      // Connectors check the page right after this to confirm the person
+      // signed in (Oura, GitHub). Reopen on the site the visible window was
+      // on: the profile keeps the session, so that check sees it. A local
+      // page (Steam's data: form) is not reloaded; it would lose its input.
+      let returnTo: string | null = null;
+      try {
+        const current = runState.page?.url() ?? "";
+        if (/^https?:\/\//.test(current)) returnTo = current;
+      } catch {
+        returnTo = null;
+      }
       await reopenContext(
         runState,
         networkCaptures,
@@ -890,7 +901,7 @@ function createPageApi({
         logPath,
       );
       if (runState.page) {
-        await runState.page.goto("about:blank", {
+        await runState.page.goto(returnTo ?? "about:blank", {
           waitUntil: "domcontentloaded",
         });
       }
