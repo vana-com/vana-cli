@@ -21,7 +21,7 @@
     {
       "id": "agent-access",
       "name": "Agent Access",
-      "description": "Give your own agent its own identity, scoped and paid access to your data, and a way to cut it off",
+      "description": "Give your own agent (OpenClaw, Hermes Agent, more coming) scoped, paid access to your data, and a way to cut it off",
       "version": "1.0.0",
       "files": {
         "skill": "agent-access/SKILL.md"

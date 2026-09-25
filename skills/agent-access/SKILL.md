@@ -1,12 +1,12 @@
 ---
 name: agent-access
 description: >
-  Give your own agent (OpenClaw, a Claude Code session, any assistant that
-  can run a shell) its own identity, scoped and paid access to your data,
-  and a way to cut it off. Use when: (1) the user says "give my agent
-  access", "let OpenClaw read my data", "set up an agent in a sandbox with
-  Vana", (2) an agent the user runs should see some of their data but not
-  act as them. This skill is the owner's side. The agent itself uses the
+  Give your own agent (OpenClaw or Hermes Agent today, more to come) its
+  own identity, scoped and paid access to your data, and a way to cut it
+  off. Use when: (1) the user says "give my agent access", "let OpenClaw
+  read my data", "connect Hermes to Vana", "set up an agent in a sandbox
+  with Vana", (2) an agent the user runs should see some of their data but
+  not act as them. This skill is the owner's side. The agent itself uses the
   builder skill. For collecting data, use connect-data.
 ---
 
@@ -25,10 +25,28 @@ Two roles, often on two machines:
 | Role  | Who                         | Holds                                    |
 | ----- | --------------------------- | ---------------------------------------- |
 | Owner | the person whose data it is | their Vana login and Personal Server     |
-| Agent | OpenClaw or another agent   | its own app key and escrow, nothing else |
+| Agent | the agent the user picks    | its own app key and escrow, nothing else |
 
 Never give the agent the owner's login. Do not copy `~/.vana` from the
 owner's machine to the agent's.
+
+## First, ask which agent
+
+Before running anything, ask the user which agent they want to give
+access to, and wait for the answer:
+
+1. **OpenClaw** ([openclaw.ai](https://openclaw.ai))
+2. **Hermes Agent** by Nous Research
+   ([hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com))
+
+Tell them that more agents will be supported. Vana is not tied to one
+agent: every agent runs the same `vana` commands and follows the same
+builder skill, and only installing the agent and loading the skill differ.
+
+If they name another agent that can run shell commands and load
+`SKILL.md` skills, the Vana steps below still apply. Say that this agent
+is not a documented path yet, find out from its own docs where it loads
+skills from, and use that in step 2.
 
 ## Stop for the human
 
@@ -65,37 +83,85 @@ vana server stop
 vana server start --detach
 ```
 
-## 2. Choose where the agent runs
+## 2. Install the agent and load the builder skill
+
+Follow the section for the agent the user picked.
+
+### OpenClaw
+
+```bash
+npm install -g openclaw@latest
+openclaw onboard --install-daemon     # asks for a model provider key
+npm install -g vana-cli
+vana skills install builder
+```
+
+OpenClaw loads skills from `~/.agents/skills`, where `vana skills install`
+puts them, unless `OPENCLAW_STATE_DIR` moves its state elsewhere.
+
+### Hermes Agent
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+hermes setup                          # asks for a model provider
+npm install -g vana-cli
+vana skills install builder
+```
+
+Hermes Agent loads skills from `~/.hermes/skills`, not
+`~/.agents/skills`. Add the shared directory to `~/.hermes/config.yaml`,
+merging with any `skills:` section already there:
+
+```yaml
+skills:
+  external_dirs:
+    - ~/.agents/skills
+```
+
+Then check that the Vana builder skill appears in `hermes skills list`.
+
+## 3. Choose where the agent runs
 
 - **Same machine**: quickest to try. The agent runs as the owner's user, so
   it could still reach the owner's login and run owner commands such as
   `vana data show`. The grant limits what it asks for, not what it can
   reach.
-- **Sandbox** (a container or cloud VM): the grant becomes the boundary,
-  because the agent holds only its app key. Use this for anything real.
+- **Sandbox**: the grant becomes the boundary, because the agent holds
+  only its app key. Use this for anything real.
+  - OpenClaw: repeat step 2 inside a container or cloud VM
+    ([docs.openclaw.ai/install](https://docs.openclaw.ai/install)).
+  - Hermes Agent: keep it on the owner's machine and set
+    `terminal.backend` in `~/.hermes/config.yaml` to `docker`, `modal`,
+    `daytona` or another sandbox backend, so its shell commands run
+    there. The `vana` commands then run in the sandbox, so install the
+    CLI inside it (the standalone installer needs no Node:
+    `curl -fsSL https://raw.githubusercontent.com/vana-com/vana-cli/main/install/install.sh | sh`).
+    A fresh sandbox doesn't keep the key `register` created in the last
+    one, so give the agent a fixed key: generate it with
+    `echo "0x$(openssl rand -hex 32)"`, save it as `VANA_APP_KEY` in
+    `~/.hermes/.env`, and list `VANA_APP_KEY` under
+    `terminal.env_passthrough` (and `terminal.docker_forward_env` for
+    Docker). Never mount the owner's `~/.vana` into the sandbox.
 
-Steps 3 and 4 run wherever the agent runs.
+Step 4 runs wherever the agent's shell commands run.
 
-## 3. Agent: identity
+## 4. Agent: identity
 
 ```bash
-npm install -g vana-cli
-vana skills install builder
 vana app register --app-url <url that identifies the agent>
 vana app whoami --json
 ```
+
+Use the agent's homepage as the URL, such as
+`https://github.com/openclaw/openclaw` or
+`https://github.com/NousResearch/hermes-agent`.
 
 `register` creates an app key separate from the owner's account: in the
 OS keychain where there is one, otherwise `~/.vana/app-key.json`. To run
 two agents on one machine, give each its own key through `VANA_APP_KEY`.
 `whoami` prints the **app address**; the owner needs it to fund escrow.
 
-The builder skill teaches the agent to request, read, pay and branch on
-exit codes. Check that the agent loads skills from `~/.agents/skills` or
-`~/.claude/skills`; OpenClaw does so unless `OPENCLAW_STATE_DIR` moves its
-state elsewhere.
-
-## 4. Fund the agent's escrow (human step)
+## 5. Fund the agent's escrow (human step)
 
 The simplest path for the person: open
 [account.vana.org/developers](https://account.vana.org/developers),
@@ -118,7 +184,7 @@ vana app escrow balance --json
 Fund small amounts. The agent can spend nothing beyond what escrow holds,
 and `--max-fee` caps each read.
 
-## 5. Grant: the agent asks, the owner approves
+## 6. Grant: the agent asks, the owner approves
 
 The agent runs:
 
@@ -138,7 +204,7 @@ Keep requests to sources the Vana web app lists. A request that includes
 a source it doesn't list cannot be approved on the web, and data from
 local-only sources (such as Claude Code history) can't be granted this way.
 
-## 6. The agent reads and pays
+## 7. The agent reads and pays
 
 ```bash
 vana app read github.repositories --grant <grant-id> --pay --max-fee 0.05 --json
@@ -148,7 +214,7 @@ Without `--pay` it stops at exit **4** with the price. Every read is
 charged, including a re-read of data that hasn't changed, so an agent that
 reads on a schedule spends on every run. The owner's own reads stay free.
 
-## 7. Review and revoke
+## 8. Review and revoke
 
 In the Vana app, **Settings → Access history** lists each read the agent
 made under its grant. **Revoke** ends its access: the Personal Server
@@ -173,5 +239,7 @@ mainnet cannot find a server registered only on moksha.
   empty. The limit is in the fee's own asset (USDC.e on mainnet).
 - Exit 7 from `request`: nobody has approved yet. Do not re-request in a
   loop; poll `requests show` at a human pace.
+- The agent never runs `vana` commands: it did not load the builder
+  skill. Recheck step 2 for the agent the user picked.
 - `delivery: "enclave"` with `paid: false`: the owner serves this data
   from a TEE sandbox, which the gateway currently admits at zero price.
