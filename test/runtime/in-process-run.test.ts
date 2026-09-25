@@ -375,6 +375,17 @@ describe("startInProcessConnectorRun", () => {
     expect(result).toContain("oura.sleep");
     expect(result).toContain("readiness timed out");
     expect(result).not.toContain("23:10");
+    expect(
+      describeDataForLog("status", "Signed in as person@example.com"),
+    ).toBe("Signed in as <email>");
+    expect(
+      describeDataForLog("result", {
+        errors: [{ reason: "Could not load posts for @someone" }],
+      }),
+    ).toContain("Could not load posts for @<user>");
+    expect(describeDataForLog("error", "Timed out after 30s")).toBe(
+      "Timed out after 30s",
+    );
     expect(describeDataForLog("profile", { name: "Person" })).toBe(
       "<object with 1 keys>",
     );

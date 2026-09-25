@@ -440,9 +440,19 @@ export function startInProcessConnectorRun({
  * person's data (health records, profiles, messages): only its shape goes to
  * the log, and for the result its keys, summary and error reasons.
  */
+// Connectors put identities into status and error text ("Signed in as
+// a@b.com", "@handle has no posts"). Emails and handles are masked; a plain
+// name in free text cannot be told apart and is not.
+const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const HANDLE = /(^|[\s("'])@[A-Za-z0-9._]{2,}/g;
+
+function maskIdentifiers(text: string): string {
+  return text.replace(EMAIL, "<email>").replace(HANDLE, "$1@<user>");
+}
+
 export function describeDataForLog(key: string, value: unknown): string {
   if ((key === "status" || key === "error") && typeof value === "string") {
-    return value;
+    return maskIdentifiers(value);
   }
   if (key === "result" && value && typeof value === "object") {
     const record = value as Record<string, unknown>;
@@ -453,7 +463,8 @@ export function describeDataForLog(key: string, value: unknown): string {
           ? (entry as Record<string, unknown>).reason
           : undefined,
       )
-      .filter((reason): reason is string => typeof reason === "string");
+      .filter((reason): reason is string => typeof reason === "string")
+      .map(maskIdentifiers);
     return JSON.stringify({
       keys: Object.keys(record),
       exportSummary: record.exportSummary ?? null,
