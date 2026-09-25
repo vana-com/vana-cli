@@ -130,21 +130,42 @@ export function createPersonalServerClient(config: {
         return [];
       }
 
-      const params = prefix ? `?scopePrefix=${encodeURIComponent(prefix)}` : "";
-      const response = await fetch(`${baseUrl}/v1/data${params}`, {
-        method: "GET",
-        headers: authHeaders(),
-      });
+      // The server pages this list (20 by default) and reports the total;
+      // read every page, or scopes past the first page look missing.
+      const pageSize = 100;
+      const collected: unknown[] = [];
+      // A server that ignores offset or reports a wrong total must not keep
+      // this loop going: 100 pages is 10,000 scopes.
+      for (let offset = 0; offset < pageSize * 100; offset += pageSize) {
+        const params = new URLSearchParams({
+          limit: String(pageSize),
+          offset: String(offset),
+        });
+        if (prefix) params.set("scopePrefix", prefix);
+        const response = await fetch(`${baseUrl}/v1/data?${params}`, {
+          method: "GET",
+          headers: authHeaders(),
+        });
 
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => "Unknown error");
-        throw new Error(
-          `Scope listing failed: HTTP ${response.status}: ${errorText}`,
-        );
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => "Unknown error");
+          throw new Error(
+            `Scope listing failed: HTTP ${response.status}: ${errorText}`,
+          );
+        }
+
+        const body = (await response.json()) as {
+          scopes?: unknown[];
+          total?: unknown;
+        };
+        const page = body.scopes ?? [];
+        collected.push(...page);
+        const total = typeof body.total === "number" ? body.total : null;
+        if (page.length === 0 || total === null || collected.length >= total) {
+          break;
+        }
       }
-
-      const body = (await response.json()) as { scopes?: unknown[] };
-      return (body.scopes ?? [])
+      return collected
         .map(parseScopeSummary)
         .filter((scope): scope is ScopeSummary => scope !== null);
     },

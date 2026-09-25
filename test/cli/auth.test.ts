@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 const mocks = vi.hoisted(() => ({
   spawnSync: vi.fn(),
@@ -13,12 +13,15 @@ vi.mock("node:child_process", () => ({
 
 import {
   accountSessionToPreserve,
+  getAccountUrl,
+  getAuthFilePath,
   getAuthTarget,
   loadCredentials,
   resolveLoginServerUrl,
   resolveOAuthClientId,
   runDeviceCodeFlow,
   runSelfHostedLoginFlow,
+  saveCredentials,
 } from "../../src/cli/auth.js";
 
 describe("accountSessionToPreserve", () => {
@@ -761,6 +764,75 @@ describe("runDeviceCodeFlow", () => {
     await expect(promise).resolves.toMatchObject({
       personal_server: null,
     });
+  });
+});
+
+describe("getAccountUrl", () => {
+  const original = {
+    url: process.env.VANA_ACCOUNT_URL,
+    env: process.env.VANA_ENV,
+  };
+  afterEach(() => {
+    if (original.url === undefined) delete process.env.VANA_ACCOUNT_URL;
+    else process.env.VANA_ACCOUNT_URL = original.url;
+    if (original.env === undefined) delete process.env.VANA_ENV;
+    else process.env.VANA_ENV = original.env;
+  });
+
+  it("follows VANA_ENV=dev to the dev Account, like every other host", () => {
+    delete process.env.VANA_ACCOUNT_URL;
+    process.env.VANA_ENV = "dev";
+    expect(getAccountUrl()).toBe("https://account-dev.vana.org");
+  });
+
+  it("uses production Account by default", () => {
+    delete process.env.VANA_ACCOUNT_URL;
+    delete process.env.VANA_ENV;
+    expect(getAccountUrl()).toBe("https://account.vana.org");
+  });
+
+  it("keeps one login file per Account environment", () => {
+    delete process.env.VANA_ACCOUNT_URL;
+    delete process.env.VANA_ENV;
+    expect(basename(getAuthFilePath())).toBe("auth.json");
+    process.env.VANA_ENV = "dev";
+    expect(basename(getAuthFilePath())).toBe("auth.account-dev.vana.org.json");
+    process.env.VANA_ACCOUNT_URL = "http://localhost:3000";
+    expect(basename(getAuthFilePath())).toBe("auth.localhost_3000.json");
+  });
+
+  it("saves and loads a dev login without touching the production one", async () => {
+    const home = await mkdtemp(join(tmpdir(), "vana-auth-env-"));
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      delete process.env.VANA_ACCOUNT_URL;
+      const login = (address: string) => ({
+        account: {
+          address,
+          session_token: `token-${address}`,
+          expires_at: "2999-01-01T00:00:00.000Z",
+        },
+        personal_server: null,
+      });
+      delete process.env.VANA_ENV;
+      await saveCredentials(login("0xprod"));
+      process.env.VANA_ENV = "dev";
+      expect(loadCredentials()).toBeNull();
+      await saveCredentials(login("0xdev"));
+      expect(loadCredentials()?.account.address).toBe("0xdev");
+      delete process.env.VANA_ENV;
+      expect(loadCredentials()?.account.address).toBe("0xprod");
+    } finally {
+      process.env.HOME = originalHome;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("lets VANA_ACCOUNT_URL win over VANA_ENV", () => {
+    process.env.VANA_ACCOUNT_URL = "http://localhost:3000/";
+    process.env.VANA_ENV = "dev";
+    expect(getAccountUrl()).toBe("http://localhost:3000");
   });
 });
 

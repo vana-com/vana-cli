@@ -125,6 +125,47 @@ describe("vana app request", () => {
     });
   });
 
+  it("shows the name register remembered, not Vana CLI, on the approval page", async () => {
+    let configured: { app?: { name?: string; homepageUrl?: string } } = {};
+    const exitCode = await runAppRequest(
+      { json: true, noInput: true, scopes: "oura.sleep" },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        readProfile: () => ({
+          name: "OpenClaw",
+          url: "https://github.com/openclaw/openclaw",
+        }),
+        createController: ((config: typeof configured) => {
+          configured = config;
+          return controller([{ status: "pending" }])();
+        }) as never,
+      },
+    );
+    expect(exitCode).toBe(7);
+    expect(configured.app?.name).toBe("OpenClaw");
+    expect(configured.app?.homepageUrl).toBe(
+      "https://github.com/openclaw/openclaw",
+    );
+  });
+
+  it("lets --app-name override the remembered name for one request", async () => {
+    let configured: { app?: { name?: string } } = {};
+    await runAppRequest(
+      { json: true, noInput: true, scopes: "oura.sleep", appName: "Test run" },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        readProfile: () => ({ name: "OpenClaw" }),
+        createController: ((config: typeof configured) => {
+          configured = config;
+          return controller([{ status: "pending" }])();
+        }) as never,
+      },
+    );
+    expect(configured.app?.name).toBe("Test run");
+  });
+
   it("polls to approval and reports the grant", async () => {
     const requests = store();
     const exitCode = await runAppRequest(

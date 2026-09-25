@@ -42,9 +42,27 @@ interface LegacyVanaCredentials {
 }
 
 const AUTH_FILE = "auth.json";
+const PRODUCTION_ACCOUNT_URL = "https://account.vana.org";
 
-function getAuthFilePath(): string {
-  return path.join(getVanaHome(), AUTH_FILE);
+/**
+ * One login per Account deployment. Production keeps ~/.vana/auth.json; any
+ * other Account (VANA_ENV=dev, or VANA_ACCOUNT_URL) gets its own file, so a
+ * login and the Personal Server session saved with it are never sent to the
+ * other environment, and switching back and forth needs no new login.
+ */
+export function getAuthFilePath(): string {
+  const accountUrl = getAccountUrl();
+  if (accountUrl === PRODUCTION_ACCOUNT_URL) {
+    return path.join(getVanaHome(), AUTH_FILE);
+  }
+  let host: string;
+  try {
+    host = new URL(accountUrl).host;
+  } catch {
+    host = accountUrl;
+  }
+  const safe = host.replace(/[^A-Za-z0-9.-]/g, "_");
+  return path.join(getVanaHome(), `auth.${safe}.json`);
 }
 
 function normalizeCredentials(
@@ -370,9 +388,14 @@ function resolveCredentialExpiry(params: {
 
 /** The Vana Account the CLI signs in to; `VANA_ACCOUNT_URL` overrides it. */
 export function getAccountUrl(): string {
+  // VANA_ENV=dev points every other host at the dev deployment
+  // (core/network.ts); Account has to follow, or a dev login is sent to the
+  // production Account and refused as "not accepted".
   return (
     process.env.VANA_ACCOUNT_URL?.replace(/\/+$/, "") ??
-    "https://account.vana.org"
+    (process.env.VANA_ENV === "dev"
+      ? "https://account-dev.vana.org"
+      : PRODUCTION_ACCOUNT_URL)
   );
 }
 

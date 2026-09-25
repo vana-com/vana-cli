@@ -121,8 +121,58 @@ describe("createPersonalServerClient", () => {
       ]);
 
       const [url, opts] = mockFetch.mock.calls[0];
-      expect(url).toBe(`${SERVER_URL}/v1/data?scopePrefix=github`);
+      expect(url).toBe(
+        `${SERVER_URL}/v1/data?limit=100&offset=0&scopePrefix=github`,
+      );
       expect(opts.headers.Authorization).toBe("Bearer test-token");
+    });
+
+    it("reads every page when the server has more scopes than one page", async () => {
+      const page = (start: number, n: number) =>
+        Array.from({ length: n }, (_, i) => ({
+          scope: `source.scope${start + i}`,
+          count: 1,
+        }));
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ scopes: page(0, 100), total: 130 }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ scopes: page(100, 30), total: 130 }),
+        });
+
+      const client = createPersonalServerClient({
+        url: SERVER_URL,
+        auth: { type: "bearerToken", token: "test-token" },
+      });
+      const scopes = await client.listScopes();
+
+      expect(scopes).toHaveLength(130);
+      expect(scopes.at(-1)?.scope).toBe("source.scope129");
+      expect(mockFetch.mock.calls[1][0]).toBe(
+        `${SERVER_URL}/v1/data?limit=100&offset=100`,
+      );
+    });
+
+    it("stops paging when a server keeps reporting more than it returns", async () => {
+      mockFetch.mockImplementation(async () => ({
+        ok: true,
+        json: async () => ({
+          scopes: [{ scope: "same.scope", count: 1 }],
+          total: 1_000_000,
+        }),
+      }));
+
+      const client = createPersonalServerClient({
+        url: SERVER_URL,
+        auth: { type: "bearerToken", token: "test-token" },
+      });
+      await client.listScopes();
+
+      expect(mockFetch).toHaveBeenCalledTimes(100);
+      mockFetch.mockReset();
     });
 
     it("normalizes versionCount responses from the personal server", async () => {

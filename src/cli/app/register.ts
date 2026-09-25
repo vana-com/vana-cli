@@ -22,16 +22,20 @@ import {
   resolveNetwork,
   type ResolvedNetwork,
 } from "../../core/network.js";
+import { saveAppProfile } from "../../core/app-profile.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
 
 export interface RegisterCommandOptions extends AppCommandOptions {
   /** Public URL of the app; the gateway stores it on the record. */
   appUrl?: string;
+  /** Name people see when this app asks for access; remembered locally. */
+  appName?: string;
 }
 
 export interface RegisterDeps {
   createClient?: (gatewayUrl: string) => GatewayClient;
   resolveKey?: typeof resolveAppKey;
+  saveProfile?: typeof saveAppProfile;
 }
 
 const EIP712_DOMAIN_NAME = "Vana Data Portability";
@@ -104,6 +108,18 @@ export async function runAppRegister(
       });
     }
     throw error;
+  }
+
+  // Remember how this app introduces itself, so `vana app request` shows it
+  // on the approval page without repeating --app-name every time.
+  // A local file that cannot be written must not cost the registration.
+  try {
+    (deps.saveProfile ?? saveAppProfile)(key.address, {
+      name: options.appName,
+      url: options.appUrl,
+    });
+  } catch {
+    // The name then has to be passed as --app-name on each request.
   }
 
   const client = (deps.createClient ?? createGatewayClient)(network.gatewayUrl);
