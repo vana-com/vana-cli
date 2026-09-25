@@ -879,12 +879,9 @@ describe("resolveLoginServerUrl", () => {
     );
   }
 
-  it("logs in to a server set with set-url", async () => {
+  it("never picks a login target from a saved server URL", async () => {
     await store({ url: "https://ps.example" });
-    expect(resolveLoginServerUrl()).toBe("https://ps.example");
-  });
-
-  it("never logs in to the server vana server start runs", async () => {
+    expect(resolveLoginServerUrl()).toBeUndefined();
     await store({
       url: "http://localhost:8082",
       started_by: "vana-server-start",
@@ -893,5 +890,10 @@ describe("resolveLoginServerUrl", () => {
     expect(loadCredentials()?.personal_server?.started_by).toBe(
       "vana-server-start",
     );
+  });
+
+  it("logs in to a self-hosted server named in VANA_PS_URL", () => {
+    process.env.VANA_PS_URL = "https://ps.example";
+    expect(resolveLoginServerUrl()).toBe("https://ps.example");
   });
 });

@@ -882,18 +882,13 @@ export function accountSessionToPreserve(
 }
 
 /**
- * The self-hosted server `vana login` should log in to, if any: one named on
- * the command line or in the environment, or set with `vana server set-url`.
- * Never the server `vana server start` runs: that one is the account's own.
+ * The self-hosted server `vana login` logs in to, only when one is named:
+ * `--server` on the command line, or VANA_PS_URL. A URL saved in auth.json
+ * never changes who you log in to; without one, login is Vana Account.
  */
 export function resolveLoginServerUrl(): string | undefined {
-  const stored = loadCredentials()?.personal_server;
   return (
-    process.env.VANA_PS_URL ||
-    process.env.VANA_PERSONAL_SERVER_URL ||
-    (stored && stored.started_by !== "vana-server-start"
-      ? stored.url
-      : undefined)
+    process.env.VANA_PS_URL || process.env.VANA_PERSONAL_SERVER_URL || undefined
   );
 }
 
