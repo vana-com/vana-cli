@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
+import { getVanaHome } from "../../core/paths.js";
 
 import type { BrowserContext, Cookie, Page } from "playwright";
 
@@ -276,13 +276,11 @@ export function startInProcessConnectorRun({
 }): ConnectorRunHandle {
   const runId = `${path.basename(request.connectorPath, path.extname(request.connectorPath))}-${Date.now()}`;
   const pendingInputPath = path.join(
-    os.homedir(),
-    ".vana",
+    getVanaHome(),
     `pending-input-${runId}.json`,
   );
   const responseInputPath = path.join(
-    os.homedir(),
-    ".vana",
+    getVanaHome(),
     `input-response-${runId}.json`,
   );
   const logStream = fs.createWriteStream(logPath);

@@ -2,8 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/**
+ * Everything the CLI keeps: ~/.vana, or VANA_HOME when set. VANA_HOME moves
+ * only the CLI's own folder, so a second, isolated CLI state (a demo, a test
+ * account) keeps the real HOME and with it the macOS keychain that Chrome
+ * and the owner secret store need.
+ */
 export function getVanaHome(): string {
-  return path.join(os.homedir(), ".vana");
+  return process.env.VANA_HOME
+    ? path.resolve(process.env.VANA_HOME)
+    : path.join(os.homedir(), ".vana");
 }
 
 /**
@@ -23,6 +31,8 @@ export function getVanaHome(): string {
  * install), and null when nothing changed.
  */
 export function migrateLegacyDataHome(): "migrated" | "symlinked" | null {
+  // An explicit VANA_HOME is not the default home; leave ~/.dataconnect be.
+  if (process.env.VANA_HOME) return null;
   const vanaHome = getVanaHome();
   const oldHome = path.join(os.homedir(), ".dataconnect");
 

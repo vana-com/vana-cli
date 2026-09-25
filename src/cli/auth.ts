@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
+import { getVanaHome } from "../core/paths.js";
 
 export interface VanaCredentials {
   account: {
@@ -44,7 +44,7 @@ interface LegacyVanaCredentials {
 const AUTH_FILE = "auth.json";
 
 function getAuthFilePath(): string {
-  return path.join(os.homedir(), ".vana", AUTH_FILE);
+  return path.join(getVanaHome(), AUTH_FILE);
 }
 
 function normalizeCredentials(
