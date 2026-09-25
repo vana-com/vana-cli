@@ -7,13 +7,26 @@ import {
 } from "../../src/core/network.js";
 
 describe("resolveNetwork", () => {
-  it("defaults to moksha with prod hosts", () => {
+  it("defaults to mainnet with prod hosts", () => {
     const network = resolveNetwork(undefined, {});
-    expect(network.name).toBe("moksha");
+    expect(network.name).toBe("mainnet");
     expect(network.name).toBe(DEFAULT_NETWORK);
     expect(network.env).toBe("prod");
-    expect(network.chainId).toBe(14800);
-    expect(network.gatewayUrl).toBe("https://dp-rpc.moksha.vana.org");
+    expect(network.chainId).toBe(1480);
+    expect(network.gatewayUrl).toBe("https://dp-rpc.vana.org");
+  });
+
+  it("keeps moksha the default on dev hosts, which have no mainnet", () => {
+    const network = resolveNetwork(undefined, { VANA_ENV: "dev" });
+    expect(network.name).toBe("moksha");
+    expect(network.env).toBe("dev");
+  });
+
+  it("still takes moksha when asked", () => {
+    expect(resolveNetwork("moksha", {}).chainId).toBe(14800);
+    expect(resolveNetwork(undefined, { VANA_NETWORK: "moksha" }).name).toBe(
+      "moksha",
+    );
   });
 
   it("resolves mainnet", () => {

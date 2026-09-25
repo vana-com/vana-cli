@@ -1,6 +1,6 @@
 {
   "name": "vana-cli",
-  "version": "0.29.2",
+  "version": "0.30.0",
   "description": "Collect your data into a Vana Personal Server, or request, read and pay for someone else's with their consent",
   "keywords": [
     "vana",

@@ -362,12 +362,15 @@ export async function runServerStart(
   // Everything that needed a person is done: the rest runs in the
   // background, as a second `vana server start` that outlives this one.
   if (options.detach) {
-    io.say("Starting in the background...");
+    io.say(
+      "Starting in the background. The first start takes up to a minute...",
+    );
     return reportDetached(
       await deps.startDetached({
         network: options.network,
         port: options.port,
         local: options.local,
+        onEvent: (event) => sayDetachedEvent(event, io),
       }),
       io,
     );
@@ -585,48 +588,55 @@ async function goPublic(
   }
 }
 
-/** Say what the background server reported, and whether it came up. */
-function reportDetached(start: DetachedStart, io: ServerStartIo): number {
-  for (const event of start.events) {
-    io.event(event);
-    const text = (key: string) => String(event[key] ?? "");
-    switch (event.type) {
-      case "server-ready":
-        io.say(`Personal Server running at ${text("url")}`);
-        io.say(`Owner ${text("owner")}, network ${text("network")}.`);
-        if (!event.publicUrl) {
-          io.say(
-            "Local only: not registered and not reachable from other devices.",
-          );
-        }
-        break;
-      case "server-registered":
-        io.say(`Registered ${text("serverUrl")}.`);
-        break;
-      case "server-tunnel":
+/** One background-server event, told as it happens. */
+function sayDetachedEvent(
+  event: Record<string, unknown>,
+  io: ServerStartIo,
+): void {
+  io.event(event);
+  const text = (key: string) => String(event[key] ?? "");
+  switch (event.type) {
+    case "server-registered":
+      io.say(`Registered ${text("serverUrl")}.`);
+      break;
+    case "server-ready":
+      io.say(`Personal Server running at ${text("url")}`);
+      io.say(`Owner ${text("owner")}, network ${text("network")}.`);
+      if (event.publicUrl) {
+        io.say("Waiting for the public URL to answer...");
+      } else {
         io.say(
-          event.status === "connected"
-            ? `Reachable by apps at ${text("url")}`
-            : `The public URL is not answering yet: ${text("warning") || text("status")}`,
+          "Local only: not registered and not reachable from other devices.",
         );
-        break;
-      case "server-registration-failed":
-        io.say(
-          event.needsBrowser
-            ? "Not registered: this account confirms registration in a browser. Run `vana server start` once in the foreground."
-            : `Not registered: ${text("message")}`,
-        );
-        break;
-      case "server-tunnel-unavailable":
-        io.say(`${text("reason")} The server runs local only.`);
-        break;
-      case "server-already-running":
-        io.say(`Your Personal Server is already running at ${text("url")}.`);
-        break;
-      default:
-        break;
-    }
+      }
+      break;
+    case "server-tunnel":
+      io.say(
+        event.status === "connected"
+          ? `Reachable by apps at ${text("url")}`
+          : `The public URL is not answering yet: ${text("warning") || text("status")}`,
+      );
+      break;
+    case "server-registration-failed":
+      io.say(
+        event.needsBrowser
+          ? "Not registered: this account confirms registration in a browser. Run `vana server start` once in the foreground."
+          : `Not registered: ${text("message")}`,
+      );
+      break;
+    case "server-tunnel-unavailable":
+      io.say(`${text("reason")} The server runs local only.`);
+      break;
+    case "server-already-running":
+      io.say(`Your Personal Server is already running at ${text("url")}.`);
+      break;
+    default:
+      break;
   }
+}
+
+/** Whether the background server came up; its events were told already. */
+function reportDetached(start: DetachedStart, io: ServerStartIo): number {
   if (!start.ready) {
     io.say(`The background server did not start. See ${start.logPath}.`);
     return start.events.some((event) => event.type === "server-already-running")

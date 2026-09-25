@@ -193,8 +193,10 @@ vana app onchain spotify.history --owner 0x... --json    # version, hashes, dele
 
 ## Networks
 
-Everything defaults to **moksha**, the testnet, where fees are play money.
-Pass `--network mainnet` deliberately, never by habit.
+Everything defaults to **mainnet**, where fees are real USDC.e. A read never
+pays by itself: it stops at exit 4 with the price until you pass `--pay`,
+and `--max-fee` caps it. Pass `--network moksha` to try a flow on the
+testnet first, where fees are play money.
 
 ## Failure notes an agent gets wrong
 
