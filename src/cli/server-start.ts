@@ -96,11 +96,14 @@ export interface ServerStartDeps {
   ) => Promise<void>;
   startDetached: typeof startDetachedServer;
   /**
-   * Whether the server this CLI runs for the network charges builder reads:
-   * null when none is running, false when an older CLI started it without
-   * payment in its config.
+   * Whether the running server, if it is the one this CLI runs for the
+   * network, charges builder reads: false when an older CLI started it
+   * without payment in its config, null when that cannot be told.
    */
-  runningServerCharges: (network: VanaNetworkName) => boolean | null;
+  runningServerCharges: (
+    network: VanaNetworkName,
+    identity: string | null,
+  ) => boolean | null;
   /** Resolves when the person asks the server to stop (Ctrl+C). */
   waitForStop: (handle: LocalServerHandle) => Promise<"stopped" | "exited">;
 }
@@ -138,19 +141,39 @@ export function defaultServerStartDeps(): ServerStartDeps {
   };
 }
 
-function runningServerCharges(network: VanaNetworkName): boolean | null {
-  if (!runningServerPid(network)) return null;
+function readJson(file: string): Record<string, unknown> | null {
   try {
-    const config = JSON.parse(
-      fs.readFileSync(
-        path.join(localServerDataDir(network), "server.json"),
-        "utf8",
-      ),
-    ) as { payment?: { enabled?: unknown } };
-    return config.payment?.enabled === true;
+    const value: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    return value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * True or false only for the server this CLI runs for the network, matched
+ * by the key address its health reports; null for Desktop's server or when
+ * the config cannot be read, since neither proves payment is off.
+ */
+export function runningServerCharges(
+  network: VanaNetworkName,
+  identity: string | null,
+): boolean | null {
+  if (!identity || !runningServerPid(network)) return null;
+  const dir = localServerDataDir(network);
+  const key = readJson(path.join(dir, "key.json"));
+  if (
+    typeof key?.address !== "string" ||
+    key.address.toLowerCase() !== identity.toLowerCase()
+  ) {
+    return null;
+  }
+  const config = readJson(path.join(dir, "server.json"));
+  if (!config) return null;
+  const payment = config.payment as { enabled?: unknown } | undefined;
+  return payment?.enabled === true;
 }
 
 function isAddress(value: string): boolean {
@@ -200,7 +223,10 @@ export async function runServerStart(
   if (ours) {
     // A server an earlier CLI started keeps its old config until it restarts,
     // and before payment was part of it, builder reads were served for free.
-    const charges = deps.runningServerCharges(options.network);
+    const charges = deps.runningServerCharges(
+      options.network,
+      ours.identity ?? null,
+    );
     io.say(
       `Your Personal Server is already running at ${ours.url}. Nothing to start.`,
     );

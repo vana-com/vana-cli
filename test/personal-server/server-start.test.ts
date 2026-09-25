@@ -196,13 +196,13 @@ describe("runServerStart", () => {
   it("tells the owner to restart a running server that serves reads for free", async () => {
     const h = harness({
       findRunningServers: vi.fn(async () => [
-        { url: "http://localhost:8080", owner: OWNER },
+        { url: "http://localhost:8080", owner: OWNER, identity: "0xkey" },
       ]),
       runningServerCharges: vi.fn(() => false),
     });
     expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
     expect(h.deps.start).not.toHaveBeenCalled();
-    expect(h.deps.runningServerCharges).toHaveBeenCalledWith("moksha");
+    expect(h.deps.runningServerCharges).toHaveBeenCalledWith("moksha", "0xkey");
     expect(h.said.join("\n")).toContain(
       "vana server stop, then vana server start",
     );
@@ -525,8 +525,8 @@ describe("findRunningServers", () => {
     }) as typeof fetch;
 
     expect(await findRunningServers(fetchImpl)).toEqual([
-      { url: "http://localhost:8080", owner: OWNER },
-      { url: "http://localhost:8082", owner: OTHER },
+      { url: "http://localhost:8080", owner: OWNER, identity: "0xserverA" },
+      { url: "http://localhost:8082", owner: OTHER, identity: "0xserverB" },
     ]);
   });
 });
