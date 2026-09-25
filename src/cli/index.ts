@@ -1906,10 +1906,10 @@ async function runConnect(
             typeof parsed === "object" &&
             "error" in parsed &&
             Object.keys(parsed).length <= 2;
-          // A full export shape can also carry nothing but a fatal error:
-          // the connector stopped (e.g. at sign-in) and wrote an empty
-          // result, which must not read as "Connected".
-          const fatalReason = errorOnly ? null : fatalEmptyResult(parsed);
+          // A full export shape can also carry errors and no data: the
+          // connector stopped (e.g. at sign-in) or every stream failed, and it
+          // wrote an empty result, which must not read as "Connected".
+          const fatalReason = errorOnly ? null : failedEmptyResult(parsed);
           if (errorOnly || fatalReason) {
             // Connector returned an error, not real data
             const errorMsg =
@@ -5564,29 +5564,29 @@ function hasContent(value: unknown): boolean {
 }
 
 /**
- * The reason a connector result holds no data because of a fatal error, or
- * null when it has data or no fatal error. A partial run (data plus
- * non-fatal errors) still counts as collected.
+ * Why a connector result holds no data despite recorded errors, or null when
+ * it has data or recorded no error. A partial run (data plus errors) still
+ * counts as collected; an empty result with no errors is an empty account.
  */
-export function fatalEmptyResult(result: unknown): string | null {
+export function failedEmptyResult(result: unknown): string | null {
   if (!result || typeof result !== "object") return null;
   const record = result as Record<string, unknown>;
-  const errors = Array.isArray(record.errors) ? record.errors : [];
-  const fatal = errors.find(
+  const errors = (Array.isArray(record.errors) ? record.errors : []).filter(
     (entry): entry is Record<string, unknown> =>
-      Boolean(entry) &&
-      typeof entry === "object" &&
-      (entry as Record<string, unknown>).disposition === "fatal",
+      Boolean(entry) && typeof entry === "object",
   );
-  if (!fatal) return null;
+  // No recorded error: an empty result is an empty account, not a failure.
+  if (errors.length === 0) return null;
   // Judge by the data itself, not exportSummary.count: some connectors count
   // one stream only (ChatGPT counts conversations, not memories).
   const hasData = Object.entries(record).some(
     ([key, value]) => !RESULT_METADATA_KEYS.has(key) && hasContent(value),
   );
   if (hasData) return null;
-  return typeof fatal.reason === "string" && fatal.reason.trim()
-    ? fatal.reason
+  const cause =
+    errors.find((entry) => entry.disposition === "fatal") ?? errors[0];
+  return typeof cause.reason === "string" && cause.reason.trim()
+    ? cause.reason
     : "The connector stopped before collecting any data.";
 }
 

@@ -4201,23 +4201,23 @@ describe("runCli", () => {
   });
 
   it("keeps a partial run with data and non-fatal errors as collected", async () => {
-    const { fatalEmptyResult } = await import("../../src/cli/index.js");
+    const { failedEmptyResult } = await import("../../src/cli/index.js");
     expect(
-      fatalEmptyResult({
+      failedEmptyResult({
         exportSummary: { count: 3 },
         "github.repositories": [{ name: "a" }, { name: "b" }, { name: "c" }],
         errors: [{ reason: "starred timed out", disposition: "skipped" }],
       }),
     ).toBeNull();
     expect(
-      fatalEmptyResult({
+      failedEmptyResult({
         exportSummary: { count: 3 },
         "github.repositories": [{ name: "a" }, { name: "b" }, { name: "c" }],
         errors: [{ reason: "late failure", disposition: "fatal" }],
       }),
     ).toBeNull();
     expect(
-      fatalEmptyResult({
+      failedEmptyResult({
         exportSummary: { count: 0 },
         errors: [{ disposition: "fatal" }],
       }),
@@ -4225,22 +4225,34 @@ describe("runCli", () => {
     // ChatGPT counts conversations only: memories collected before a fatal
     // conversation-list error are still data.
     expect(
-      fatalEmptyResult({
+      failedEmptyResult({
         exportSummary: { count: 0 },
         "chatgpt.memories": { memories: [{ text: "likes tea" }], total: 1 },
         errors: [{ reason: "conversation list failed", disposition: "fatal" }],
       }),
     ).toBeNull();
     expect(
-      fatalEmptyResult({
+      failedEmptyResult({
         exportSummary: { count: 0 },
         "oura.sleep": [],
         errors: [{ reason: "sign-in failed", disposition: "fatal" }],
       }),
     ).toBe("sign-in failed");
+    // Every stream failed without a fatal error: still nothing collected.
+    expect(
+      failedEmptyResult({
+        exportSummary: { count: 0 },
+        "chatgpt.conversations": { conversations: [], total: 0 },
+        errors: [{ reason: "rate limited", disposition: "degraded" }],
+      }),
+    ).toBe("rate limited");
+    // An empty account with no errors is not a failure.
+    expect(
+      failedEmptyResult({ exportSummary: { count: 0 }, "oura.sleep": [] }),
+    ).toBeNull();
     // ChatGPT's empty scope wrappers are not data.
     expect(
-      fatalEmptyResult({
+      failedEmptyResult({
         exportSummary: { count: 0 },
         "chatgpt.conversations": { conversations: [], total: 0 },
         "chatgpt.memories": { memories: [], total: 0 },
