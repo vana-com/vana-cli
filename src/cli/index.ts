@@ -53,6 +53,7 @@ import {
   updateSourceState,
 } from "../core/index.js";
 import type { StoredSourceState } from "../core/state-store.js";
+import { getVanaHome } from "../core/paths.js";
 import {
   UnknownNetworkError,
   VANA_NETWORKS,
@@ -62,7 +63,10 @@ import {
 } from "../core/network.js";
 import { CliExitCode } from "../core/exit-codes.js";
 import { registerAppCommands } from "./app/index.js";
-import { lookupRegisteredServers } from "../personal-server/registered.js";
+import {
+  checkRegisteredServers,
+  lookupRegisteredServers,
+} from "../personal-server/registered.js";
 import type {
   CliChannel,
   CliEvent,
@@ -95,7 +99,11 @@ import {
 import { getPdppProfileRoot } from "../pdpp/host.js";
 import { runServerStart, type ServerStartIo } from "./server-start.js";
 import { findRunningServers } from "../personal-server/local/server.js";
-import { stopLocalServer } from "../personal-server/local/detach.js";
+import {
+  runningServerPid,
+  stopLocalServer,
+} from "../personal-server/local/detach.js";
+import { localServerDataDir } from "../personal-server/local/config.js";
 import { isPdppSource, PdppRuntime } from "../pdpp/runtime.js";
 import {
   listAvailableSkills,
@@ -701,12 +709,15 @@ Examples:
 
   server
     .command("status")
-    .description("Show Personal Server status")
+    .description(
+      "Where your data is served from, where it is stored, and old registrations",
+    )
+    .option("--all", "List every old registration, not just the count")
     .option("--json", "Output machine-readable JSON")
-    .action(async () => {
+    .action(async (statusOptions: { all?: boolean }) => {
       process.exitCode = await runCommandWithTelemetry(
         { ...telemetryBaseContext, command: "server", subcommand: "status" },
-        async () => runServerStatus(parsedOptions),
+        async () => runServerStatus(parsedOptions, statusOptions),
       );
     });
 
@@ -2789,14 +2800,60 @@ async function runDoctor(options: GlobalOptions): Promise<number> {
   return 0;
 }
 
-async function runServerStatus(options: GlobalOptions): Promise<number> {
+/** Which network a server serves, from the gateway it reports. */
+function networkOfGateway(gatewayUrl: unknown): VanaNetworkName | null {
+  if (typeof gatewayUrl !== "string") return null;
+  return /dp-rpc\.vana\.org/.test(gatewayUrl) ? "mainnet" : "moksha";
+}
+
+/** Where the running server keeps its data on this machine, when known. */
+function localDataDir(
+  target: PersonalServerTarget,
+  network: VanaNetworkName | null,
+): { path: string; runBy: "cli" | "desktop" } | null {
+  if (!target.url || !network) return null;
+  const saved = loadCredentials()?.personal_server;
+  if (
+    saved?.started_by === "vana-server-start" &&
+    urlsMatch(saved.url, target.url) &&
+    runningServerPid(network)
+  ) {
+    return { path: localServerDataDir(network), runBy: "cli" };
+  }
+  const desktop = path.join(getVanaHome(), "desktop", "personal-server");
+  const perNetwork = path.join(desktop, network);
+  if (fs.existsSync(perNetwork)) return { path: perNetwork, runBy: "desktop" };
+  if (fs.existsSync(desktop)) return { path: desktop, runBy: "desktop" };
+  return null;
+}
+
+async function runServerStatus(
+  options: GlobalOptions,
+  statusOptions: { all?: boolean } = {},
+): Promise<number> {
   const emit = createEmitter(options);
   const target = await detectPersonalServerTarget();
-  // The local transport URL and the gateway-registered public URL are two
-  // names for the same server; show both when the owner is known.
-  const registeredServers = target.health?.owner
-    ? await lookupRegisteredServers(target.health.owner)
+  const account = loadCredentials()?.account.address;
+  const owner =
+    target.health?.owner ?? (account && account !== "env" ? account : null);
+  // Every registration this owner has, checked from outside: the live one is
+  // where apps actually reach the data; the rest are old server identities.
+  const registrations = owner
+    ? await checkRegisteredServers(await lookupRegisteredServers(owner), owner)
     : [];
+  const localIdentity = target.health?.identity?.toLowerCase();
+  const live =
+    registrations.find(
+      (server) =>
+        server.reachable &&
+        server.serverAddress.toLowerCase() === localIdentity,
+    ) ??
+    registrations.find((server) => server.reachable) ??
+    null;
+  const stale = registrations.filter((server) => !server.reachable);
+  const network =
+    networkOfGateway(target.health?.gatewayUrl) ?? live?.network ?? null;
+  const dataDir = localDataDir(target, network);
   const state = await readCliState();
 
   // Count scopes from state
@@ -2815,7 +2872,12 @@ async function runServerStatus(options: GlobalOptions): Promise<number> {
         state: target.state,
         url: target.url,
         source: target.source,
-        registeredServers,
+        owner,
+        publicUrl: live?.url ?? null,
+        publicNetwork: live?.network ?? null,
+        dataDir: dataDir?.path ?? null,
+        runBy: dataDir?.runBy ?? null,
+        registeredServers: registrations,
         health: target.health,
         scopeCount: totalScopeCount,
       })}\n`,
@@ -2826,67 +2888,78 @@ async function runServerStatus(options: GlobalOptions): Promise<number> {
   emit.title("Personal Server");
   emit.blank();
 
-  if (target.url) {
-    const urlSuffix =
-      target.source === "scan"
-        ? "(auto-detected)"
-        : target.source === "config"
-          ? "(saved)"
-          : target.source === "auth"
-            ? "(from vana login)"
-            : target.source === "env"
-              ? "(from VANA_PERSONAL_SERVER_URL)"
-              : `(${target.source ?? "unknown"})`;
-    emit.keyValue("URL", `${target.url} ${urlSuffix}`, "muted");
-  }
-
-  for (const server of registeredServers) {
-    emit.keyValue("Registered", `${server.url} (${server.network})`, "muted");
-  }
-
-  const stateLabel = target.state === "available" ? "healthy" : "Not connected";
-  emit.keyValue(
-    "Status",
-    stateLabel,
-    target.state === "available" ? "success" : "warning",
-  );
-
-  if (target.health) {
-    emit.keyValue("Version", target.health.version, "muted");
-  }
-
-  if (totalScopeCount > 0) {
-    emit.keyValue("Scopes", `${totalScopeCount} stored`, "muted");
-  }
-
-  if (target.source && !target.url) {
-    const sourceLabel: Record<string, string> = {
-      config: "Saved config",
-      env: "VANA_PERSONAL_SERVER_URL",
-      scan: "Localhost scan",
-    };
+  if (live) {
     emit.keyValue(
-      "Resolved via",
-      sourceLabel[target.source] ?? target.source,
+      "Public URL",
+      `${live.url} (${live.network}, reachable)`,
+      "success",
+    );
+  } else if (target.state === "available") {
+    emit.keyValue("Public URL", "none: apps cannot reach your data", "warning");
+  } else {
+    emit.keyValue(
+      "Public URL",
+      "none: no server of yours is answering",
+      "warning",
+    );
+  }
+
+  if (target.url) {
+    const runBy =
+      dataDir?.runBy === "cli"
+        ? "vana server start"
+        : dataDir?.runBy === "desktop"
+          ? "Vana Desktop"
+          : target.source === "scan"
+            ? "found running"
+            : target.source === "env"
+              ? "from VANA_PERSONAL_SERVER_URL"
+              : "saved";
+    emit.keyValue("Local URL", `${target.url} (${runBy})`, "muted");
+  } else {
+    emit.keyValue("Local URL", "no server running on this machine", "muted");
+  }
+  if (dataDir) {
+    emit.keyValue("Data on disk", formatDisplayPath(dataDir.path), "muted");
+  }
+  if (live) {
+    emit.keyValue(
+      "Backup",
+      "encrypted in Vana storage, follows your account",
       "muted",
     );
   }
 
   if (target.health) {
+    emit.keyValue("Version", target.health.version, "muted");
     emit.keyValue("Uptime", formatUptime(target.health.uptime), "muted");
-    if (target.health.owner) {
-      emit.keyValue("Owner", target.health.owner, "muted");
-    }
+  }
+  if (owner) emit.keyValue("Owner", owner, "muted");
+  if (totalScopeCount > 0) {
+    emit.keyValue("Scopes", `${totalScopeCount} stored`, "muted");
   }
 
-  if (target.source === "scan" && target.url) {
-    emit.blank();
-    emit.detail(`Save with ${emit.code(`vana server set-url ${target.url}`)}.`);
+  if (stale.length > 0) {
+    if (statusOptions.all) {
+      for (const server of stale) {
+        emit.keyValue(
+          "Old server",
+          `${server.url} (${server.network}, not answering)`,
+          "muted",
+        );
+      }
+    } else {
+      emit.keyValue(
+        "Old servers",
+        `${stale.length} not answering (${emit.code("vana server status --all")})`,
+        "muted",
+      );
+    }
   }
 
   if (target.state !== "available") {
     emit.blank();
-    emit.next("vana server set-url <url>");
+    emit.next("vana server start --detach");
   }
 
   emit.blank();
