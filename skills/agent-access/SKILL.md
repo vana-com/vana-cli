@@ -79,7 +79,7 @@ On the owner's machine:
 npm install -g vana-cli             # or: npx vana-cli <command>
 vana login
 vana connect github                 # or any source from `vana sources`
-vana server start --detach
+vana server start
 vana server status --json
 ```
 
@@ -94,7 +94,7 @@ by an earlier `vana` and must be restarted, do it:
 
 ```bash
 vana server stop
-vana server start --detach
+vana server start
 ```
 
 ## 2. Install the agent and load the builder skill
