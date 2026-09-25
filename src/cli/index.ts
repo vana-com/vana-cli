@@ -122,7 +122,7 @@ import {
   formatExpiresIn,
   getAuthTarget,
   accountSessionToPreserve,
-  resolvePersonalServerUrl,
+  resolveLoginServerUrl,
   runDeviceCodeFlow,
   runSelfHostedLoginFlow,
 } from "./auth.js";
@@ -6794,7 +6794,7 @@ async function runLogin(
   clientId?: string,
 ): Promise<number> {
   // Determine auth target: cloud (account.vana.org) or self-hosted (PS directly)
-  const psUrl = serverUrl ?? resolvePersonalServerUrl() ?? null;
+  const psUrl = serverUrl ?? resolveLoginServerUrl() ?? null;
   const authTarget = getAuthTarget(psUrl);
 
   // If self-hosted, use /auth/device flow against the PS

@@ -22,6 +22,11 @@ export interface VanaCredentials {
     url: string;
     session_token: string;
     expires_at: string;
+    /**
+     * "vana-server-start" when the CLI runs this server itself. Such a URL is
+     * where `connect` writes, never a server to log in to.
+     */
+    started_by?: "vana-server-start";
   } | null;
 }
 
@@ -32,6 +37,7 @@ interface LegacyVanaCredentials {
     access_token?: string;
     session_token?: string;
     expires_at: string;
+    started_by?: string;
   } | null;
 }
 
@@ -58,6 +64,9 @@ function normalizeCredentials(
           session_token:
             personalServer.session_token ?? personalServer.access_token ?? "",
           expires_at: personalServer.expires_at,
+          ...(personalServer.started_by === "vana-server-start"
+            ? { started_by: "vana-server-start" as const }
+            : {}),
         }
       : null,
   };
@@ -870,6 +879,22 @@ export function accountSessionToPreserve(
   if (!stored?.session_token) return null;
   if (stored.address === "env") return null;
   return stored;
+}
+
+/**
+ * The self-hosted server `vana login` should log in to, if any: one named on
+ * the command line or in the environment, or set with `vana server set-url`.
+ * Never the server `vana server start` runs: that one is the account's own.
+ */
+export function resolveLoginServerUrl(): string | undefined {
+  const stored = loadCredentials()?.personal_server;
+  return (
+    process.env.VANA_PS_URL ||
+    process.env.VANA_PERSONAL_SERVER_URL ||
+    (stored && stored.started_by !== "vana-server-start"
+      ? stored.url
+      : undefined)
+  );
 }
 
 export function resolvePersonalServerUrl(): string | undefined {
