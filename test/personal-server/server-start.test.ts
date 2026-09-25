@@ -153,6 +153,7 @@ function harness(overrides: Partial<ServerStartDeps> = {}) {
       pid: 4242,
       logPath: "/log",
     })),
+    runningServerCharges: vi.fn(() => null),
     waitForStop: vi.fn(async () => "stopped" as const),
     ...overrides,
   };
@@ -190,6 +191,37 @@ describe("runServerStart", () => {
       type: "server-already-running",
       url: "http://localhost:8082",
     });
+  });
+
+  it("tells the owner to restart a running server that serves reads for free", async () => {
+    const h = harness({
+      findRunningServers: vi.fn(async () => [
+        { url: "http://localhost:8080", owner: OWNER },
+      ]),
+      runningServerCharges: vi.fn(() => false),
+    });
+    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
+    expect(h.deps.start).not.toHaveBeenCalled();
+    expect(h.deps.runningServerCharges).toHaveBeenCalledWith("moksha");
+    expect(h.said.join("\n")).toContain(
+      "vana server stop, then vana server start",
+    );
+    expect(h.events[0]).toMatchObject({
+      type: "server-already-running",
+      restartRequired: true,
+    });
+  });
+
+  it("says nothing more when the running server already charges", async () => {
+    const h = harness({
+      findRunningServers: vi.fn(async () => [
+        { url: "http://localhost:8080", owner: OWNER },
+      ]),
+      runningServerCharges: vi.fn(() => true),
+    });
+    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
+    expect(h.said.join("\n")).not.toContain("vana server stop");
+    expect(h.events[0]).not.toHaveProperty("restartRequired");
   });
 
   it("starts beside another identity's server and says so", async () => {

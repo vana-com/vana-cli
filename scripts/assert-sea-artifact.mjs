@@ -33,6 +33,8 @@ const requiredDirectoryEntries = [
   "app/dist/cli/bin.js",
   "app/dist/cli/main.js",
   "app/dist/runtime/managed-playwright.js",
+  "app/dist/personal-server/local/runtime-pkg/entry.mjs",
+  "app/dist/personal-server/local/runtime-pkg/derived-config.mjs",
 ];
 
 for (const relativePath of requiredDirectoryEntries) {
