@@ -71,6 +71,9 @@ export async function startDetachedServer(input: {
       process.argv[1],
       "server",
       "start",
+      // The background process is the server itself; without this it would
+      // detach again.
+      "--foreground",
       "--json",
       "--no-input",
       "--yes",

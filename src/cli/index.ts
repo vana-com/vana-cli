@@ -693,7 +693,7 @@ Examples:
 Examples:
   vana server
   vana server start
-  vana server start --detach
+  vana server start --foreground
   vana server stop
   vana server set-url http://localhost:8080
   vana server set-url https://ps-abc123.server.vana.org
@@ -746,7 +746,7 @@ Examples:
   server
     .command("start")
     .description(
-      "Run your own Personal Server here, in the foreground, when Vana Desktop is not running one",
+      "Run your own Personal Server in the background (no Vana Desktop needed); stop with `vana server stop`",
     )
     .option(
       "--port <port>",
@@ -756,36 +756,48 @@ Examples:
       "--local",
       "Stay local only: no public URL, no on-chain registration, apps cannot reach it",
     )
-    .option("--detach", "Run in the background; stop with `vana server stop`")
+    .option(
+      "--foreground",
+      "Stay in this terminal with the server's logs; stop with Ctrl+C",
+    )
+    .option("--detach", "Run in the background (the default)")
     .option("--json", "Output machine-readable JSON")
-    .action(async (startOptions: { port?: string; local?: boolean }) => {
-      process.exitCode = await runCommandWithTelemetry(
-        { ...telemetryBaseContext, command: "server", subcommand: "start" },
-        async () => {
-          const port = startOptions.port
-            ? Number(startOptions.port)
-            : undefined;
-          if (
-            port !== undefined &&
-            !(Number.isInteger(port) && port > 0 && port < 65535)
-          ) {
-            process.stderr.write("--port needs a port number.\n");
-            return CliExitCode.USAGE;
-          }
-          return runServerStart(
-            {
-              network: resolveNetwork(parsedOptions.network).name,
-              port,
-              noInput: parsedOptions.noInput,
-              yes: parsedOptions.yes,
-              local: startOptions.local,
-              detach: parsedOptions.detach,
-            },
-            serverStartIo(parsedOptions),
-          );
-        },
-      );
-    });
+    .action(
+      async (startOptions: {
+        port?: string;
+        local?: boolean;
+        foreground?: boolean;
+      }) => {
+        process.exitCode = await runCommandWithTelemetry(
+          { ...telemetryBaseContext, command: "server", subcommand: "start" },
+          async () => {
+            const port = startOptions.port
+              ? Number(startOptions.port)
+              : undefined;
+            if (
+              port !== undefined &&
+              !(Number.isInteger(port) && port > 0 && port < 65535)
+            ) {
+              process.stderr.write("--port needs a port number.\n");
+              return CliExitCode.USAGE;
+            }
+            return runServerStart(
+              {
+                network: resolveNetwork(parsedOptions.network).name,
+                port,
+                noInput: parsedOptions.noInput,
+                yes: parsedOptions.yes,
+                local: startOptions.local,
+                // In the background unless asked to stay: `vana login` starts
+                // it that way too, and the server outlives the terminal.
+                detach: !startOptions.foreground,
+              },
+              serverStartIo(parsedOptions),
+            );
+          },
+        );
+      },
+    );
 
   server
     .command("stop")
@@ -2972,7 +2984,7 @@ async function runServerStatus(
 
   if (target.state !== "available") {
     emit.blank();
-    emit.next("vana server start --detach");
+    emit.next("vana server start");
   }
 
   emit.blank();
@@ -7132,7 +7144,7 @@ async function runLogin(
             renderer.detail(`Personal Server: ${running} (running)`);
           } else {
             renderer.detail("No Personal Server found for this account yet.");
-            renderer.next("vana server start --detach");
+            renderer.next("vana server start");
             renderer.detail(
               "Or point at one you already run: vana server set-url <url>",
             );
@@ -7256,9 +7268,7 @@ async function offerServerStart(
     ...vanaPromptTheme,
   });
   if (!start) {
-    process.stderr.write(
-      "  Start it later with `vana server start --detach`.\n",
-    );
+    process.stderr.write("  Start it later with `vana server start`.\n");
     return;
   }
   await runServerStart(
