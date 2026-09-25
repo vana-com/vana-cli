@@ -92,7 +92,8 @@ import {
   ManagedPlaywrightRuntime,
 } from "../runtime/index.js";
 import { getPdppProfileRoot } from "../pdpp/host.js";
-import { runServerStart } from "./server-start.js";
+import { runServerStart, type ServerStartIo } from "./server-start.js";
+import { findRunningServers } from "../personal-server/local/server.js";
 import { stopLocalServer } from "../personal-server/local/detach.js";
 import { isPdppSource, PdppRuntime } from "../pdpp/runtime.js";
 import {
@@ -768,17 +769,7 @@ Examples:
               local: startOptions.local,
               detach: parsedOptions.detach,
             },
-            {
-              say: (line) => {
-                if (!parsedOptions.json) process.stderr.write(`${line}\n`);
-              },
-              event: (event) => {
-                if (parsedOptions.json)
-                  process.stdout.write(`${JSON.stringify(event)}\n`);
-              },
-              confirm: (message) =>
-                confirm({ message, default: true, ...vanaPromptTheme }),
-            },
+            serverStartIo(parsedOptions),
           );
         },
       );
@@ -6873,6 +6864,7 @@ async function runLogin(
       );
       emit.blank();
       emit.info("  Run `vana logout` to sign in as someone else.");
+      await offerServerStart(existing.account.address, options);
     }
     return 0;
   }
@@ -7000,7 +6992,7 @@ async function runLogin(
           );
         } else {
           renderer.detail("No Personal Server found for this account yet.");
-          renderer.next("vana server start");
+          renderer.next("vana server start --detach");
           renderer.detail(
             "Or point at one you already run: vana server set-url <url>",
           );
@@ -7025,7 +7017,67 @@ async function runLogin(
 
   renderer.cleanup();
 
+  if (creds) await offerServerStart(creds.account.address, options);
   return creds ? 0 : 1;
+}
+
+function serverStartIo(options: GlobalOptions): ServerStartIo {
+  return {
+    say: (line) => {
+      if (!options.json) process.stderr.write(`${line}\n`);
+    },
+    event: (event) => {
+      if (options.json) process.stdout.write(`${JSON.stringify(event)}\n`);
+    },
+    confirm: (message) =>
+      confirm({ message, default: true, ...vanaPromptTheme }),
+  };
+}
+
+/**
+ * After a login at a terminal: offer to start this account's Personal Server
+ * in the background when none of its servers is running. Asked, never done
+ * silently; scripts and --no-input never see it.
+ */
+async function offerServerStart(
+  address: string,
+  options: GlobalOptions,
+): Promise<void> {
+  if (
+    options.json ||
+    options.noInput ||
+    !process.stdin.isTTY ||
+    !process.stdout.isTTY
+  ) {
+    return;
+  }
+  const running = await findRunningServers();
+  if (
+    running.some(
+      (server) => server.owner?.toLowerCase() === address.toLowerCase(),
+    )
+  ) {
+    return;
+  }
+  const start = await confirm({
+    message: "Start your Personal Server now? It runs in the background.",
+    default: true,
+    ...vanaPromptTheme,
+  });
+  if (!start) {
+    process.stderr.write(
+      "  Start it later with `vana server start --detach`.\n",
+    );
+    return;
+  }
+  await runServerStart(
+    {
+      network: resolveNetwork(options.network).name,
+      detach: true,
+      yes: options.yes,
+    },
+    serverStartIo(options),
+  );
 }
 
 async function runLogout(options: GlobalOptions): Promise<number> {
