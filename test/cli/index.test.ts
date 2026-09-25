@@ -4156,6 +4156,27 @@ describe("runCli", () => {
     expect(stderr).toContain("Connected Steam.");
   });
 
+  it("rewrites a legacy 'click Done' instruction, since the CLI has no Done button", async () => {
+    const { browserStepMessage } = await import("../../src/cli/index.js");
+    expect(
+      browserStepMessage(
+        'Complete any remaining verification, then click "Done".',
+      ),
+    ).toBe(
+      "Complete any remaining verification. Vana continues on its own once you're done.",
+    );
+    expect(
+      browserStepMessage(
+        'Enter your Steam Web API key and Steam ID in the browser, click "Continue", then return here and click "Done".',
+      ),
+    ).toBe(
+      'Enter your Steam Web API key and Steam ID in the browser, click "Continue". Vana continues on its own once you\'re done.',
+    );
+    const github =
+      "Automatic sign-in failed. Please sign in to GitHub manually, including any 2FA. The process will continue automatically once you are signed in.";
+    expect(browserStepMessage(github)).toBe(github);
+  });
+
   it("tells the person to sign in in the browser the connector opened", async () => {
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },

@@ -1864,7 +1864,7 @@ async function runConnect(
             renderer?.bell();
           }
           shownBrowserPrompts.add(message);
-          renderer?.note(message);
+          renderer?.note(browserStepMessage(message));
         }
         continue;
       }
@@ -5534,6 +5534,17 @@ export function compareSourceStatusOrder(
       },
     )
   );
+}
+
+// Legacy connectors wrote their manual-step text for a host with a "Done"
+// button. The CLI has none: the runtime checks by itself until the step is
+// complete, so "click Done" would read as a button that never appears.
+const CLICK_DONE =
+  /,?\s*(?:then\s+)?(?:return here and\s+)?click "Done"\.?\s*$/i;
+
+export function browserStepMessage(message: string): string {
+  if (!CLICK_DONE.test(message)) return message;
+  return `${message.replace(CLICK_DONE, ".")} Vana continues on its own once you're done.`;
 }
 
 export function isSourceAttention(source: SourceStatus): boolean {

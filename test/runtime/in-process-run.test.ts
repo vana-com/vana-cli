@@ -264,7 +264,7 @@ describe("startInProcessConnectorRun", () => {
         "/tmp/chrome",
       );
     } finally {
-      process.env.DISPLAY = previousDisplay;
+      restoreEnv("DISPLAY", previousDisplay);
     }
   });
 
