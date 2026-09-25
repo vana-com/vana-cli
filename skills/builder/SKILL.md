@@ -19,10 +19,14 @@ exit code, read `code` for the reason and `remedy` for the next command.
 ## The loop
 
 ```bash
-vana app register                                  # once per machine
+vana app register --app-name "<your name>"         # once per machine
 vana app request --scopes spotify.history          # ask a person
 vana app read spotify.history --grant <id> --pay   # read and pay
 ```
+
+Register with the name the person should see on the approval page, such as
+your agent's name. The CLI remembers it for this app key; without it the
+request shows as "Vana CLI".
 
 Or ask a question instead of reading raw data, in one command:
 

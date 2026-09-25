@@ -370,9 +370,14 @@ function resolveCredentialExpiry(params: {
 
 /** The Vana Account the CLI signs in to; `VANA_ACCOUNT_URL` overrides it. */
 export function getAccountUrl(): string {
+  // VANA_ENV=dev points every other host at the dev deployment
+  // (core/network.ts); Account has to follow, or a dev login is sent to the
+  // production Account and refused as "not accepted".
   return (
     process.env.VANA_ACCOUNT_URL?.replace(/\/+$/, "") ??
-    "https://account.vana.org"
+    (process.env.VANA_ENV === "dev"
+      ? "https://account-dev.vana.org"
+      : "https://account.vana.org")
   );
 }
 

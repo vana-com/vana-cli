@@ -30,10 +30,15 @@ export function registerAppCommands(
     .command("register")
     .description("Register this app as a builder at the gateway (idempotent)")
     .option("--app-url <url>", "Public URL stored on the builder record")
-    .action(async (commandOptions: { appUrl?: string }) => {
+    .option(
+      "--app-name <name>",
+      "Name people see when this app asks for access (remembered)",
+    )
+    .action(async (commandOptions: { appUrl?: string; appName?: string }) => {
       process.exitCode = await runAppRegister({
         ...getOptions(),
         appUrl: commandOptions.appUrl,
+        appName: commandOptions.appName,
       });
     });
 

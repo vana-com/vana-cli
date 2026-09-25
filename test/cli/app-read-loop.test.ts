@@ -367,6 +367,93 @@ describe("vana app read", () => {
     expect(urls).toEqual(["https://dead.example", "https://alive.example"]);
   });
 
+  it("stops at exit 3 when the owner's server says the grant was revoked", async () => {
+    const urls: string[] = [];
+    const exitCode = await runAppRead(
+      "github.repos",
+      { json: true, grant: GRANT },
+      {
+        resolveKey: () => appKey,
+        createClient: () =>
+          grantClient({
+            listServersByOwner: async () => ({
+              active: [
+                { serverUrl: "https://live.example" },
+                { serverUrl: "https://dead-1.example" },
+                { serverUrl: "https://dead-2.example" },
+              ] as never,
+              revoked: [],
+              count: 3,
+            }),
+          }),
+        receipts: store(),
+        read: async (params) => {
+          urls.push(
+            (params as { personalServerUrl: string }).personalServerUrl,
+          );
+          const error = Object.assign(
+            new Error("Personal Server read failed: 403 Forbidden"),
+            {
+              name: "PersonalServerReadError",
+              status: 403,
+              details: {
+                body: '{"error":{"code":"GRANT_REVOKED","message":"Grant has been revoked"}}',
+              },
+            },
+          );
+          throw error;
+        },
+      },
+    );
+    expect(exitCode).toBe(3);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.code).toBe("grant_invalid");
+    expect(outcome.message).toBe("The owner revoked this grant.");
+    // It does not go on to try every other registration.
+    expect(urls).toEqual(["https://live.example"]);
+  });
+
+  it("still tries the next registration on a 403 that is not about the grant", async () => {
+    const urls: string[] = [];
+    const exitCode = await runAppRead(
+      "github.repos",
+      { json: true, grant: GRANT },
+      {
+        resolveKey: () => appKey,
+        createClient: () =>
+          grantClient({
+            listServersByOwner: async () => ({
+              active: [
+                { serverUrl: "https://other-owner.example" },
+                { serverUrl: "https://alive.example" },
+              ] as never,
+              revoked: [],
+              count: 2,
+            }),
+          }),
+        receipts: store(),
+        read: async (params) => {
+          urls.push(
+            (params as { personalServerUrl: string }).personalServerUrl,
+          );
+          if (urls.length === 1) {
+            throw Object.assign(new Error("403"), {
+              name: "PersonalServerReadError",
+              status: 403,
+              details: { body: '{"error":{"code":"GRANT_OWNER_MISMATCH"}}' },
+            });
+          }
+          return { data: { ok: true } };
+        },
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(urls).toEqual([
+      "https://other-owner.example",
+      "https://alive.example",
+    ]);
+  });
+
   it("exits 5 when every registration fails", async () => {
     const exitCode = await runAppRead(
       "github.repos",

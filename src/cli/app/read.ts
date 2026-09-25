@@ -72,6 +72,33 @@ export interface ReadDeps {
   requests?: RequestsStore;
 }
 
+// The Personal Server's answers when the grant itself is the problem. Any
+// server holding the owner's data gives the same answer, so trying the other
+// registrations only turns "revoked" into "no server answered".
+const GRANT_REFUSALS: Record<string, string> = {
+  GRANT_REVOKED: "The owner revoked this grant.",
+  GRANT_EXPIRED: "This grant has expired.",
+  GRANT_REQUIRED: "The owner's Personal Server does not accept this grant.",
+  SCOPE_MISMATCH: "The grant does not cover this scope.",
+};
+
+function grantRefusal(error: unknown): string | null {
+  if (!(error instanceof Error) || error.name !== "PersonalServerReadError") {
+    return null;
+  }
+  const readError = error as Error & {
+    status?: number;
+    details?: { body?: unknown };
+  };
+  if (readError.status !== 403) return null;
+  const body =
+    typeof readError.details?.body === "string" ? readError.details.body : "";
+  const code = Object.keys(GRANT_REFUSALS).find((candidate) =>
+    body.includes(candidate),
+  );
+  return code ? GRANT_REFUSALS[code] : null;
+}
+
 function isPaymentRequired(error: unknown): error is Error & {
   details?: { amount?: string; asset?: string };
 } {
@@ -237,6 +264,17 @@ export async function runAppRead(
       });
     } catch (error) {
       if (!isPaymentRequired(error)) {
+        const refusal = grantRefusal(error);
+        if (refusal) {
+          return emitAppOutcome(options, {
+            status: "failed",
+            code: "grant_invalid",
+            message: refusal,
+            remedy: `vana app request --scopes ${scope}`,
+            network: network.name,
+            data: { server: personalServerUrl },
+          });
+        }
         // Transport or server failure: a dead registration is a normal
         // state, try the next one.
         lastError = error;

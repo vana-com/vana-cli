@@ -28,6 +28,7 @@ import {
   type StoredRequest,
   type StoredRequestStatus,
 } from "../../core/requests-store.js";
+import { readAppProfile } from "../../core/app-profile.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
 
 export interface RequestCommandOptions extends AppCommandOptions {
@@ -51,6 +52,7 @@ export interface RequestDeps {
   requests?: RequestsStore;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  readProfile?: typeof readAppProfile;
 }
 
 const POLL_INTERVAL_MS = 3_000;
@@ -164,6 +166,9 @@ export async function runAppRequest(
     throw error;
   }
 
+  // What `vana app register --app-name/--app-url` remembered for this key.
+  const profile = (deps.readProfile ?? readAppProfile)(key.address);
+
   const controller = (deps.createController ?? createDirectDataController)({
     // The dev host set serves moksha; production serves both networks.
     env: network.env === "dev" ? "dev" : "production",
@@ -171,8 +176,9 @@ export async function runAppRequest(
     appPrivateKey: key.privateKey,
     app: {
       id: options.appId ?? "vana-cli",
-      name: options.appName ?? "Vana CLI",
-      homepageUrl: options.appUrl ?? "https://github.com/vana-com/vana-cli",
+      name: options.appName ?? profile.name ?? "Vana CLI",
+      homepageUrl:
+        options.appUrl ?? profile.url ?? "https://github.com/vana-com/vana-cli",
     },
     source: resolveSourceKey(scopes, options.derived, sourceScopes),
     scopes,

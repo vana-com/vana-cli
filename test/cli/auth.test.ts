@@ -13,6 +13,7 @@ vi.mock("node:child_process", () => ({
 
 import {
   accountSessionToPreserve,
+  getAccountUrl,
   getAuthTarget,
   loadCredentials,
   resolveLoginServerUrl,
@@ -761,6 +762,37 @@ describe("runDeviceCodeFlow", () => {
     await expect(promise).resolves.toMatchObject({
       personal_server: null,
     });
+  });
+});
+
+describe("getAccountUrl", () => {
+  const original = {
+    url: process.env.VANA_ACCOUNT_URL,
+    env: process.env.VANA_ENV,
+  };
+  afterEach(() => {
+    if (original.url === undefined) delete process.env.VANA_ACCOUNT_URL;
+    else process.env.VANA_ACCOUNT_URL = original.url;
+    if (original.env === undefined) delete process.env.VANA_ENV;
+    else process.env.VANA_ENV = original.env;
+  });
+
+  it("follows VANA_ENV=dev to the dev Account, like every other host", () => {
+    delete process.env.VANA_ACCOUNT_URL;
+    process.env.VANA_ENV = "dev";
+    expect(getAccountUrl()).toBe("https://account-dev.vana.org");
+  });
+
+  it("uses production Account by default", () => {
+    delete process.env.VANA_ACCOUNT_URL;
+    delete process.env.VANA_ENV;
+    expect(getAccountUrl()).toBe("https://account.vana.org");
+  });
+
+  it("lets VANA_ACCOUNT_URL win over VANA_ENV", () => {
+    process.env.VANA_ACCOUNT_URL = "http://localhost:3000/";
+    process.env.VANA_ENV = "dev";
+    expect(getAccountUrl()).toBe("http://localhost:3000");
   });
 });
 
