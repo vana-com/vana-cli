@@ -26,6 +26,10 @@ type FakePage = {
   screenshot: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   url: ReturnType<typeof vi.fn>;
+  waitForSelector: ReturnType<typeof vi.fn>;
+  fill: ReturnType<typeof vi.fn>;
+  click: ReturnType<typeof vi.fn>;
+  press: ReturnType<typeof vi.fn>;
 };
 
 type FakeContext = {
@@ -44,6 +48,10 @@ function createFakeRuntime() {
     screenshot: vi.fn(async () => Buffer.from("test")),
     on: vi.fn(),
     url: vi.fn(() => "https://example.com/login"),
+    waitForSelector: vi.fn(async () => null),
+    fill: vi.fn(async () => undefined),
+    click: vi.fn(async () => undefined),
+    press: vi.fn(async () => undefined),
   };
 
   const context: FakeContext = {
@@ -250,6 +258,60 @@ describe("startInProcessConnectorRun", () => {
     } finally {
       process.env.DISPLAY = previousDisplay;
     }
+  });
+
+  it("gives legacy connectors waitForSelector, fill, click, press and url on the live page", async () => {
+    const { page } = createFakeRuntime();
+    const connectorPath = await writeConnector(`
+(async () => {
+  await page.goto("https://cloud.ouraring.com/user/sign-in");
+  await page.waitForSelector('input[type="email"]', { timeout: 10000 });
+  await page.fill('input[type="email"]', "person@example.com");
+  await page.click('button[type="submit"]', { timeout: 5000 });
+  await page.press('input[name="otp"]', "Enter");
+  const here = await page.url();
+  await page.setData("result", { here });
+})();
+`);
+
+    const { startInProcessConnectorRun } =
+      await import("../../src/runtime/playwright/in-process-run.js");
+    const logPath = path.join(os.tmpdir(), "vana-connect-page-methods.log");
+    const handle = startInProcessConnectorRun({
+      request: { connectorPath, source: "oura", noInput: true },
+      logPath,
+    });
+    const events = [];
+    for await (const event of handle.events()) {
+      events.push(event);
+    }
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "collection-complete" }),
+      ]),
+    );
+    expect(page.waitForSelector).toHaveBeenCalledWith('input[type="email"]', {
+      timeout: 10000,
+    });
+    expect(page.fill).toHaveBeenCalledWith(
+      'input[type="email"]',
+      "person@example.com",
+      {},
+    );
+    expect(page.click).toHaveBeenCalledWith('button[type="submit"]', {
+      timeout: 5000,
+    });
+    expect(page.press).toHaveBeenCalledWith('input[name="otp"]', "Enter", {});
+    const complete = events.find(
+      (event) => event.type === "collection-complete",
+    ) as { resultPath: string };
+    const result = await fs.readFile(complete.resultPath, "utf8");
+    expect(result).toContain("https://example.com/login");
+    // What fill typed is never written to the run log.
+    const log = await fs.readFile(logPath, "utf8");
+    expect(log).toContain('[page] fill input[type="email"]');
+    expect(log).not.toContain("person@example.com");
   });
 
   it("writes a result and emits collection-complete", async () => {

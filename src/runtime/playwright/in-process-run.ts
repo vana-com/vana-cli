@@ -529,6 +529,46 @@ function createPageApi({
       return buffer.toString("base64");
     },
 
+    // Element methods the legacy connectors call without a typeof check
+    // (Oura's and Instagram's sign-in, GitHub's password and 2FA steps).
+    // Each passes straight to the page current at call time, since switching
+    // between headless and headed replaces it. Values typed with fill are
+    // never logged: they are emails, passwords and one-time codes.
+    waitForSelector: async (
+      selector: string,
+      options: {
+        timeout?: number;
+        state?: "attached" | "detached" | "visible" | "hidden";
+      } = {},
+    ) => {
+      await requirePage().waitForSelector(selector, options);
+    },
+
+    fill: async (
+      selector: string,
+      value: string,
+      options: { timeout?: number } = {},
+    ) => {
+      writeLog(`[page] fill ${selector}`);
+      await requirePage().fill(selector, value, options);
+    },
+
+    click: async (selector: string, options: { timeout?: number } = {}) => {
+      writeLog(`[page] click ${selector}`);
+      await requirePage().click(selector, options);
+    },
+
+    press: async (
+      selector: string,
+      key: string,
+      options: { timeout?: number } = {},
+    ) => {
+      writeLog(`[page] press ${key} in ${selector}`);
+      await requirePage().press(selector, key, options);
+    },
+
+    url: async () => requirePage().url(),
+
     requestInput: async (payload: PendingInputRequest) => {
       const fields = Object.keys(payload.schema?.properties ?? {});
       const inputRequest: RuntimeInputRequest = {
