@@ -81,6 +81,7 @@ import {
   detectPersonalServerTarget,
   ingestResult,
   personalServerOwnerMismatch,
+  urlsMatch,
   resolvePersonalServerAuthConfig,
 } from "../personal-server/index.js";
 import type {
@@ -6838,18 +6839,6 @@ async function runLogin(
         existing.personal_server,
       );
 
-      // A live account session says nothing about the Personal Server, and a
-      // server with no session is exactly what `connect` fails to sync to.
-      // Finish that job here rather than printing this same command back.
-      if (
-        server &&
-        !server.authenticated &&
-        !options.noInput &&
-        getAuthTarget(server.url) === "self-hosted"
-      ) {
-        return loginToPersonalServer(server.url, options);
-      }
-
       if (server) {
         emit.keyValue(
           "Personal Server",
@@ -6864,7 +6853,7 @@ async function runLogin(
       );
       emit.blank();
       emit.info("  Run `vana logout` to sign in as someone else.");
-      await offerServerStart(existing.account.address, options);
+      return (await finishServerSetup(existing.account.address, options)) ?? 0;
     }
     return 0;
   }
@@ -6991,11 +6980,18 @@ async function runLogin(
             `Personal Server: ${authedCreds.personal_server.url}`,
           );
         } else {
-          renderer.detail("No Personal Server found for this account yet.");
-          renderer.next("vana server start --detach");
-          renderer.detail(
-            "Or point at one you already run: vana server set-url <url>",
+          const running = await findOwnRunningServer(
+            authedCreds.account.address,
           );
+          if (running) {
+            renderer.detail(`Personal Server: ${running} (running)`);
+          } else {
+            renderer.detail("No Personal Server found for this account yet.");
+            renderer.next("vana server start --detach");
+            renderer.detail(
+              "Or point at one you already run: vana server set-url <url>",
+            );
+          }
         }
         renderer.detail("Credentials saved to ~/.vana/auth.json");
       },
@@ -7017,8 +7013,8 @@ async function runLogin(
 
   renderer.cleanup();
 
-  if (creds) await offerServerStart(creds.account.address, options);
-  return creds ? 0 : 1;
+  if (!creds) return 1;
+  return (await finishServerSetup(creds.account.address, options)) ?? 0;
 }
 
 function serverStartIo(options: GlobalOptions): ServerStartIo {
@@ -7032,6 +7028,56 @@ function serverStartIo(options: GlobalOptions): ServerStartIo {
     confirm: (message) =>
       confirm({ message, default: true, ...vanaPromptTheme }),
   };
+}
+
+/** The URL of a running Personal Server this account owns, if any. */
+async function findOwnRunningServer(address: string): Promise<string | null> {
+  try {
+    const target = await detectPersonalServerTarget();
+    return target.state === "available" &&
+      target.url &&
+      target.health?.owner &&
+      !personalServerOwnerMismatch(target.health.owner, address)
+      ? target.url
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The last step of a login at a terminal: make this account's Personal
+ * Server ready to take `connect` writes. A running server of this account
+ * that has not approved the CLI yet (Vana Desktop's, typically) gets that
+ * one-time approval now; with none running, offer to start one. Returns an
+ * exit code when it ran the server approval, else null.
+ */
+async function finishServerSetup(
+  address: string,
+  options: GlobalOptions,
+): Promise<number | null> {
+  if (
+    options.json ||
+    options.noInput ||
+    !process.stdin.isTTY ||
+    !process.stdout.isTTY
+  ) {
+    return null;
+  }
+  const running = await findOwnRunningServer(address);
+  if (running) {
+    const saved = loadCredentials()?.personal_server;
+    const approved = Boolean(
+      saved?.session_token && urlsMatch(saved.url, running),
+    );
+    if (approved || getAuthTarget(running) !== "self-hosted") return null;
+    process.stderr.write(
+      `\n  Your Personal Server at ${running} needs to approve this CLI once.\n`,
+    );
+    return loginToPersonalServer(running, options);
+  }
+  await offerServerStart(address, options);
+  return null;
 }
 
 /**

@@ -667,6 +667,81 @@ describe("runCli", () => {
     expect(stderr).toContain("vana server set-url");
   });
 
+  describe("after a fresh login, with this account's server running", () => {
+    const OWNER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+    beforeEach(() => {
+      mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+        const creds = {
+          account: {
+            address: OWNER,
+            session_token: "vana_account_session",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+          personal_server: null,
+        };
+        await callbacks.onAuthorized(creds);
+        return creds;
+      });
+      mockDetectPersonalServerTarget.mockResolvedValue({
+        state: "available",
+        url: "http://localhost:8080",
+        source: "scan",
+        health: { owner: OWNER },
+      });
+    });
+
+    it("reports the running server instead of saying none was found", async () => {
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "login"])).toBe(0);
+      expect(stderr).toContain(
+        "Personal Server: http://localhost:8080 (running)",
+      );
+      expect(stderr).not.toContain("No Personal Server found");
+    });
+
+    it("gets the server's one-time approval at a terminal", async () => {
+      const tty = { out: process.stdout.isTTY, in: process.stdin.isTTY };
+      Object.defineProperty(process.stdout, "isTTY", {
+        configurable: true,
+        value: true,
+      });
+      Object.defineProperty(process.stdin, "isTTY", {
+        configurable: true,
+        value: true,
+      });
+      try {
+        const { runCli } = await import("../../src/cli/index.js");
+        await runCli(["node", "vana", "login"]);
+        expect(stderr).toContain(
+          "Your Personal Server at http://localhost:8080 needs to approve this CLI once.",
+        );
+        expect(mockRunSelfHostedLoginFlow).toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(process.stdout, "isTTY", {
+          configurable: true,
+          value: tty.out,
+        });
+        Object.defineProperty(process.stdin, "isTTY", {
+          configurable: true,
+          value: tty.in,
+        });
+      }
+    });
+
+    it("never asks a server someone else owns", async () => {
+      mockDetectPersonalServerTarget.mockResolvedValue({
+        state: "available",
+        url: "http://localhost:8080",
+        source: "scan",
+        health: { owner: "0x0000000000000000000000000000000000000001" },
+      });
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "login"])).toBe(0);
+      expect(stderr).toContain("No Personal Server found");
+      expect(mockRunSelfHostedLoginFlow).not.toHaveBeenCalled();
+    });
+  });
+
   it("carries the stored PS session across a same-account cloud re-login", async () => {
     mockExistsSync.mockImplementation((target: unknown) =>
       String(target).endsWith("auth.json"),
