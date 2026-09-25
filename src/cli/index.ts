@@ -712,7 +712,7 @@ Examples:
     .description(
       "Where your data is served from, where it is stored, and old registrations",
     )
-    .option("--all", "List every old registration, not just the count")
+    .option("--all", "Also list old registrations that no longer answer")
     .option("--json", "Output machine-readable JSON")
     .action(async (statusOptions: { all?: boolean }) => {
       process.exitCode = await runCommandWithTelemetry(
@@ -2958,19 +2958,13 @@ async function runServerStatus(
     emit.keyValue("Scopes", `${totalScopeCount} stored`, "muted");
   }
 
-  if (stale.length > 0) {
-    if (statusOptions.all) {
-      for (const server of stale) {
-        emit.keyValue(
-          "Old server",
-          `${server.url} (${server.network}, not answering)`,
-          "muted",
-        );
-      }
-    } else {
+  // Old registrations are noise for the person reading this; --all lists
+  // them, and --json always carries them.
+  if (statusOptions.all) {
+    for (const server of stale) {
       emit.keyValue(
-        "Old servers",
-        `${stale.length} not answering (${emit.code("vana server status --all")})`,
+        "Old server",
+        `${server.url} (${server.network}, not answering)`,
         "muted",
       );
     }
