@@ -385,7 +385,7 @@ More:
   program.addOption(
     new Option(
       "--network <network>",
-      "Vana network for protocol operations (default: moksha)",
+      "Vana network: mainnet (default) or moksha, the testnet",
     ).choices([...VANA_NETWORKS]),
   );
   program.hook("preAction", (_thisCommand, actionCommand) => {

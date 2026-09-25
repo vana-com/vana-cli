@@ -32,6 +32,8 @@ let stdout: string;
 let stderr: string;
 
 beforeEach(() => {
+  // The fixtures below are moksha; mainnet is the default network.
+  vi.stubEnv("VANA_NETWORK", "moksha");
   stdout = "";
   stderr = "";
   vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
@@ -45,6 +47,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 

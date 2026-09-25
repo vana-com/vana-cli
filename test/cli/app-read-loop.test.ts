@@ -75,6 +75,8 @@ let stdout: string;
 let tempDir: string;
 
 beforeEach(() => {
+  // The fixtures below are moksha; mainnet is the default network.
+  vi.stubEnv("VANA_NETWORK", "moksha");
   stdout = "";
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vana-receipts-"));
   vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
@@ -85,6 +87,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });

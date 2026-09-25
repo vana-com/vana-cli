@@ -56,7 +56,7 @@ In the same message, ask:
 
 - which data the agent should see (for example GitHub or Spotify)
 - whether it runs on this machine or in a sandbox (step 3)
-- testnet first (moksha, the default) or straight to mainnet (real money)
+- straight to mainnet (the default, real money) or testnet first (`--network moksha`)
 
 ## Stop for the human
 
@@ -268,12 +268,11 @@ agent asks again.
 
 ## Networks
 
-Everything defaults to **moksha**, the testnet, where fees are play money.
+Everything defaults to **mainnet**, where fees are real USDC.e.
 Grants, balances and server registrations do not carry across networks.
-Try the whole flow on moksha first, then repeat it with `--network mainnet`
-on every command (every `vana` command accepts it), `vana server start`
-included: an agent reading on mainnet cannot find a server registered only
-on moksha.
+To try the whole flow on the testnet first, pass `--network moksha` on every
+command (every `vana` command accepts it), `vana server start` included: an
+agent reading on moksha cannot find a server registered only on mainnet.
 
 ## Failure notes
 
