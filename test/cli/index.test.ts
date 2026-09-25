@@ -4156,6 +4156,184 @@ describe("runCli", () => {
     expect(stderr).toContain("Connected Steam.");
   });
 
+  it("reports a run that stopped with a fatal error and no data as a failure, not Connected", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "oura", name: "Oura Ring", authMode: "interactive" },
+    ]);
+    fetchConnectorResult = {
+      connectorPath: "/tmp/connectors/oura/oura-playwright.js",
+      logPath: "/tmp/logs/fetch.log",
+    };
+    runConnectorEvents = [
+      {
+        type: "collection-complete",
+        source: "oura",
+        resultPath: "/tmp/.vana/oura-result.json",
+        logPath: "/tmp/logs/run.log",
+      },
+    ];
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({
+        requestedScopes: ["oura.sleep"],
+        timestamp: "2026-09-25T14:43:56.757Z",
+        version: "2.0.0",
+        platform: "oura",
+        exportSummary: { count: 0, label: "days of Oura data" },
+        errors: [
+          {
+            errorClass: "selector_error",
+            reason:
+              "Could not fill email form: page.waitForSelector is not a function",
+            disposition: "fatal",
+            phase: "auth",
+          },
+        ],
+      }),
+    );
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "connect", "oura"]);
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("Problem connecting Oura Ring.");
+    expect(stderr).toContain("Could not fill email form");
+    expect(stderr).not.toContain("Connected Oura Ring.");
+  });
+
+  it("keeps a partial run with data and non-fatal errors as collected", async () => {
+    const { failedEmptyResult } = await import("../../src/cli/index.js");
+    expect(
+      failedEmptyResult({
+        exportSummary: { count: 3 },
+        "github.repositories": [{ name: "a" }, { name: "b" }, { name: "c" }],
+        errors: [{ reason: "starred timed out", disposition: "skipped" }],
+      }),
+    ).toBeNull();
+    expect(
+      failedEmptyResult({
+        exportSummary: { count: 3 },
+        "github.repositories": [{ name: "a" }, { name: "b" }, { name: "c" }],
+        errors: [{ reason: "late failure", disposition: "fatal" }],
+      }),
+    ).toBeNull();
+    expect(
+      failedEmptyResult({
+        exportSummary: { count: 0 },
+        errors: [{ disposition: "fatal" }],
+      }),
+    ).toBe("The connector stopped before collecting any data.");
+    // ChatGPT counts conversations only: memories collected before a fatal
+    // conversation-list error are still data.
+    expect(
+      failedEmptyResult({
+        exportSummary: { count: 0 },
+        "chatgpt.memories": { memories: [{ text: "likes tea" }], total: 1 },
+        errors: [{ reason: "conversation list failed", disposition: "fatal" }],
+      }),
+    ).toBeNull();
+    expect(
+      failedEmptyResult({
+        exportSummary: { count: 0 },
+        "oura.sleep": [],
+        errors: [{ reason: "sign-in failed", disposition: "fatal" }],
+      }),
+    ).toBe("sign-in failed");
+    // Every stream failed without a fatal error: still nothing collected.
+    expect(
+      failedEmptyResult({
+        exportSummary: { count: 0 },
+        "chatgpt.conversations": { conversations: [], total: 0 },
+        errors: [{ reason: "rate limited", disposition: "degraded" }],
+      }),
+    ).toBe("rate limited");
+    // An empty account with no errors is not a failure.
+    expect(
+      failedEmptyResult({ exportSummary: { count: 0 }, "oura.sleep": [] }),
+    ).toBeNull();
+    // ChatGPT's empty scope wrappers are not data.
+    expect(
+      failedEmptyResult({
+        exportSummary: { count: 0 },
+        "chatgpt.conversations": { conversations: [], total: 0 },
+        "chatgpt.memories": { memories: [], total: 0 },
+        errors: [{ reason: "conversation list failed", disposition: "fatal" }],
+      }),
+    ).toBe("conversation list failed");
+  });
+
+  it("rewrites a legacy 'click Done' instruction, since the CLI has no Done button", async () => {
+    const { browserStepMessage } = await import("../../src/cli/index.js");
+    expect(
+      browserStepMessage(
+        'Complete any remaining verification, then click "Done".',
+      ),
+    ).toBe(
+      "Complete any remaining verification. Vana continues on its own once you're done.",
+    );
+    expect(
+      browserStepMessage(
+        'Enter your Steam Web API key and Steam ID in the browser, click "Continue", then return here and click "Done".',
+      ),
+    ).toBe(
+      'Enter your Steam Web API key and Steam ID in the browser, click "Continue". Vana continues on its own once you\'re done.',
+    );
+    const github =
+      "Automatic sign-in failed. Please sign in to GitHub manually, including any 2FA. The process will continue automatically once you are signed in.";
+    expect(browserStepMessage(github)).toBe(github);
+  });
+
+  it("tells the person to sign in in the browser the connector opened", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ]);
+    fetchConnectorResult = {
+      connectorPath: "/tmp/connectors/github/github-playwright.js",
+      logPath: "/tmp/logs/fetch.log",
+    };
+    const signIn =
+      "Automatic sign-in failed. Please sign in to GitHub manually, including any 2FA.";
+    const opening =
+      "This source needs a manual browser step. Opening a local browser session on this machine.";
+    runConnectorEvents = [
+      {
+        type: "headed-required",
+        source: "github",
+        message: opening,
+        logPath: "/tmp/logs/run.log",
+      },
+      {
+        type: "headed-required",
+        source: "github",
+        message: signIn,
+        logPath: "/tmp/logs/run.log",
+      },
+      {
+        type: "headed-required",
+        source: "github",
+        message: signIn,
+        logPath: "/tmp/logs/run.log",
+      },
+      {
+        type: "collection-complete",
+        source: "github",
+        resultPath: "/tmp/.vana/github-result.json",
+        logPath: "/tmp/logs/run.log",
+      },
+    ];
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({ profile: { username: "alice" } }),
+    );
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "connect", "github"]);
+
+    expect(exitCode).toBe(0);
+    expect(stderr.split(signIn).length - 1).toBe(1);
+    expect(stderr.split(opening).length - 1).toBe(1);
+    // One bell for the sign-in, one for the finished connect.
+    expect(stderr.split("\x07").length - 1).toBe(2);
+  });
+
   it("handles connector fetch failure for non-checksum errors", async () => {
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },

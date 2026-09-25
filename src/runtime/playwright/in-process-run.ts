@@ -58,6 +58,53 @@ class NeedsInputError extends Error {
   }
 }
 
+/**
+ * A connector asked for a password again in the same run. Its first sign-in
+ * did not work, and every further attempt is another automated login against
+ * the person's real account, so the run stops instead.
+ */
+class PasswordRetryRefusedError extends Error {
+  constructor() {
+    super(
+      "Sign-in did not work with the details given, so it was not tried again. Run the command again to retry.",
+    );
+  }
+}
+
+function asksForPassword(schema: PendingInputRequest["schema"]): boolean {
+  const properties = (schema?.properties ?? {}) as Record<
+    string,
+    { format?: unknown } | undefined
+  >;
+  return Object.values(properties).some(
+    (property) => property?.format === "password",
+  );
+}
+
+/**
+ * True for a legacy connector that can sign in two ways: by asking in the
+ * terminal (a password, an emailed code, an API key), or by letting the
+ * person sign in in a visible browser. Such a connector checks for
+ * `page.requestInput` before its login block and signs in through the browser
+ * when it is missing, sending nothing to the site. In the browser the person
+ * handles whatever the site asks, including choices a connector gets wrong
+ * (Oura's connector picks "Use passkey" over "Email me a code").
+ */
+export function signsInThroughBrowser(connectorCode: string): boolean {
+  return (
+    /typeof\s+page\.requestInput\b/.test(connectorCode) &&
+    /page\.(showBrowser|promptUser)\(/.test(connectorCode)
+  );
+}
+
+function canOpenVisibleBrowser(): boolean {
+  return !(
+    process.platform === "linux" &&
+    !process.env.DISPLAY &&
+    !process.env.WAYLAND_DISPLAY
+  );
+}
+
 class LegacyAuthError extends Error {
   constructor(method: "promptUser" | "showBrowser") {
     super(`${method} is not supported by the in-process runtime.`);
@@ -186,11 +233,7 @@ async function ensureHeadedBrowser(
     throw new LegacyAuthError(url ? "showBrowser" : "promptUser");
   }
 
-  if (
-    process.platform === "linux" &&
-    !process.env.DISPLAY &&
-    !process.env.WAYLAND_DISPLAY
-  ) {
+  if (!canOpenVisibleBrowser()) {
     throw new Error(
       "This source needs a manual browser step, but no local display server is available. Run this command in a desktop session or use xvfb-run.",
     );
@@ -348,13 +391,37 @@ export function startInProcessConnectorRun({
         writeLog,
       });
 
+      // At a terminal, signing in through the CLI is the worse path: the site
+      // often asks for 2FA or offers a passkey the connector cannot handle,
+      // and it teaches people to hand their password to a command-line tool. Without
+      // requestInput these connectors sign in through the visible browser.
+      // Agents (no onNeedInput) and --no-input runs keep today's behaviour.
+      // Only where a person can act in a browser window: a real terminal
+      // on both ends (the CLI's rule for opening a browser) and a display.
+      // On a Linux host without one, the password prompt stays the only way
+      // to sign in.
+      const browserSignIn =
+        !request.noInput &&
+        Boolean(request.onNeedInput) &&
+        Boolean(process.stdin.isTTY && process.stdout.isTTY) &&
+        canOpenVisibleBrowser() &&
+        signsInThroughBrowser(connectorCode);
+      if (browserSignIn) {
+        writeLog(
+          "[auth] Signing in through the browser: no password prompt for this connector",
+        );
+      }
+      const connectorPage = browserSignIn
+        ? withoutRequestInput(pageApi)
+        : pageApi;
+
       if (!skipBrowser) {
         await runState.page?.goto("about:blank", {
           waitUntil: "domcontentloaded",
         });
       }
       const connectorFunction = buildConnectorFunction(connectorCode);
-      const result = await connectorFunction.call(null, pageApi);
+      const result = await connectorFunction.call(null, connectorPage);
 
       if (!runState.hasResult && result != null) {
         const exportData =
@@ -432,6 +499,13 @@ export function startInProcessConnectorRun({
       }
     },
   };
+}
+
+function withoutRequestInput<T extends { requestInput: unknown }>(
+  pageApi: T,
+): Omit<T, "requestInput"> {
+  const { requestInput: _omitted, ...rest } = pageApi;
+  return rest;
 }
 
 /**
@@ -518,6 +592,8 @@ function createPageApi({
   pushEvent: (event: RuntimeEvent) => void;
   writeLog: (message: string) => void;
 }) {
+  // Password prompts so far in this run; a connector gets one attempt.
+  let passwordRequests = 0;
   const networkCaptures = new Map<string, NetworkCaptureConfig>();
   const capturedResponses = new Map<
     string,
@@ -615,6 +691,15 @@ function createPageApi({
     url: async () => requirePage().url(),
 
     requestInput: async (payload: PendingInputRequest) => {
+      if (asksForPassword(payload.schema)) {
+        if (passwordRequests > 0) {
+          writeLog(
+            "[auth] A second password request in this run was refused; sign-in is not retried",
+          );
+          throw new PasswordRetryRefusedError();
+        }
+        passwordRequests += 1;
+      }
       const fields = Object.keys(payload.schema?.properties ?? {});
       const inputRequest: RuntimeInputRequest = {
         message: payload.message ?? "Additional input is required.",
@@ -877,6 +962,17 @@ function createPageApi({
     },
 
     goHeadless: async () => {
+      // Connectors check the page right after this to confirm the person
+      // signed in (Oura, GitHub). Reopen on the site the visible window was
+      // on: the profile keeps the session, so that check sees it. A local
+      // page (Steam's data: form) is not reloaded; it would lose its input.
+      let returnTo: string | null = null;
+      try {
+        const current = runState.page?.url() ?? "";
+        if (/^https?:\/\//.test(current)) returnTo = current;
+      } catch {
+        returnTo = null;
+      }
       await reopenContext(
         runState,
         networkCaptures,
@@ -888,9 +984,17 @@ function createPageApi({
         logPath,
       );
       if (runState.page) {
-        await runState.page.goto("about:blank", {
+        await runState.page.goto(returnTo ?? "about:blank", {
           waitUntil: "domcontentloaded",
         });
+        if (returnTo) {
+          // Single-page apps draw the signed-in view after the HTML arrives,
+          // and connectors check for it at once (Oura looks for dashboard
+          // links with no retry). Wait for the page to settle, bounded.
+          await runState.page
+            .waitForLoadState("networkidle", { timeout: 15_000 })
+            .catch(() => undefined);
+        }
       }
     },
 

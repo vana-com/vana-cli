@@ -30,6 +30,7 @@ type FakePage = {
   fill: ReturnType<typeof vi.fn>;
   click: ReturnType<typeof vi.fn>;
   press: ReturnType<typeof vi.fn>;
+  waitForLoadState: ReturnType<typeof vi.fn>;
 };
 
 type FakeContext = {
@@ -52,6 +53,7 @@ function createFakeRuntime() {
     fill: vi.fn(async () => undefined),
     click: vi.fn(async () => undefined),
     press: vi.fn(async () => undefined),
+    waitForLoadState: vi.fn(async () => undefined),
   };
 
   const context: FakeContext = {
@@ -75,6 +77,22 @@ async function writeConnector(contents: string): Promise<string> {
   const connectorPath = path.join(dir, "test-playwright.js");
   await fs.writeFile(connectorPath, contents, "utf8");
   return connectorPath;
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+function setTty(stdin: boolean | undefined, stdout: boolean | undefined): void {
+  Object.defineProperty(process.stdin, "isTTY", {
+    value: stdin,
+    configurable: true,
+  });
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: stdout,
+    configurable: true,
+  });
 }
 
 describe("startInProcessConnectorRun", () => {
@@ -256,8 +274,331 @@ describe("startInProcessConnectorRun", () => {
         "/tmp/chrome",
       );
     } finally {
-      process.env.DISPLAY = previousDisplay;
+      restoreEnv("DISPLAY", previousDisplay);
     }
+  });
+
+  it("signs a password connector in through the browser at a terminal, never asking for the password", async () => {
+    createFakeRuntime();
+    const previousDisplay = process.env.DISPLAY;
+    const previousTty = [process.stdin.isTTY, process.stdout.isTTY] as const;
+    process.env.DISPLAY = ":99";
+    setTty(true, true);
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  if (typeof page.requestInput === "function") {
+    await page.requestInput({
+      message: "Log in",
+      schema: { type: "object", properties: {
+        username: { type: "string" },
+        password: { type: "string", format: "password" }
+      } }
+    });
+    return { signedInWith: "password" };
+  }
+  await page.showBrowser("https://example.com/login");
+  await page.promptUser("Sign in to Example in the browser window.", async () => true, 1);
+  return { signedInWith: "browser" };
+})();
+`);
+
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const onNeedInput = vi.fn(async () => ({ username: "u", password: "p" }));
+
+      const handle = startInProcessConnectorRun({
+        request: {
+          connectorPath,
+          source: "example",
+          noInput: false,
+          onNeedInput,
+        },
+        logPath: path.join(os.tmpdir(), "vana-connect-browser-sign-in.log"),
+      });
+      const events = [];
+      for await (const event of handle.events()) {
+        events.push(event);
+      }
+
+      expect(onNeedInput).not.toHaveBeenCalled();
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "headed-required",
+            message: "Sign in to Example in the browser window.",
+          }),
+          expect.objectContaining({ type: "collection-complete" }),
+        ]),
+      );
+    } finally {
+      restoreEnv("DISPLAY", previousDisplay);
+      setTty(...previousTty);
+    }
+  });
+
+  it("also sends a connector that asks for an emailed code to the browser (Oura)", async () => {
+    createFakeRuntime();
+    const previousDisplay = process.env.DISPLAY;
+    const previousTty = [process.stdin.isTTY, process.stdout.isTTY] as const;
+    process.env.DISPLAY = ":99";
+    setTty(true, true);
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  if (typeof page.requestInput === "function") {
+    await page.requestInput({ message: "Log in to Oura", schema: { type: "object", properties: {
+      email: { type: "string" }
+    } } });
+    return { signedInWith: "terminal" };
+  }
+  await page.showBrowser("https://cloud.ouraring.com/user/sign-in");
+  await page.promptUser("Sign in to Oura in the browser window.", async () => true, 1);
+  return { signedInWith: "browser" };
+})();
+`);
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const onNeedInput = vi.fn(async () => ({ email: "person@example.com" }));
+      const handle = startInProcessConnectorRun({
+        request: { connectorPath, source: "oura", noInput: false, onNeedInput },
+        logPath: path.join(os.tmpdir(), "vana-connect-oura-browser.log"),
+      });
+      const events = [];
+      for await (const event of handle.events()) {
+        events.push(event);
+      }
+      expect(onNeedInput).not.toHaveBeenCalled();
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "headed-required",
+            message: "Sign in to Oura in the browser window.",
+          }),
+        ]),
+      );
+    } finally {
+      restoreEnv("DISPLAY", previousDisplay);
+      setTty(...previousTty);
+    }
+  });
+
+  it("goes back headless on the page the person signed in on, not a blank page", async () => {
+    const { page } = createFakeRuntime();
+    page.url.mockReturnValue("https://cloud.ouraring.com/dashboard");
+    const previousDisplay = process.env.DISPLAY;
+    process.env.DISPLAY = ":99";
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  await page.showBrowser("https://cloud.ouraring.com/user/sign-in");
+  await page.promptUser("Sign in to Oura in the browser window.", async () => true, 1);
+  await page.goHeadless();
+  await page.setData("result", { ok: true });
+})();
+`);
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const handle = startInProcessConnectorRun({
+        request: { connectorPath, source: "oura", noInput: false },
+        logPath: path.join(os.tmpdir(), "vana-connect-go-headless.log"),
+      });
+      for await (const event of handle.events()) {
+        void event;
+      }
+      const lastGoto = page.goto.mock.calls.at(-1);
+      expect(lastGoto?.[0]).toBe("https://cloud.ouraring.com/dashboard");
+      // It also waits for the signed-in view to render before the check.
+      expect(page.waitForLoadState).toHaveBeenCalledWith("networkidle", {
+        timeout: 15_000,
+      });
+    } finally {
+      restoreEnv("DISPLAY", previousDisplay);
+    }
+  });
+
+  it("keeps the password prompt on a Linux host where no browser window can open", async () => {
+    createFakeRuntime();
+    const originalPlatform = process.platform;
+    const previousDisplay = process.env.DISPLAY;
+    const previousWayland = process.env.WAYLAND_DISPLAY;
+    const previousTty = [process.stdin.isTTY, process.stdout.isTTY] as const;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    delete process.env.DISPLAY;
+    delete process.env.WAYLAND_DISPLAY;
+    setTty(true, true);
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  if (typeof page.requestInput === "function") {
+    await page.requestInput({
+      message: "Log in",
+      schema: { type: "object", properties: {
+        password: { type: "string", format: "password" }
+      } }
+    });
+    return { signedInWith: "password" };
+  }
+  await page.showBrowser("https://example.com/login");
+  return { signedInWith: "browser" };
+})();
+`);
+
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const onNeedInput = vi.fn(async () => ({ password: "p" }));
+      const handle = startInProcessConnectorRun({
+        request: {
+          connectorPath,
+          source: "example",
+          noInput: false,
+          onNeedInput,
+        },
+        logPath: path.join(os.tmpdir(), "vana-connect-no-display.log"),
+      });
+      const events = [];
+      for await (const event of handle.events()) {
+        events.push(event);
+      }
+      expect(events).not.toContainEqual(
+        expect.objectContaining({ type: "headed-required" }),
+      );
+      expect(onNeedInput).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+      restoreEnv("DISPLAY", previousDisplay);
+      restoreEnv("WAYLAND_DISPLAY", previousWayland);
+      setTty(...previousTty);
+    }
+  });
+
+  it("keeps the password prompt when the terminal is not a TTY", async () => {
+    createFakeRuntime();
+    const previousDisplay = process.env.DISPLAY;
+    const previousTty = [process.stdin.isTTY, process.stdout.isTTY] as const;
+    process.env.DISPLAY = ":99";
+    setTty(undefined, undefined);
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  if (typeof page.requestInput === "function") {
+    await page.requestInput({
+      message: "Log in",
+      schema: { type: "object", properties: {
+        password: { type: "string", format: "password" }
+      } }
+    });
+    return { signedInWith: "password" };
+  }
+  await page.showBrowser("https://example.com/login");
+  return { signedInWith: "browser" };
+})();
+`);
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const onNeedInput = vi.fn(async () => ({ password: "p" }));
+      const handle = startInProcessConnectorRun({
+        request: {
+          connectorPath,
+          source: "example",
+          noInput: false,
+          onNeedInput,
+        },
+        logPath: path.join(os.tmpdir(), "vana-connect-no-tty.log"),
+      });
+      for await (const event of handle.events()) {
+        expect(event.type).not.toBe("headed-required");
+      }
+      expect(onNeedInput).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreEnv("DISPLAY", previousDisplay);
+      setTty(...previousTty);
+    }
+  });
+
+  it("keeps offering requestInput to agents that answer through files", async () => {
+    createFakeRuntime();
+    const connectorPath = await writeConnector(`
+(async () => {
+  if (false) {
+    await page.requestInput({ schema: { properties: { password: { type: "string", format: "password" } } } });
+    await page.showBrowser("https://example.com/login");
+  }
+  await page.setData("result", { offered: typeof page.requestInput === "function" });
+})();
+`);
+
+    const { startInProcessConnectorRun } =
+      await import("../../src/runtime/playwright/in-process-run.js");
+    const logPath = path.join(os.tmpdir(), "vana-connect-agent-input.log");
+    const handle = startInProcessConnectorRun({
+      request: { connectorPath, source: "example", noInput: false },
+      logPath,
+    });
+    const events = [];
+    for await (const event of handle.events()) {
+      events.push(event);
+    }
+    const complete = events.find(
+      (event) => event.type === "collection-complete",
+    );
+    expect(complete).toBeDefined();
+    const result = JSON.parse(
+      await fs.readFile(
+        String((complete as { resultPath: string }).resultPath),
+        "utf8",
+      ),
+    );
+    expect(JSON.stringify(result)).toContain('"offered":true');
+  });
+
+  it("refuses a second password request in one run instead of asking again", async () => {
+    createFakeRuntime();
+    const connectorPath = await writeConnector(`
+(async () => {
+  const schema = { type: "object", properties: {
+    username: { type: "string" },
+    password: { type: "string", format: "password" }
+  } };
+  await page.requestInput({ message: "Log in", schema });
+  try {
+    await page.requestInput({ message: "Log in - Login form error. Retrying...", schema });
+    return { secondAttempt: "asked" };
+  } catch (error) {
+    return { secondAttempt: "refused", message: error.message };
+  }
+})();
+`);
+
+    const { startInProcessConnectorRun } =
+      await import("../../src/runtime/playwright/in-process-run.js");
+    const onNeedInput = vi.fn(async () => ({ username: "u", password: "p" }));
+    const handle = startInProcessConnectorRun({
+      request: {
+        connectorPath,
+        source: "example",
+        noInput: false,
+        onNeedInput,
+      },
+      logPath: path.join(os.tmpdir(), "vana-connect-password-retry.log"),
+    });
+    const events = [];
+    for await (const event of handle.events()) {
+      events.push(event);
+    }
+
+    expect(onNeedInput).toHaveBeenCalledTimes(1);
+    const complete = events.find(
+      (event) => event.type === "collection-complete",
+    );
+    const result = JSON.parse(
+      await fs.readFile(
+        String((complete as { resultPath: string }).resultPath),
+        "utf8",
+      ),
+    );
+    expect(JSON.stringify(result)).toContain('"secondAttempt":"refused"');
+    expect(JSON.stringify(result)).toContain("was not tried again");
   });
 
   it("gives legacy connectors waitForSelector, fill, click, press and url on the live page", async () => {

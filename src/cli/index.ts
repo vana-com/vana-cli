@@ -1750,6 +1750,7 @@ async function runConnect(
           return values;
         };
 
+    const shownBrowserPrompts = new Set<string>();
     for await (const event of runtime.runConnector({
       connectorPath: resolution.connectorPath,
       source: resolution.source,
@@ -1852,7 +1853,19 @@ async function runConnect(
       }
 
       if (event.type === "headed-required") {
-        // Silent — the browser opens automatically
+        // The browser opens by itself, but the person has to act in it:
+        // without this line an empty sign-in page appears and the terminal
+        // says nothing. Each distinct message once.
+        const message = event.message?.trim();
+        if (message && !shownBrowserPrompts.has(message)) {
+          // The bell once per run: the runtime's "opening a browser" line and
+          // the connector's own instruction arrive back to back.
+          if (shownBrowserPrompts.size === 0) {
+            renderer?.bell();
+          }
+          shownBrowserPrompts.add(message);
+          renderer?.note(browserStepMessage(message));
+        }
         continue;
       }
 
@@ -1888,17 +1901,22 @@ async function runConnect(
         try {
           const raw = await fsp.readFile(event.resultPath, "utf8");
           const parsed = JSON.parse(raw);
-          if (
+          const errorOnly =
             parsed &&
             typeof parsed === "object" &&
             "error" in parsed &&
-            Object.keys(parsed).length <= 2
-          ) {
+            Object.keys(parsed).length <= 2;
+          // A full export shape can also carry errors and no data: the
+          // connector stopped (e.g. at sign-in) or every stream failed, and it
+          // wrote an empty result, which must not read as "Connected".
+          const fatalReason = errorOnly ? null : failedEmptyResult(parsed);
+          if (errorOnly || fatalReason) {
             // Connector returned an error, not real data
             const errorMsg =
-              typeof parsed.error === "string"
+              fatalReason ??
+              (typeof parsed.error === "string"
                 ? parsed.error
-                : "Collection returned an error";
+                : "Collection returned an error");
             await updateSourceState(source, {
               lastRunAt: new Date().toISOString(),
               lastRunOutcome: CliOutcomeStatus.RUNTIME_ERROR,
@@ -1911,9 +1929,10 @@ async function runConnect(
             });
             renderer?.fail(`Problem connecting ${displayName}.`);
             renderer?.detail(
-              typeof parsed.error === "string"
-                ? parsed.error
-                : "The connector returned an error instead of data.",
+              fatalReason ??
+                (typeof parsed.error === "string"
+                  ? parsed.error
+                  : "The connector returned an error instead of data."),
             );
             emit.event({
               type: "outcome",
@@ -5521,6 +5540,65 @@ export function compareSourceStatusOrder(
       },
     )
   );
+}
+
+const RESULT_METADATA_KEYS = new Set([
+  "requestedScopes",
+  "timestamp",
+  "version",
+  "platform",
+  "exportSummary",
+  "errors",
+]);
+
+// Collected content, looked for inside the scope wrappers connectors build
+// (ChatGPT writes `{ conversations: [], total: 0 }`). Numbers and booleans on
+// their own are counters and flags, not content.
+function hasContent(value: unknown): boolean {
+  if (typeof value === "string") return value.trim() !== "";
+  if (Array.isArray(value)) return value.some(hasContent);
+  if (value && typeof value === "object") {
+    return Object.values(value).some(hasContent);
+  }
+  return false;
+}
+
+/**
+ * Why a connector result holds no data despite recorded errors, or null when
+ * it has data or recorded no error. A partial run (data plus errors) still
+ * counts as collected; an empty result with no errors is an empty account.
+ */
+export function failedEmptyResult(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const record = result as Record<string, unknown>;
+  const errors = (Array.isArray(record.errors) ? record.errors : []).filter(
+    (entry): entry is Record<string, unknown> =>
+      Boolean(entry) && typeof entry === "object",
+  );
+  // No recorded error: an empty result is an empty account, not a failure.
+  if (errors.length === 0) return null;
+  // Judge by the data itself, not exportSummary.count: some connectors count
+  // one stream only (ChatGPT counts conversations, not memories).
+  const hasData = Object.entries(record).some(
+    ([key, value]) => !RESULT_METADATA_KEYS.has(key) && hasContent(value),
+  );
+  if (hasData) return null;
+  const cause =
+    errors.find((entry) => entry.disposition === "fatal") ?? errors[0];
+  return typeof cause.reason === "string" && cause.reason.trim()
+    ? cause.reason
+    : "The connector stopped before collecting any data.";
+}
+
+// Legacy connectors wrote their manual-step text for a host with a "Done"
+// button. The CLI has none: the runtime checks by itself until the step is
+// complete, so "click Done" would read as a button that never appears.
+const CLICK_DONE =
+  /,?\s*(?:then\s+)?(?:return here and\s+)?click "Done"\.?\s*$/i;
+
+export function browserStepMessage(message: string): string {
+  if (!CLICK_DONE.test(message)) return message;
+  return `${message.replace(CLICK_DONE, ".")} Vana continues on its own once you're done.`;
 }
 
 export function isSourceAttention(source: SourceStatus): boolean {
