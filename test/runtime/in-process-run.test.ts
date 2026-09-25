@@ -308,6 +308,59 @@ describe("startInProcessConnectorRun", () => {
     }
   });
 
+  it("keeps the password prompt on a Linux host where no browser window can open", async () => {
+    createFakeRuntime();
+    const originalPlatform = process.platform;
+    const previousDisplay = process.env.DISPLAY;
+    const previousWayland = process.env.WAYLAND_DISPLAY;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    delete process.env.DISPLAY;
+    delete process.env.WAYLAND_DISPLAY;
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  if (typeof page.requestInput === "function") {
+    await page.requestInput({
+      message: "Log in",
+      schema: { type: "object", properties: {
+        password: { type: "string", format: "password" }
+      } }
+    });
+    return { signedInWith: "password" };
+  }
+  await page.showBrowser("https://example.com/login");
+  return { signedInWith: "browser" };
+})();
+`);
+
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const onNeedInput = vi.fn(async () => ({ password: "p" }));
+      const handle = startInProcessConnectorRun({
+        request: {
+          connectorPath,
+          source: "example",
+          noInput: false,
+          onNeedInput,
+        },
+        logPath: path.join(os.tmpdir(), "vana-connect-no-display.log"),
+      });
+      const events = [];
+      for await (const event of handle.events()) {
+        events.push(event);
+      }
+      expect(events).not.toContainEqual(
+        expect.objectContaining({ type: "headed-required" }),
+      );
+      expect(onNeedInput).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+      process.env.DISPLAY = previousDisplay;
+      if (previousWayland === undefined) delete process.env.WAYLAND_DISPLAY;
+      else process.env.WAYLAND_DISPLAY = previousWayland;
+    }
+  });
+
   it("keeps offering requestInput to agents that answer through files", async () => {
     createFakeRuntime();
     const connectorPath = await writeConnector(`

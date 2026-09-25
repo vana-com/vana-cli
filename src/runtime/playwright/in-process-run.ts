@@ -94,6 +94,14 @@ export function signsInThroughBrowser(connectorCode: string): boolean {
   );
 }
 
+function canOpenVisibleBrowser(): boolean {
+  return !(
+    process.platform === "linux" &&
+    !process.env.DISPLAY &&
+    !process.env.WAYLAND_DISPLAY
+  );
+}
+
 class LegacyAuthError extends Error {
   constructor(method: "promptUser" | "showBrowser") {
     super(`${method} is not supported by the in-process runtime.`);
@@ -222,11 +230,7 @@ async function ensureHeadedBrowser(
     throw new LegacyAuthError(url ? "showBrowser" : "promptUser");
   }
 
-  if (
-    process.platform === "linux" &&
-    !process.env.DISPLAY &&
-    !process.env.WAYLAND_DISPLAY
-  ) {
+  if (!canOpenVisibleBrowser()) {
     throw new Error(
       "This source needs a manual browser step, but no local display server is available. Run this command in a desktop session or use xvfb-run.",
     );
@@ -389,9 +393,12 @@ export function startInProcessConnectorRun({
       // people to hand their password to a command-line tool. Without
       // requestInput these connectors sign in through the visible browser.
       // Agents (no onNeedInput) and --no-input runs keep today's behaviour.
+      // Only where a browser window can open: on a Linux host without a
+      // display, the password prompt stays the only way to sign in.
       const browserSignIn =
         !request.noInput &&
         Boolean(request.onNeedInput) &&
+        canOpenVisibleBrowser() &&
         signsInThroughBrowser(connectorCode);
       if (browserSignIn) {
         writeLog(
