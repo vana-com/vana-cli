@@ -72,14 +72,15 @@ export interface ReadDeps {
   requests?: RequestsStore;
 }
 
-// The Personal Server's answers when the grant itself is the problem. Any
-// server holding the owner's data gives the same answer, so trying the other
-// registrations only turns "revoked" into "no server answered".
+// The Personal Server's answers when the grant itself is over. Revocation
+// and expiry are read from the chain, so every server of the owner gives the
+// same answer and trying the other registrations only turns "revoked" into
+// "no server answered". GRANT_REQUIRED and SCOPE_MISMATCH are not final: a
+// stale registration that does not know the grant answers that way too, so
+// the loop moves on for them.
 const GRANT_REFUSALS: Record<string, string> = {
   GRANT_REVOKED: "The owner revoked this grant.",
   GRANT_EXPIRED: "This grant has expired.",
-  GRANT_REQUIRED: "The owner's Personal Server does not accept this grant.",
-  SCOPE_MISMATCH: "The grant does not cover this scope.",
 };
 
 function grantRefusal(error: unknown): string | null {

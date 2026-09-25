@@ -156,6 +156,25 @@ describe("createPersonalServerClient", () => {
       );
     });
 
+    it("stops paging when a server keeps reporting more than it returns", async () => {
+      mockFetch.mockImplementation(async () => ({
+        ok: true,
+        json: async () => ({
+          scopes: [{ scope: "same.scope", count: 1 }],
+          total: 1_000_000,
+        }),
+      }));
+
+      const client = createPersonalServerClient({
+        url: SERVER_URL,
+        auth: { type: "bearerToken", token: "test-token" },
+      });
+      await client.listScopes();
+
+      expect(mockFetch).toHaveBeenCalledTimes(100);
+      mockFetch.mockReset();
+    });
+
     it("normalizes versionCount responses from the personal server", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,

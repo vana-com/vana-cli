@@ -112,10 +112,15 @@ export async function runAppRegister(
 
   // Remember how this app introduces itself, so `vana app request` shows it
   // on the approval page without repeating --app-name every time.
-  (deps.saveProfile ?? saveAppProfile)(key.address, {
-    name: options.appName,
-    url: options.appUrl,
-  });
+  // A local file that cannot be written must not cost the registration.
+  try {
+    (deps.saveProfile ?? saveAppProfile)(key.address, {
+      name: options.appName,
+      url: options.appUrl,
+    });
+  } catch {
+    // The name then has to be passed as --app-name on each request.
+  }
 
   const client = (deps.createClient ?? createGatewayClient)(network.gatewayUrl);
 

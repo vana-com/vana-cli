@@ -413,7 +413,7 @@ describe("vana app read", () => {
     expect(urls).toEqual(["https://live.example"]);
   });
 
-  it("still tries the next registration on a 403 that is not about the grant", async () => {
+  it("still tries the next registration on a 403 that is not final, like GRANT_REQUIRED", async () => {
     const urls: string[] = [];
     const exitCode = await runAppRead(
       "github.repos",
@@ -440,7 +440,8 @@ describe("vana app read", () => {
             throw Object.assign(new Error("403"), {
               name: "PersonalServerReadError",
               status: 403,
-              details: { body: '{"error":{"code":"GRANT_OWNER_MISMATCH"}}' },
+              // A stale registration that does not know the grant.
+              details: { body: '{"error":{"code":"GRANT_REQUIRED"}}' },
             });
           }
           return { data: { ok: true } };

@@ -49,6 +49,25 @@ afterEach(() => {
 });
 
 describe("vana app register", () => {
+  it("still registers when the profile file cannot be written", async () => {
+    const exitCode = await runAppRegister(
+      { json: true, appName: "OpenClaw" },
+      {
+        resolveKey: () => resolvedKey,
+        saveProfile: () => {
+          throw new Error("EACCES");
+        },
+        createClient: () =>
+          clientWith({
+            isRegisteredBuilder: async () => true,
+            registerBuilder: vi.fn(),
+          }),
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).status).toBe("done");
+  });
+
   it("remembers --app-name and --app-url for later requests", async () => {
     const saveProfile = vi.fn();
     const exitCode = await runAppRegister(

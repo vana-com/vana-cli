@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getVanaHome } from "./paths.js";
 
+/** How an app introduces itself on the approval page. */
 export interface AppProfile {
   name?: string;
   url?: string;
@@ -29,6 +30,7 @@ function readAll(): Record<string, AppProfile> {
   }
 }
 
+/** The remembered profile for an app address, or {} when none was saved. */
 export function readAppProfile(address: string): AppProfile {
   return readAll()[address.toLowerCase()] ?? {};
 }
@@ -43,5 +45,8 @@ export function saveAppProfile(address: string, update: AppProfile): void {
   const key = address.toLowerCase();
   all[key] = { ...all[key], ...fields };
   fs.mkdirSync(path.dirname(profilePath()), { recursive: true });
-  fs.writeFileSync(profilePath(), `${JSON.stringify(all, null, 2)}\n`, "utf8");
+  // Write then rename, so a crash never leaves half a file behind.
+  const temporary = `${profilePath()}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(all, null, 2)}\n`, "utf8");
+  fs.renameSync(temporary, profilePath());
 }

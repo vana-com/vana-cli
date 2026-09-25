@@ -134,7 +134,9 @@ export function createPersonalServerClient(config: {
       // read every page, or scopes past the first page look missing.
       const pageSize = 100;
       const collected: unknown[] = [];
-      for (let offset = 0; ; offset += pageSize) {
+      // A server that ignores offset or reports a wrong total must not keep
+      // this loop going: 100 pages is 10,000 scopes.
+      for (let offset = 0; offset < pageSize * 100; offset += pageSize) {
         const params = new URLSearchParams({
           limit: String(pageSize),
           offset: String(offset),
