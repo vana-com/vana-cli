@@ -22,6 +22,10 @@ export interface PersonalServerHealth {
   version: string;
   uptime: number;
   owner: string | null;
+  /** The server's own address, which its registration is keyed by. */
+  identity?: string | null;
+  /** The gateway it serves, which says its network. */
+  gatewayUrl?: string | null;
 }
 
 export interface PersonalServerTarget {
@@ -264,6 +268,13 @@ async function fetchHealth(
       version: typeof body.version === "string" ? body.version : "unknown",
       uptime: typeof body.uptime === "number" ? body.uptime : 0,
       owner: typeof body.owner === "string" ? body.owner : null,
+      ...(typeof (body.identity as { address?: unknown } | undefined)
+        ?.address === "string"
+        ? { identity: (body.identity as { address: string }).address }
+        : {}),
+      ...(typeof body.gatewayUrl === "string"
+        ? { gatewayUrl: body.gatewayUrl }
+        : {}),
     };
   } catch {
     return null;

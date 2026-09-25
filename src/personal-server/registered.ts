@@ -70,3 +70,45 @@ export async function lookupRegisteredServers(
   );
   return perNetwork.flat();
 }
+
+export interface CheckedServer extends RegisteredServer {
+  /** Answered /health from outside as this owner's server. */
+  reachable: boolean;
+}
+
+/**
+ * Ask each registration's public URL whether it answers, in parallel. A
+ * registration only counts as live when its /health says it belongs to this
+ * owner and, when it says who it is, that it is the registered server.
+ */
+export async function checkRegisteredServers(
+  servers: RegisteredServer[],
+  owner: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CheckedServer[]> {
+  return Promise.all(
+    servers.map(async (server) => {
+      try {
+        const response = await fetchImpl(
+          `${server.url.replace(/\/+$/, "")}/health`,
+          { signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) },
+        );
+        if (!response.ok) return { ...server, reachable: false };
+        const health = (await response.json()) as {
+          owner?: unknown;
+          identity?: { address?: unknown };
+        };
+        const ownerMatches =
+          typeof health.owner === "string" &&
+          health.owner.toLowerCase() === owner.toLowerCase();
+        const identity = health.identity?.address;
+        const identityMatches =
+          typeof identity !== "string" ||
+          identity.toLowerCase() === server.serverAddress.toLowerCase();
+        return { ...server, reachable: ownerMatches && identityMatches };
+      } catch {
+        return { ...server, reachable: false };
+      }
+    }),
+  );
+}
