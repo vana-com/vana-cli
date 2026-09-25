@@ -39,6 +39,7 @@ import {
   formatRelativeTime,
 } from "./render/index.js";
 import type { ConnectRenderer } from "./render/connect-renderer.js";
+import { createProgressHandle } from "./render/progress.js";
 import {
   CliOutcomeStatus,
   migrateLegacyDataHome,
@@ -7170,6 +7171,9 @@ async function runLogin(
 
 function serverStartIo(options: GlobalOptions): ServerStartIo {
   return {
+    progress: createProgressHandle({
+      enabled: !options.json && !options.quiet,
+    }),
     say: (line) => {
       if (!options.json) process.stderr.write(`${line}\n`);
     },
