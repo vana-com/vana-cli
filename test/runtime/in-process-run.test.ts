@@ -30,6 +30,7 @@ type FakePage = {
   fill: ReturnType<typeof vi.fn>;
   click: ReturnType<typeof vi.fn>;
   press: ReturnType<typeof vi.fn>;
+  waitForLoadState: ReturnType<typeof vi.fn>;
 };
 
 type FakeContext = {
@@ -52,6 +53,7 @@ function createFakeRuntime() {
     fill: vi.fn(async () => undefined),
     click: vi.fn(async () => undefined),
     press: vi.fn(async () => undefined),
+    waitForLoadState: vi.fn(async () => undefined),
   };
 
   const context: FakeContext = {
@@ -406,6 +408,10 @@ describe("startInProcessConnectorRun", () => {
       }
       const lastGoto = page.goto.mock.calls.at(-1);
       expect(lastGoto?.[0]).toBe("https://cloud.ouraring.com/dashboard");
+      // It also waits for the signed-in view to render before the check.
+      expect(page.waitForLoadState).toHaveBeenCalledWith("networkidle", {
+        timeout: 15_000,
+      });
     } finally {
       restoreEnv("DISPLAY", previousDisplay);
     }

@@ -987,6 +987,14 @@ function createPageApi({
         await runState.page.goto(returnTo ?? "about:blank", {
           waitUntil: "domcontentloaded",
         });
+        if (returnTo) {
+          // Single-page apps draw the signed-in view after the HTML arrives,
+          // and connectors check for it at once (Oura looks for dashboard
+          // links with no retry). Wait for the page to settle, bounded.
+          await runState.page
+            .waitForLoadState("networkidle", { timeout: 15_000 })
+            .catch(() => undefined);
+        }
       }
     },
 
