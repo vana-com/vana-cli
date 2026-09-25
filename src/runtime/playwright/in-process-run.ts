@@ -58,6 +58,42 @@ class NeedsInputError extends Error {
   }
 }
 
+/**
+ * A connector asked for a password again in the same run. Its first sign-in
+ * did not work, and every further attempt is another automated login against
+ * the person's real account, so the run stops instead.
+ */
+class PasswordRetryRefusedError extends Error {
+  constructor() {
+    super(
+      "Sign-in did not work with the details given, so it was not tried again. Run the command again to retry.",
+    );
+  }
+}
+
+function asksForPassword(schema: PendingInputRequest["schema"]): boolean {
+  const properties = (schema?.properties ?? {}) as Record<
+    string,
+    { format?: unknown } | undefined
+  >;
+  return Object.values(properties).some(
+    (property) => property?.format === "password",
+  );
+}
+
+/**
+ * True for a legacy connector that can sign in two ways: by asking for a
+ * password, or by letting the person sign in in a visible browser. Every such
+ * connector checks for `page.requestInput` before its login block and signs
+ * in through the browser when it is missing, sending nothing to the site.
+ */
+export function signsInThroughBrowser(connectorCode: string): boolean {
+  return (
+    /format\s*:\s*["']password["']/.test(connectorCode) &&
+    /page\.(showBrowser|promptUser)\(/.test(connectorCode)
+  );
+}
+
 class LegacyAuthError extends Error {
   constructor(method: "promptUser" | "showBrowser") {
     super(`${method} is not supported by the in-process runtime.`);
@@ -348,13 +384,31 @@ export function startInProcessConnectorRun({
         writeLog,
       });
 
+      // At a terminal, a password typed into the CLI is the worse path: the
+      // site often asks for 2FA the connector cannot answer, and it teaches
+      // people to hand their password to a command-line tool. Without
+      // requestInput these connectors sign in through the visible browser.
+      // Agents (no onNeedInput) and --no-input runs keep today's behaviour.
+      const browserSignIn =
+        !request.noInput &&
+        Boolean(request.onNeedInput) &&
+        signsInThroughBrowser(connectorCode);
+      if (browserSignIn) {
+        writeLog(
+          "[auth] Signing in through the browser: no password prompt for this connector",
+        );
+      }
+      const connectorPage = browserSignIn
+        ? withoutRequestInput(pageApi)
+        : pageApi;
+
       if (!skipBrowser) {
         await runState.page?.goto("about:blank", {
           waitUntil: "domcontentloaded",
         });
       }
       const connectorFunction = buildConnectorFunction(connectorCode);
-      const result = await connectorFunction.call(null, pageApi);
+      const result = await connectorFunction.call(null, connectorPage);
 
       if (!runState.hasResult && result != null) {
         const exportData =
@@ -434,6 +488,13 @@ export function startInProcessConnectorRun({
   };
 }
 
+function withoutRequestInput<T extends { requestInput: unknown }>(
+  pageApi: T,
+): Omit<T, "requestInput"> {
+  const { requestInput: _omitted, ...rest } = pageApi;
+  return rest;
+}
+
 function buildConnectorFunction(
   connectorCode: string,
 ): (page: unknown) => Promise<unknown> {
@@ -473,6 +534,8 @@ function createPageApi({
   pushEvent: (event: RuntimeEvent) => void;
   writeLog: (message: string) => void;
 }) {
+  // Password prompts so far in this run; a connector gets one attempt.
+  let passwordRequests = 0;
   const networkCaptures = new Map<string, NetworkCaptureConfig>();
   const capturedResponses = new Map<
     string,
@@ -530,6 +593,15 @@ function createPageApi({
     },
 
     requestInput: async (payload: PendingInputRequest) => {
+      if (asksForPassword(payload.schema)) {
+        if (passwordRequests > 0) {
+          writeLog(
+            "[auth] A second password request in this run was refused; sign-in is not retried",
+          );
+          throw new PasswordRetryRefusedError();
+        }
+        passwordRequests += 1;
+      }
       const fields = Object.keys(payload.schema?.properties ?? {});
       const inputRequest: RuntimeInputRequest = {
         message: payload.message ?? "Additional input is required.",

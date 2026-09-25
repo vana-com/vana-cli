@@ -1750,6 +1750,7 @@ async function runConnect(
           return values;
         };
 
+    const shownBrowserPrompts = new Set<string>();
     for await (const event of runtime.runConnector({
       connectorPath: resolution.connectorPath,
       source: resolution.source,
@@ -1852,7 +1853,15 @@ async function runConnect(
       }
 
       if (event.type === "headed-required") {
-        // Silent — the browser opens automatically
+        // The browser opens by itself, but the person has to act in it:
+        // without this line an empty sign-in page appears and the terminal
+        // says nothing. Each distinct message once.
+        const message = event.message?.trim();
+        if (message && !shownBrowserPrompts.has(message)) {
+          shownBrowserPrompts.add(message);
+          renderer?.note(message);
+          renderer?.bell();
+        }
         continue;
       }
 

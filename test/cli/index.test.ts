@@ -4156,6 +4156,47 @@ describe("runCli", () => {
     expect(stderr).toContain("Connected Steam.");
   });
 
+  it("tells the person to sign in in the browser the connector opened", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ]);
+    fetchConnectorResult = {
+      connectorPath: "/tmp/connectors/github/github-playwright.js",
+      logPath: "/tmp/logs/fetch.log",
+    };
+    const signIn =
+      "Automatic sign-in failed. Please sign in to GitHub manually, including any 2FA.";
+    runConnectorEvents = [
+      {
+        type: "headed-required",
+        source: "github",
+        message: signIn,
+        logPath: "/tmp/logs/run.log",
+      },
+      {
+        type: "headed-required",
+        source: "github",
+        message: signIn,
+        logPath: "/tmp/logs/run.log",
+      },
+      {
+        type: "collection-complete",
+        source: "github",
+        resultPath: "/tmp/.vana/github-result.json",
+        logPath: "/tmp/logs/run.log",
+      },
+    ];
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({ profile: { username: "alice" } }),
+    );
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "connect", "github"]);
+
+    expect(exitCode).toBe(0);
+    expect(stderr.split(signIn).length - 1).toBe(1);
+  });
+
   it("handles connector fetch failure for non-checksum errors", async () => {
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },

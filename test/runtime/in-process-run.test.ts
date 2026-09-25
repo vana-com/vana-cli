@@ -252,6 +252,147 @@ describe("startInProcessConnectorRun", () => {
     }
   });
 
+  it("signs a password connector in through the browser at a terminal, never asking for the password", async () => {
+    createFakeRuntime();
+    const previousDisplay = process.env.DISPLAY;
+    process.env.DISPLAY = ":99";
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  if (typeof page.requestInput === "function") {
+    await page.requestInput({
+      message: "Log in",
+      schema: { type: "object", properties: {
+        username: { type: "string" },
+        password: { type: "string", format: "password" }
+      } }
+    });
+    return { signedInWith: "password" };
+  }
+  await page.showBrowser("https://example.com/login");
+  await page.promptUser("Sign in to Example in the browser window.", async () => true, 1);
+  return { signedInWith: "browser" };
+})();
+`);
+
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const onNeedInput = vi.fn(async () => ({ username: "u", password: "p" }));
+
+      const handle = startInProcessConnectorRun({
+        request: {
+          connectorPath,
+          source: "example",
+          noInput: false,
+          onNeedInput,
+        },
+        logPath: path.join(os.tmpdir(), "vana-connect-browser-sign-in.log"),
+      });
+      const events = [];
+      for await (const event of handle.events()) {
+        events.push(event);
+      }
+
+      expect(onNeedInput).not.toHaveBeenCalled();
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "headed-required",
+            message: "Sign in to Example in the browser window.",
+          }),
+          expect.objectContaining({ type: "collection-complete" }),
+        ]),
+      );
+    } finally {
+      process.env.DISPLAY = previousDisplay;
+    }
+  });
+
+  it("keeps offering requestInput to agents that answer through files", async () => {
+    createFakeRuntime();
+    const connectorPath = await writeConnector(`
+(async () => {
+  if (false) {
+    await page.requestInput({ schema: { properties: { password: { type: "string", format: "password" } } } });
+    await page.showBrowser("https://example.com/login");
+  }
+  await page.setData("result", { offered: typeof page.requestInput === "function" });
+})();
+`);
+
+    const { startInProcessConnectorRun } =
+      await import("../../src/runtime/playwright/in-process-run.js");
+    const logPath = path.join(os.tmpdir(), "vana-connect-agent-input.log");
+    const handle = startInProcessConnectorRun({
+      request: { connectorPath, source: "example", noInput: false },
+      logPath,
+    });
+    const events = [];
+    for await (const event of handle.events()) {
+      events.push(event);
+    }
+    const complete = events.find(
+      (event) => event.type === "collection-complete",
+    );
+    expect(complete).toBeDefined();
+    const result = JSON.parse(
+      await fs.readFile(
+        String((complete as { resultPath: string }).resultPath),
+        "utf8",
+      ),
+    );
+    expect(JSON.stringify(result)).toContain('"offered":true');
+  });
+
+  it("refuses a second password request in one run instead of asking again", async () => {
+    createFakeRuntime();
+    const connectorPath = await writeConnector(`
+(async () => {
+  const schema = { type: "object", properties: {
+    username: { type: "string" },
+    password: { type: "string", format: "password" }
+  } };
+  await page.requestInput({ message: "Log in", schema });
+  try {
+    await page.requestInput({ message: "Log in - Login form error. Retrying...", schema });
+    return { secondAttempt: "asked" };
+  } catch (error) {
+    return { secondAttempt: "refused", message: error.message };
+  }
+})();
+`);
+
+    const { startInProcessConnectorRun } =
+      await import("../../src/runtime/playwright/in-process-run.js");
+    const onNeedInput = vi.fn(async () => ({ username: "u", password: "p" }));
+    const handle = startInProcessConnectorRun({
+      request: {
+        connectorPath,
+        source: "example",
+        noInput: false,
+        onNeedInput,
+      },
+      logPath: path.join(os.tmpdir(), "vana-connect-password-retry.log"),
+    });
+    const events = [];
+    for await (const event of handle.events()) {
+      events.push(event);
+    }
+
+    expect(onNeedInput).toHaveBeenCalledTimes(1);
+    const complete = events.find(
+      (event) => event.type === "collection-complete",
+    );
+    const result = JSON.parse(
+      await fs.readFile(
+        String((complete as { resultPath: string }).resultPath),
+        "utf8",
+      ),
+    );
+    expect(JSON.stringify(result)).toContain('"secondAttempt":"refused"');
+    expect(JSON.stringify(result)).toContain("was not tried again");
+  });
+
   it("writes a result and emits collection-complete", async () => {
     createFakeRuntime();
     const connectorPath = await writeConnector(`
