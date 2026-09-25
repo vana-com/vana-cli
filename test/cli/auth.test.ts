@@ -17,6 +17,7 @@ import {
   getAuthFilePath,
   getAuthTarget,
   loadCredentials,
+  readStoredAuthFile,
   resolveLoginServerUrl,
   resolveOAuthClientId,
   runDeviceCodeFlow,
@@ -967,5 +968,16 @@ describe("resolveLoginServerUrl", () => {
   it("logs in to a self-hosted server named in VANA_PS_URL", () => {
     process.env.VANA_PS_URL = "https://ps.example";
     expect(resolveLoginServerUrl()).toBe("https://ps.example");
+  });
+
+  it("keeps the vana server start marker when a re-login carries the server over", async () => {
+    await store({
+      url: "http://localhost:8080",
+      started_by: "vana-server-start",
+      expires_at: "2020-01-01T00:00:00.000Z",
+    });
+    expect(readStoredAuthFile()?.personalServer?.started_by).toBe(
+      "vana-server-start",
+    );
   });
 });

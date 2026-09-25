@@ -198,6 +198,11 @@ function normalizeCredentialsIgnoringExpiry(parsed: LegacyVanaCredentials): {
                 ? ps.access_token
                 : "",
           expires_at: typeof ps.expires_at === "string" ? ps.expires_at : "",
+          // Carried across a re-login: without it `server status` and login
+          // stop recognizing the server `vana server start` runs.
+          ...(ps.started_by === "vana-server-start"
+            ? { started_by: "vana-server-start" as const }
+            : {}),
         }
       : null;
   return { address, personalServer };
