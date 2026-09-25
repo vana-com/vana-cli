@@ -5551,11 +5551,15 @@ const RESULT_METADATA_KEYS = new Set([
   "errors",
 ]);
 
-function isEmptyValue(value: unknown): boolean {
-  if (value === null || value === undefined) return true;
-  if (Array.isArray(value)) return value.length === 0;
-  if (typeof value === "object") return Object.keys(value).length === 0;
-  if (typeof value === "string") return value.trim() === "";
+// Collected content, looked for inside the scope wrappers connectors build
+// (ChatGPT writes `{ conversations: [], total: 0 }`). Numbers and booleans on
+// their own are counters and flags, not content.
+function hasContent(value: unknown): boolean {
+  if (typeof value === "string") return value.trim() !== "";
+  if (Array.isArray(value)) return value.some(hasContent);
+  if (value && typeof value === "object") {
+    return Object.values(value).some(hasContent);
+  }
   return false;
 }
 
@@ -5578,7 +5582,7 @@ export function fatalEmptyResult(result: unknown): string | null {
   // Judge by the data itself, not exportSummary.count: some connectors count
   // one stream only (ChatGPT counts conversations, not memories).
   const hasData = Object.entries(record).some(
-    ([key, value]) => !RESULT_METADATA_KEYS.has(key) && !isEmptyValue(value),
+    ([key, value]) => !RESULT_METADATA_KEYS.has(key) && hasContent(value),
   );
   if (hasData) return null;
   return typeof fatal.reason === "string" && fatal.reason.trim()

@@ -4205,14 +4205,14 @@ describe("runCli", () => {
     expect(
       fatalEmptyResult({
         exportSummary: { count: 3 },
-        "github.repositories": [{}, {}, {}],
+        "github.repositories": [{ name: "a" }, { name: "b" }, { name: "c" }],
         errors: [{ reason: "starred timed out", disposition: "skipped" }],
       }),
     ).toBeNull();
     expect(
       fatalEmptyResult({
         exportSummary: { count: 3 },
-        "github.repositories": [{}, {}, {}],
+        "github.repositories": [{ name: "a" }, { name: "b" }, { name: "c" }],
         errors: [{ reason: "late failure", disposition: "fatal" }],
       }),
     ).toBeNull();
@@ -4227,7 +4227,7 @@ describe("runCli", () => {
     expect(
       fatalEmptyResult({
         exportSummary: { count: 0 },
-        "chatgpt.memories": [{ text: "likes tea" }],
+        "chatgpt.memories": { memories: [{ text: "likes tea" }], total: 1 },
         errors: [{ reason: "conversation list failed", disposition: "fatal" }],
       }),
     ).toBeNull();
@@ -4238,6 +4238,15 @@ describe("runCli", () => {
         errors: [{ reason: "sign-in failed", disposition: "fatal" }],
       }),
     ).toBe("sign-in failed");
+    // ChatGPT's empty scope wrappers are not data.
+    expect(
+      fatalEmptyResult({
+        exportSummary: { count: 0 },
+        "chatgpt.conversations": { conversations: [], total: 0 },
+        "chatgpt.memories": { memories: [], total: 0 },
+        errors: [{ reason: "conversation list failed", disposition: "fatal" }],
+      }),
+    ).toBe("conversation list failed");
   });
 
   it("rewrites a legacy 'click Done' instruction, since the CLI has no Done button", async () => {
