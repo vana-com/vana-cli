@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import { CliExitCode } from "../core/exit-codes.js";
 import type { VanaNetworkName } from "../core/network.js";
 import { getTimestampedLogPath } from "../core/paths.js";
@@ -34,9 +37,11 @@ import {
   type ServerMessage,
 } from "../personal-server/local/server.js";
 import {
+  runningServerPid,
   startDetachedServer,
   type DetachedStart,
 } from "../personal-server/local/detach.js";
+import { localServerDataDir } from "../personal-server/local/config.js";
 import {
   installFrpc,
   resolveFrpc,
@@ -90,6 +95,15 @@ export interface ServerStartDeps {
     marker: PublicMarker,
   ) => Promise<void>;
   startDetached: typeof startDetachedServer;
+  /**
+   * Whether the running server, if it is the one this CLI runs for the
+   * network, charges builder reads: false when an older CLI started it
+   * without payment in its config, null when that cannot be told.
+   */
+  runningServerCharges: (
+    network: VanaNetworkName,
+    identity: string | null,
+  ) => boolean | null;
   /** Resolves when the person asks the server to stop (Ctrl+C). */
   waitForStop: (handle: LocalServerHandle) => Promise<"stopped" | "exited">;
 }
@@ -114,6 +128,7 @@ export function defaultServerStartDeps(): ServerStartDeps {
     readPublicMarker,
     writePublicMarker,
     startDetached: startDetachedServer,
+    runningServerCharges,
     waitForStop: (handle) =>
       new Promise((resolve) => {
         // Stay subscribed until the process ends: a second Ctrl+C while the
@@ -124,6 +139,41 @@ export function defaultServerStartDeps(): ServerStartDeps {
         void handle.exited.then(() => resolve("exited"));
       }),
   };
+}
+
+function readJson(file: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    return value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True or false only for the server this CLI runs for the network, matched
+ * by the key address its health reports; null for Desktop's server or when
+ * the config cannot be read, since neither proves payment is off.
+ */
+export function runningServerCharges(
+  network: VanaNetworkName,
+  identity: string | null,
+): boolean | null {
+  if (!identity || !runningServerPid(network)) return null;
+  const dir = localServerDataDir(network);
+  const key = readJson(path.join(dir, "key.json"));
+  if (
+    typeof key?.address !== "string" ||
+    key.address.toLowerCase() !== identity.toLowerCase()
+  ) {
+    return null;
+  }
+  const config = readJson(path.join(dir, "server.json"));
+  if (!config) return null;
+  const payment = config.payment as { enabled?: unknown } | undefined;
+  return payment?.enabled === true;
 }
 
 function isAddress(value: string): boolean {
@@ -171,13 +221,30 @@ export async function runServerStart(
     (server) => server.owner?.toLowerCase() === account.address.toLowerCase(),
   );
   if (ours) {
+    // A server an earlier CLI started keeps its old config until it restarts,
+    // and before payment was part of it, builder reads were served for free.
+    const charges = deps.runningServerCharges(
+      options.network,
+      ours.identity ?? null,
+    );
     io.say(
       `Your Personal Server is already running at ${ours.url}. Nothing to start.`,
     );
+    if (charges === false) {
+      io.say(
+        "It was started by an earlier vana and serves apps' reads without charging them. Restart it to apply: vana server stop, then vana server start.",
+      );
+    }
     io.event({
       type: "server-already-running",
       url: ours.url,
       owner: ours.owner,
+      ...(charges === false
+        ? {
+            restartRequired: true,
+            remedy: "vana server stop && vana server start",
+          }
+        : {}),
     });
     return CliExitCode.OK;
   }

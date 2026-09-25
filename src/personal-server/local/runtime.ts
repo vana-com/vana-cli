@@ -11,8 +11,15 @@ import { localServerRuntimeDir } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
-/** Files shipped with the CLI that define the runtime: the pin, its lock, the entry. */
-const ASSET_FILES = ["package.json", "package-lock.json", "entry.mjs"] as const;
+/** The scripts the server process runs; they change with the CLI, not the pin. */
+const SCRIPT_FILES = ["entry.mjs", "derived-config.mjs"] as const;
+
+/** Files shipped with the CLI that define the runtime: the pin, its lock, the scripts. */
+const ASSET_FILES = [
+  "package.json",
+  "package-lock.json",
+  ...SCRIPT_FILES,
+] as const;
 
 function assetDir(): string {
   return fileURLToPath(new URL("./runtime-pkg/", import.meta.url));
@@ -59,11 +66,10 @@ export async function ensureRuntime(
   dir = localServerRuntimeDir(),
 ): Promise<string> {
   await fsp.mkdir(dir, { recursive: true });
-  // The entry script changes with the CLI, not with the pin: refresh it always.
-  await fsp.copyFile(
-    path.join(assetDir(), "entry.mjs"),
-    path.join(dir, "entry.mjs"),
-  );
+  // The scripts change with the CLI, not with the pin: refresh them always.
+  for (const file of SCRIPT_FILES) {
+    await fsp.copyFile(path.join(assetDir(), file), path.join(dir, file));
+  }
   if (isRuntimeInstalled(dir)) {
     return dir;
   }

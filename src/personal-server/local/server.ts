@@ -18,6 +18,8 @@ import type { OwnerBinding } from "./owner-binding.js";
 export interface RunningServer {
   url: string;
   owner: string | null;
+  /** The server's own key address, when its health reports one. */
+  identity?: string | null;
 }
 
 /** Every server answering on the ports Desktop and the CLI use. */
@@ -48,6 +50,7 @@ export async function findRunningServers(
       found.push({
         url,
         owner: typeof body.owner === "string" ? body.owner : null,
+        identity,
       });
     } catch {
       // Nothing there.

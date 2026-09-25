@@ -508,6 +508,51 @@ function withoutRequestInput<T extends { requestInput: unknown }>(
   return rest;
 }
 
+/**
+ * What the run log may say about a setData value. Status and error text are
+ * kept, since that is how a failed run is diagnosed. Everything else is the
+ * person's data (health records, profiles, messages): only its shape goes to
+ * the log, and for the result its keys, summary and error reasons.
+ */
+// Connectors put identities into status and error text ("Signed in as
+// a@b.com", "@handle has no posts"). Emails and handles are masked; a plain
+// name in free text cannot be told apart and is not.
+const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const HANDLE = /(^|[\s("'])@[A-Za-z0-9._-]+/g;
+
+function maskIdentifiers(text: string): string {
+  return text.replace(EMAIL, "<email>").replace(HANDLE, "$1@<user>");
+}
+
+export function describeDataForLog(key: string, value: unknown): string {
+  if ((key === "status" || key === "error") && typeof value === "string") {
+    return maskIdentifiers(value);
+  }
+  if (key === "result" && value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const errors = Array.isArray(record.errors) ? record.errors : [];
+    const reasons = errors
+      .map((entry) =>
+        entry && typeof entry === "object"
+          ? (entry as Record<string, unknown>).reason
+          : undefined,
+      )
+      .filter((reason): reason is string => typeof reason === "string")
+      .map(maskIdentifiers);
+    return JSON.stringify({
+      keys: Object.keys(record),
+      exportSummary: record.exportSummary ?? null,
+      errors: reasons,
+    });
+  }
+  if (Array.isArray(value)) return `<array of ${value.length}>`;
+  if (value && typeof value === "object") {
+    return `<object with ${Object.keys(value).length} keys>`;
+  }
+  if (typeof value === "string") return `<string of ${value.length} chars>`;
+  return `<${value === null ? "null" : typeof value}>`;
+}
+
 function buildConnectorFunction(
   connectorCode: string,
 ): (page: unknown) => Promise<unknown> {
@@ -604,6 +649,46 @@ function createPageApi({
       });
       return buffer.toString("base64");
     },
+
+    // Element methods the legacy connectors call without a typeof check
+    // (Oura's and Instagram's sign-in, GitHub's password and 2FA steps).
+    // Each passes straight to the page current at call time, since switching
+    // between headless and headed replaces it. Values typed with fill are
+    // never logged: they are emails, passwords and one-time codes.
+    waitForSelector: async (
+      selector: string,
+      options: {
+        timeout?: number;
+        state?: "attached" | "detached" | "visible" | "hidden";
+      } = {},
+    ) => {
+      await requirePage().waitForSelector(selector, options);
+    },
+
+    fill: async (
+      selector: string,
+      value: string,
+      options: { timeout?: number } = {},
+    ) => {
+      writeLog(`[page] fill ${selector}`);
+      await requirePage().fill(selector, value, options);
+    },
+
+    click: async (selector: string, options: { timeout?: number } = {}) => {
+      writeLog(`[page] click ${selector}`);
+      await requirePage().click(selector, options);
+    },
+
+    press: async (
+      selector: string,
+      key: string,
+      options: { timeout?: number } = {},
+    ) => {
+      writeLog(`[page] press ${key} in ${selector}`);
+      await requirePage().press(selector, key, options);
+    },
+
+    url: async () => requirePage().url(),
 
     requestInput: async (payload: PendingInputRequest) => {
       if (asksForPassword(payload.schema)) {
@@ -715,9 +800,7 @@ function createPageApi({
           });
         }
       }
-      writeLog(
-        `[data] ${key}=${typeof value === "string" ? value : JSON.stringify(value)}`,
-      );
+      writeLog(`[data] ${key}=${describeDataForLog(key, value)}`);
     },
 
     setProgress: async ({
