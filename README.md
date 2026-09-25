@@ -88,6 +88,7 @@ Install the skills that teach an agent each half:
 
 ```bash
 vana skills install builder        # ask for access, read, pay
+vana skills install agent-access   # give your own agent scoped, paid access
 vana skills install connect-data   # collect your own data
 ```
 
