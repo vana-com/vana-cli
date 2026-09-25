@@ -57,6 +57,8 @@ export async function startDetachedServer(input: {
   local?: boolean;
   timeoutMs?: number;
   tunnelTimeoutMs?: number;
+  /** Called once per event, as the background server writes it. */
+  onEvent?: (event: Record<string, unknown>) => void;
 }): Promise<DetachedStart> {
   const logDir = localServerDataDir(input.network);
   await fsp.mkdir(logDir, { recursive: true, mode: 0o700 });
@@ -93,8 +95,11 @@ export async function startDetachedServer(input: {
 
   const started = Date.now();
   let readyAt: number | null = null;
+  let reported = 0;
   for (;;) {
     const events = readEvents(logPath);
+    for (const event of events.slice(reported)) input.onEvent?.(event);
+    reported = events.length;
     const ready = events.find((event) => event.type === "server-ready");
     const failed = events.some((event) => FAILURES.has(String(event.type)));
     if (failed || (exited && !ready)) {

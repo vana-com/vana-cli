@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { execFileSync } from "node:child_process";
+import { getVanaHome } from "../../core/paths.js";
 
 import { chromium, type BrowserContext } from "playwright";
 
@@ -49,8 +49,7 @@ export function getBrowserCacheDir(): string {
     return process.env.PLAYWRIGHT_BROWSERS_PATH;
   }
 
-  const home = process.env.HOME || process.env.USERPROFILE || "";
-  const candidates = [path.join(home, ".vana", "browsers")];
+  const candidates = [path.join(getVanaHome(), "browsers")];
 
   for (const dir of candidates) {
     if (fs.existsSync(dir)) {
@@ -446,5 +445,5 @@ export async function launchPersistentContext(
 }
 
 export function getDefaultUserDataDir(slug: string): string {
-  return path.join(os.homedir(), ".vana", "browser-profiles", slug);
+  return path.join(getVanaHome(), "browser-profiles", slug);
 }

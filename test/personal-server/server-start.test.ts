@@ -137,22 +137,23 @@ function harness(overrides: Partial<ServerStartDeps> = {}) {
     })),
     readPublicMarker: vi.fn(() => null),
     writePublicMarker: vi.fn(async () => {}),
-    startDetached: vi.fn(async () => ({
-      events: [
-        {
-          type: "server-ready",
-          url: "http://localhost:8080",
-          owner: OWNER,
-          network: "moksha",
-          registered: true,
-          publicUrl: PUBLIC_URL,
-        },
-        { type: "server-tunnel", status: "connected", url: PUBLIC_URL },
-      ],
-      ready: true,
-      pid: 4242,
-      logPath: "/log",
-    })),
+    startDetached: vi.fn(
+      async (input: { onEvent?: (e: Record<string, unknown>) => void }) => {
+        const events = [
+          {
+            type: "server-ready",
+            url: "http://localhost:8080",
+            owner: OWNER,
+            network: "moksha",
+            registered: true,
+            publicUrl: PUBLIC_URL,
+          },
+          { type: "server-tunnel", status: "connected", url: PUBLIC_URL },
+        ];
+        for (const event of events) input.onEvent?.(event);
+        return { events, ready: true, pid: 4242, logPath: "/log" };
+      },
+    ),
     runningServerCharges: vi.fn(() => null),
     waitForStop: vi.fn(async () => "stopped" as const),
     ...overrides,
@@ -445,12 +446,11 @@ describe("runServerStart", () => {
 
   it("--detach reports a background server that did not come up", async () => {
     const h = harness({
-      startDetached: vi.fn(async () => ({
-        events: [{ type: "server-failed", logPath: "/x" }],
-        ready: false,
-        pid: 1,
-        logPath: "/detached.log",
-      })),
+      startDetached: vi.fn(async (input) => {
+        const events = [{ type: "server-failed", logPath: "/x" }];
+        for (const event of events) input.onEvent?.(event);
+        return { events, ready: false, pid: 1, logPath: "/detached.log" };
+      }),
     });
     expect(
       await runServerStart({ network: "moksha", detach: true }, h.io, h.deps),
