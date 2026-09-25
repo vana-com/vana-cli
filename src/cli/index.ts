@@ -5551,6 +5551,14 @@ const RESULT_METADATA_KEYS = new Set([
   "errors",
 ]);
 
+function isEmptyValue(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  if (typeof value === "string") return value.trim() === "";
+  return false;
+}
+
 /**
  * The reason a connector result holds no data because of a fatal error, or
  * null when it has data or no fatal error. A partial run (data plus
@@ -5567,14 +5575,12 @@ export function fatalEmptyResult(result: unknown): string | null {
       (entry as Record<string, unknown>).disposition === "fatal",
   );
   if (!fatal) return null;
-  const summary =
-    record.exportSummary && typeof record.exportSummary === "object"
-      ? (record.exportSummary as Record<string, unknown>)
-      : null;
-  const hasData = Object.keys(record).some(
-    (key) => !RESULT_METADATA_KEYS.has(key),
+  // Judge by the data itself, not exportSummary.count: some connectors count
+  // one stream only (ChatGPT counts conversations, not memories).
+  const hasData = Object.entries(record).some(
+    ([key, value]) => !RESULT_METADATA_KEYS.has(key) && !isEmptyValue(value),
   );
-  if (hasData && summary?.count !== 0) return null;
+  if (hasData) return null;
   return typeof fatal.reason === "string" && fatal.reason.trim()
     ? fatal.reason
     : "The connector stopped before collecting any data.";

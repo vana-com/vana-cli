@@ -4222,6 +4222,22 @@ describe("runCli", () => {
         errors: [{ disposition: "fatal" }],
       }),
     ).toBe("The connector stopped before collecting any data.");
+    // ChatGPT counts conversations only: memories collected before a fatal
+    // conversation-list error are still data.
+    expect(
+      fatalEmptyResult({
+        exportSummary: { count: 0 },
+        "chatgpt.memories": [{ text: "likes tea" }],
+        errors: [{ reason: "conversation list failed", disposition: "fatal" }],
+      }),
+    ).toBeNull();
+    expect(
+      fatalEmptyResult({
+        exportSummary: { count: 0 },
+        "oura.sleep": [],
+        errors: [{ reason: "sign-in failed", disposition: "fatal" }],
+      }),
+    ).toBe("sign-in failed");
   });
 
   it("rewrites a legacy 'click Done' instruction, since the CLI has no Done button", async () => {
