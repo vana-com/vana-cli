@@ -1858,9 +1858,13 @@ async function runConnect(
         // says nothing. Each distinct message once.
         const message = event.message?.trim();
         if (message && !shownBrowserPrompts.has(message)) {
+          // The bell once per run: the runtime's "opening a browser" line and
+          // the connector's own instruction arrive back to back.
+          if (shownBrowserPrompts.size === 0) {
+            renderer?.bell();
+          }
           shownBrowserPrompts.add(message);
           renderer?.note(message);
-          renderer?.bell();
         }
         continue;
       }

@@ -69,6 +69,22 @@ async function writeConnector(contents: string): Promise<string> {
   return connectorPath;
 }
 
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+function setTty(stdin: boolean | undefined, stdout: boolean | undefined): void {
+  Object.defineProperty(process.stdin, "isTTY", {
+    value: stdin,
+    configurable: true,
+  });
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: stdout,
+    configurable: true,
+  });
+}
+
 describe("startInProcessConnectorRun", () => {
   beforeEach(() => {
     launchPersistentContext.mockReset();
@@ -255,7 +271,9 @@ describe("startInProcessConnectorRun", () => {
   it("signs a password connector in through the browser at a terminal, never asking for the password", async () => {
     createFakeRuntime();
     const previousDisplay = process.env.DISPLAY;
+    const previousTty = [process.stdin.isTTY, process.stdout.isTTY] as const;
     process.env.DISPLAY = ":99";
+    setTty(true, true);
     try {
       const connectorPath = await writeConnector(`
 (async () => {
@@ -304,7 +322,8 @@ describe("startInProcessConnectorRun", () => {
         ]),
       );
     } finally {
-      process.env.DISPLAY = previousDisplay;
+      restoreEnv("DISPLAY", previousDisplay);
+      setTty(...previousTty);
     }
   });
 
@@ -313,9 +332,11 @@ describe("startInProcessConnectorRun", () => {
     const originalPlatform = process.platform;
     const previousDisplay = process.env.DISPLAY;
     const previousWayland = process.env.WAYLAND_DISPLAY;
+    const previousTty = [process.stdin.isTTY, process.stdout.isTTY] as const;
     Object.defineProperty(process, "platform", { value: "linux" });
     delete process.env.DISPLAY;
     delete process.env.WAYLAND_DISPLAY;
+    setTty(true, true);
     try {
       const connectorPath = await writeConnector(`
 (async () => {
@@ -355,9 +376,53 @@ describe("startInProcessConnectorRun", () => {
       expect(onNeedInput).toHaveBeenCalledTimes(1);
     } finally {
       Object.defineProperty(process, "platform", { value: originalPlatform });
-      process.env.DISPLAY = previousDisplay;
-      if (previousWayland === undefined) delete process.env.WAYLAND_DISPLAY;
-      else process.env.WAYLAND_DISPLAY = previousWayland;
+      restoreEnv("DISPLAY", previousDisplay);
+      restoreEnv("WAYLAND_DISPLAY", previousWayland);
+      setTty(...previousTty);
+    }
+  });
+
+  it("keeps the password prompt when the terminal is not a TTY", async () => {
+    createFakeRuntime();
+    const previousDisplay = process.env.DISPLAY;
+    const previousTty = [process.stdin.isTTY, process.stdout.isTTY] as const;
+    process.env.DISPLAY = ":99";
+    setTty(undefined, undefined);
+    try {
+      const connectorPath = await writeConnector(`
+(async () => {
+  if (typeof page.requestInput === "function") {
+    await page.requestInput({
+      message: "Log in",
+      schema: { type: "object", properties: {
+        password: { type: "string", format: "password" }
+      } }
+    });
+    return { signedInWith: "password" };
+  }
+  await page.showBrowser("https://example.com/login");
+  return { signedInWith: "browser" };
+})();
+`);
+      const { startInProcessConnectorRun } =
+        await import("../../src/runtime/playwright/in-process-run.js");
+      const onNeedInput = vi.fn(async () => ({ password: "p" }));
+      const handle = startInProcessConnectorRun({
+        request: {
+          connectorPath,
+          source: "example",
+          noInput: false,
+          onNeedInput,
+        },
+        logPath: path.join(os.tmpdir(), "vana-connect-no-tty.log"),
+      });
+      for await (const event of handle.events()) {
+        expect(event.type).not.toBe("headed-required");
+      }
+      expect(onNeedInput).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreEnv("DISPLAY", previousDisplay);
+      setTty(...previousTty);
     }
   });
 

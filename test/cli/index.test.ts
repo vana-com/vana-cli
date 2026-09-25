@@ -4166,7 +4166,15 @@ describe("runCli", () => {
     };
     const signIn =
       "Automatic sign-in failed. Please sign in to GitHub manually, including any 2FA.";
+    const opening =
+      "This source needs a manual browser step. Opening a local browser session on this machine.";
     runConnectorEvents = [
+      {
+        type: "headed-required",
+        source: "github",
+        message: opening,
+        logPath: "/tmp/logs/run.log",
+      },
       {
         type: "headed-required",
         source: "github",
@@ -4195,6 +4203,9 @@ describe("runCli", () => {
 
     expect(exitCode).toBe(0);
     expect(stderr.split(signIn).length - 1).toBe(1);
+    expect(stderr.split(opening).length - 1).toBe(1);
+    // One bell for the sign-in, one for the finished connect.
+    expect(stderr.split("\x07").length - 1).toBe(2);
   });
 
   it("handles connector fetch failure for non-checksum errors", async () => {

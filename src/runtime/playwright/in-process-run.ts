@@ -393,11 +393,14 @@ export function startInProcessConnectorRun({
       // people to hand their password to a command-line tool. Without
       // requestInput these connectors sign in through the visible browser.
       // Agents (no onNeedInput) and --no-input runs keep today's behaviour.
-      // Only where a browser window can open: on a Linux host without a
-      // display, the password prompt stays the only way to sign in.
+      // Only where a person can act in a browser window: a real terminal
+      // on both ends (the CLI's rule for opening a browser) and a display.
+      // On a Linux host without one, the password prompt stays the only way
+      // to sign in.
       const browserSignIn =
         !request.noInput &&
         Boolean(request.onNeedInput) &&
+        Boolean(process.stdin.isTTY && process.stdout.isTTY) &&
         canOpenVisibleBrowser() &&
         signsInThroughBrowser(connectorCode);
       if (browserSignIn) {
