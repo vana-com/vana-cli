@@ -3,12 +3,14 @@
  *
  * The owner-side commands keep using {@link getEnvConfig} from constants.ts
  * (a dev/prod host axis) untouched. Builder commands need one resolved
- * object carrying the chain and every host, selected with `--network`:
- * moksha is the default because its fees are play money, and mainnet spends
- * real USDC.e from the app's escrow.
+ * object carrying the chain and every host, selected with `--network`.
+ * mainnet is the default: it is where a person's data and apps live. Paying
+ * is never implied by it; a paid read still stops at exit 4 until `--pay`,
+ * and `--max-fee` caps it. `--network moksha` is the testnet, where fees
+ * are play money.
  *
  * `VANA_ENV=dev` swaps in the dev host set (internal use; dev serves the
- * moksha chain).
+ * moksha chain), and there moksha stays the default.
  */
 
 export type VanaNetworkName = "moksha" | "mainnet";
@@ -18,7 +20,7 @@ export const VANA_NETWORKS: readonly VanaNetworkName[] = [
   "mainnet",
 ] as const;
 
-export const DEFAULT_NETWORK: VanaNetworkName = "moksha";
+export const DEFAULT_NETWORK: VanaNetworkName = "mainnet";
 
 export interface ResolvedNetwork {
   /** Network name as selected. */
@@ -96,7 +98,8 @@ export function isVanaNetworkName(value: string): value is VanaNetworkName {
 /**
  * Resolve a network selection into hosts and chain.
  *
- * @param name - `--network` value; falls back to `VANA_NETWORK`, then moksha.
+ * @param name - `--network` value; falls back to `VANA_NETWORK`, then
+ *   mainnet (moksha under `VANA_ENV=dev`, which has no mainnet hosts).
  * @param env - process env, injectable for tests.
  * @throws {UnknownNetworkError} for a name outside {@link VANA_NETWORKS}.
  */
@@ -104,7 +107,8 @@ export function resolveNetwork(
   name?: string,
   env: Record<string, string | undefined> = process.env,
 ): ResolvedNetwork {
-  const raw = (name ?? env.VANA_NETWORK ?? DEFAULT_NETWORK).toLowerCase();
+  const fallback = env.VANA_ENV === "dev" ? "moksha" : DEFAULT_NETWORK;
+  const raw = (name ?? env.VANA_NETWORK ?? fallback).toLowerCase();
   if (!isVanaNetworkName(raw)) {
     throw new UnknownNetworkError(raw);
   }

@@ -73,8 +73,10 @@ it from escrow and `--max-fee` to cap it. The rest of the group:
 | `vana app escrow balance\|fund`                      | what the app can spend, and funding it                                          |
 | `vana app onchain <scope> --owner <addr>`            | data point version, hashes, deletion state                                      |
 
-Everything defaults to **moksha**, the testnet; `--network mainnet` spends
-real money and is never implied.
+Everything defaults to **mainnet**, where your data and apps live. Paying is
+never implied: a paid read stops with the exact price until you add `--pay`,
+and `--max-fee` caps it. `--network moksha` is the testnet, where fees are
+play money.
 
 ## For agents
 
