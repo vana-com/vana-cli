@@ -4156,6 +4156,74 @@ describe("runCli", () => {
     expect(stderr).toContain("Connected Steam.");
   });
 
+  it("reports a run that stopped with a fatal error and no data as a failure, not Connected", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "oura", name: "Oura Ring", authMode: "interactive" },
+    ]);
+    fetchConnectorResult = {
+      connectorPath: "/tmp/connectors/oura/oura-playwright.js",
+      logPath: "/tmp/logs/fetch.log",
+    };
+    runConnectorEvents = [
+      {
+        type: "collection-complete",
+        source: "oura",
+        resultPath: "/tmp/.vana/oura-result.json",
+        logPath: "/tmp/logs/run.log",
+      },
+    ];
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({
+        requestedScopes: ["oura.sleep"],
+        timestamp: "2026-09-25T14:43:56.757Z",
+        version: "2.0.0",
+        platform: "oura",
+        exportSummary: { count: 0, label: "days of Oura data" },
+        errors: [
+          {
+            errorClass: "selector_error",
+            reason:
+              "Could not fill email form: page.waitForSelector is not a function",
+            disposition: "fatal",
+            phase: "auth",
+          },
+        ],
+      }),
+    );
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "connect", "oura"]);
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("Problem connecting Oura Ring.");
+    expect(stderr).toContain("Could not fill email form");
+    expect(stderr).not.toContain("Connected Oura Ring.");
+  });
+
+  it("keeps a partial run with data and non-fatal errors as collected", async () => {
+    const { fatalEmptyResult } = await import("../../src/cli/index.js");
+    expect(
+      fatalEmptyResult({
+        exportSummary: { count: 3 },
+        "github.repositories": [{}, {}, {}],
+        errors: [{ reason: "starred timed out", disposition: "skipped" }],
+      }),
+    ).toBeNull();
+    expect(
+      fatalEmptyResult({
+        exportSummary: { count: 3 },
+        "github.repositories": [{}, {}, {}],
+        errors: [{ reason: "late failure", disposition: "fatal" }],
+      }),
+    ).toBeNull();
+    expect(
+      fatalEmptyResult({
+        exportSummary: { count: 0 },
+        errors: [{ disposition: "fatal" }],
+      }),
+    ).toBe("The connector stopped before collecting any data.");
+  });
+
   it("rewrites a legacy 'click Done' instruction, since the CLI has no Done button", async () => {
     const { browserStepMessage } = await import("../../src/cli/index.js");
     expect(

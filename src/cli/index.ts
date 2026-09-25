@@ -1901,17 +1901,22 @@ async function runConnect(
         try {
           const raw = await fsp.readFile(event.resultPath, "utf8");
           const parsed = JSON.parse(raw);
-          if (
+          const errorOnly =
             parsed &&
             typeof parsed === "object" &&
             "error" in parsed &&
-            Object.keys(parsed).length <= 2
-          ) {
+            Object.keys(parsed).length <= 2;
+          // A full export shape can also carry nothing but a fatal error:
+          // the connector stopped (e.g. at sign-in) and wrote an empty
+          // result, which must not read as "Connected".
+          const fatalReason = errorOnly ? null : fatalEmptyResult(parsed);
+          if (errorOnly || fatalReason) {
             // Connector returned an error, not real data
             const errorMsg =
-              typeof parsed.error === "string"
+              fatalReason ??
+              (typeof parsed.error === "string"
                 ? parsed.error
-                : "Collection returned an error";
+                : "Collection returned an error");
             await updateSourceState(source, {
               lastRunAt: new Date().toISOString(),
               lastRunOutcome: CliOutcomeStatus.RUNTIME_ERROR,
@@ -1924,9 +1929,10 @@ async function runConnect(
             });
             renderer?.fail(`Problem connecting ${displayName}.`);
             renderer?.detail(
-              typeof parsed.error === "string"
-                ? parsed.error
-                : "The connector returned an error instead of data.",
+              fatalReason ??
+                (typeof parsed.error === "string"
+                  ? parsed.error
+                  : "The connector returned an error instead of data."),
             );
             emit.event({
               type: "outcome",
@@ -5534,6 +5540,44 @@ export function compareSourceStatusOrder(
       },
     )
   );
+}
+
+const RESULT_METADATA_KEYS = new Set([
+  "requestedScopes",
+  "timestamp",
+  "version",
+  "platform",
+  "exportSummary",
+  "errors",
+]);
+
+/**
+ * The reason a connector result holds no data because of a fatal error, or
+ * null when it has data or no fatal error. A partial run (data plus
+ * non-fatal errors) still counts as collected.
+ */
+export function fatalEmptyResult(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const record = result as Record<string, unknown>;
+  const errors = Array.isArray(record.errors) ? record.errors : [];
+  const fatal = errors.find(
+    (entry): entry is Record<string, unknown> =>
+      Boolean(entry) &&
+      typeof entry === "object" &&
+      (entry as Record<string, unknown>).disposition === "fatal",
+  );
+  if (!fatal) return null;
+  const summary =
+    record.exportSummary && typeof record.exportSummary === "object"
+      ? (record.exportSummary as Record<string, unknown>)
+      : null;
+  const hasData = Object.keys(record).some(
+    (key) => !RESULT_METADATA_KEYS.has(key),
+  );
+  if (hasData && summary?.count !== 0) return null;
+  return typeof fatal.reason === "string" && fatal.reason.trim()
+    ? fatal.reason
+    : "The connector stopped before collecting any data.";
 }
 
 // Legacy connectors wrote their manual-step text for a host with a "Done"
