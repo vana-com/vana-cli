@@ -2936,6 +2936,12 @@ async function runServerStatus(
     );
   }
 
+  if (live) {
+    // Paste into claude.ai (Settings, Connectors) or any remote MCP client;
+    // the owner approves it once on this machine.
+    emit.keyValue("MCP URL", `${live.url.replace(/\/+$/, "")}/mcp`, "muted");
+  }
+
   if (target.url) {
     const runBy =
       dataDir?.runBy === "cli"

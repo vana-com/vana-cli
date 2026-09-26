@@ -12,7 +12,11 @@ import { localServerRuntimeDir } from "./config.js";
 const execFileAsync = promisify(execFile);
 
 /** The scripts the server process runs; they change with the CLI, not the pin. */
-const SCRIPT_FILES = ["entry.mjs", "derived-config.mjs"] as const;
+const SCRIPT_FILES = [
+  "entry.mjs",
+  "derived-config.mjs",
+  "mcp-approval.mjs",
+] as const;
 
 /** Files shipped with the CLI that define the runtime: the pin, its lock, the scripts. */
 const ASSET_FILES = [

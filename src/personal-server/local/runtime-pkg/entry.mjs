@@ -22,6 +22,7 @@ import {
 } from "@opendatalabs/personal-server-ts/node";
 
 import { applyDerived, derivedConfig } from "./derived-config.mjs";
+import { startMcpApprovalPage } from "./mcp-approval.mjs";
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
@@ -38,6 +39,7 @@ async function readInput() {
 }
 
 let ps = null;
+let mcpApproval = null;
 
 // Only a tunnel URL may be registered: without one the server offers its
 // localhost origin, which no app could ever reach.
@@ -171,12 +173,20 @@ async function main() {
     configDefaults[key] = applyDerived(loaded[key], derived[key]);
   }
 
+  // Where the server sends the owner to approve an MCP client (claude.ai's
+  // connector): a page this process serves on 127.0.0.1, not Vana Desktop's
+  // vana:// link, which dead-ends on a machine without Desktop.
+  mcpApproval = await startMcpApprovalPage({
+    serverOrigin: () => `http://127.0.0.1:${port}`,
+    accessToken: process.env.PS_ACCESS_TOKEN ?? "",
+  });
+
   ps = await startPersonalServer({
     configPath,
     rootPath,
     port,
     ownerSignature,
-    mcpOAuthApprovalUrl: "vana://mcp-authorization",
+    mcpOAuthApprovalUrl: mcpApproval.url,
     configDefaults,
     onStatus: (status) => process.stderr.write(`[status] ${status}\n`),
   });
@@ -197,6 +207,7 @@ async function main() {
 
 async function shutdown(signal) {
   process.stderr.write(`[entry] ${signal}, stopping\n`);
+  mcpApproval?.close();
   try {
     await ps?.stop();
   } finally {

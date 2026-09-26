@@ -7,6 +7,7 @@ const requiredPaths = [
   "dist/vendor/pdpp-connector-manager/index.mjs",
   "dist/personal-server/local/runtime-pkg/entry.mjs",
   "dist/personal-server/local/runtime-pkg/derived-config.mjs",
+  "dist/personal-server/local/runtime-pkg/mcp-approval.mjs",
 ];
 
 const raw = runNpmPackDryRun();
