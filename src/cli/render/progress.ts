@@ -14,7 +14,16 @@ export function createProgressHandle(options?: {
   enabled?: boolean;
 }): ProgressHandle {
   const capabilities = detectRenderCapabilities();
-  if (!options?.enabled || !capabilities.interactive) {
+  // ora writes to stderr and divides by its width when it clears a line: on
+  // a terminal that reports no width (a bare pty) it loops forever and
+  // wedges the process. No width, no spinner.
+  const width = process.stderr.columns ?? 0;
+  if (
+    !options?.enabled ||
+    !capabilities.interactive ||
+    !process.stderr.isTTY ||
+    !(width > 0)
+  ) {
     return createNoopHandle();
   }
 

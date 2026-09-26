@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { CliExitCode } from "../core/exit-codes.js";
+import type { ProgressHandle } from "./render/progress.js";
 import type { VanaNetworkName } from "../core/network.js";
 import { getTimestampedLogPath } from "../core/paths.js";
 import { ensureParentDir } from "../core/index.js";
@@ -71,6 +72,8 @@ export interface ServerStartIo {
   event(event: Record<string, unknown>): void;
   /** Ask before a one-time install; never called with --no-input or --yes. */
   confirm(message: string): Promise<boolean>;
+  /** A spinner line for waits; absent (or a no-op) outside a terminal. */
+  progress?: ProgressHandle;
 }
 
 export interface ServerStartDeps {
@@ -365,15 +368,7 @@ export async function runServerStart(
     io.say(
       "Starting in the background. The first start takes up to a minute...",
     );
-    return reportDetached(
-      await deps.startDetached({
-        network: options.network,
-        port: options.port,
-        local: options.local,
-        onEvent: (event) => sayDetachedEvent(event, io),
-      }),
-      io,
-    );
+    return reportDetached(await startInBackground(options, io, deps), io);
   }
 
   const port = await deps.choosePort(options.port);
@@ -588,6 +583,66 @@ async function goPublic(
   }
 }
 
+/** Events after which nothing more is coming. */
+const FINAL_EVENTS = new Set([
+  "server-tunnel",
+  "server-failed",
+  "server-exited",
+  "server-already-running",
+  "server-needs-login",
+  "server-needs-owner-confirmation",
+  "server-setup-required",
+  "server-owner-confirmation-failed",
+]);
+
+/**
+ * Start the background server and wait for it, with a spinner and elapsed
+ * seconds while nothing is printed: a first start can take a minute.
+ */
+async function startInBackground(
+  options: { network: VanaNetworkName; port?: number; local?: boolean },
+  io: ServerStartIo,
+  deps: ServerStartDeps,
+): Promise<DetachedStart> {
+  const progress = io.progress;
+  const started = Date.now();
+  let label = "Starting your Personal Server";
+  let spinning = false;
+  const text = () =>
+    `${label}... (${Math.round((Date.now() - started) / 1000)}s)`;
+  const spin = () => {
+    progress?.start(text());
+    spinning = Boolean(progress);
+  };
+  spin();
+  const ticker = progress
+    ? setInterval(() => {
+        if (spinning) progress.update(text());
+      }, 1000)
+    : null;
+  try {
+    return await deps.startDetached({
+      network: options.network,
+      port: options.port,
+      local: options.local,
+      onEvent: (event) => {
+        progress?.stop();
+        spinning = false;
+        sayDetachedEvent(event, io);
+        if (event.type === "server-ready" && !event.publicUrl) return;
+        if (FINAL_EVENTS.has(String(event.type))) return;
+        if (event.type === "server-ready") {
+          label = "Waiting for the public URL to answer";
+        }
+        spin();
+      },
+    });
+  } finally {
+    if (ticker) clearInterval(ticker);
+    progress?.stop();
+  }
+}
+
 /** One background-server event, told as it happens. */
 function sayDetachedEvent(
   event: Record<string, unknown>,
@@ -603,7 +658,8 @@ function sayDetachedEvent(
       io.say(`Personal Server running at ${text("url")}`);
       io.say(`Owner ${text("owner")}, network ${text("network")}.`);
       if (event.publicUrl) {
-        io.say("Waiting for the public URL to answer...");
+        // The spinner says it when there is one.
+        if (!io.progress) io.say("Waiting for the public URL to answer...");
       } else {
         io.say(
           "Local only: not registered and not reachable from other devices.",
