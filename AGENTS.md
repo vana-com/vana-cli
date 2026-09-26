@@ -16,7 +16,7 @@ src/
 |-- cli/              # commander.js command tree
 |   |-- bin.ts            # entry point
 |   |-- main.ts           # program assembly, global options, preAction hook
-|   |-- app/              # the builder group: register, whoami, request,
+|   |-- app/              # the builder group: register, whoami, claim, request,
 |   |                     # requests, read, escrow, onchain, ask, derivatives
 |   |-- render/           # human output; every app command also emits JSON
 |   `-- telemetry.ts

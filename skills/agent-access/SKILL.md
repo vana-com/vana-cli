@@ -189,11 +189,19 @@ two agents on one machine, give each its own key through `VANA_APP_KEY`.
 
 ## 5. Fund the agent's escrow (human step)
 
-The simplest path for the person: open
-[account.vana.org/developers](https://account.vana.org/developers),
-choose **Fund escrow**, and enter the agent's app address. On mainnet
-they deposit USDC.e and Vana sponsors the gas; on moksha they deposit
-faucet VANA.
+The simplest path for the person: run
+
+```bash
+vana app claim --json
+```
+
+and send them `data.claimUrl`. They open it while signed in to Vana
+Account, click **Add and fund**, and land on the agent's Fund page, where
+they deposit from a browser wallet: USDC.e on mainnet, faucet VANA on
+moksha. The link is valid for about 50 minutes, and the first Account to
+open it takes the app, so send it only to the owner. Run `claim` again for
+a fresh link. Without the claim, the agent is in nobody's Apps list and
+Account has no Fund page for it.
 
 From the agent's own terminal instead, the agent's key pays the gas, so
 its wallet needs VANA as well as the fee asset:

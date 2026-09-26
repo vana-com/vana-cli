@@ -7,6 +7,7 @@
  */
 
 import type { Command } from "commander";
+import { runAppClaim } from "./claim.js";
 import { runAppEscrowBalance, runAppEscrowFund } from "./escrow.js";
 import { runAppOnchain } from "./onchain.js";
 import { runAppRead } from "./read.js";
@@ -189,6 +190,15 @@ export function registerAppCommands(
         ...getOptions(),
         ...commandOptions,
       });
+    });
+
+  app
+    .command("claim")
+    .description(
+      "Print a link that adds this app to its owner's Vana Account, to fund its escrow",
+    )
+    .action(async () => {
+      process.exitCode = await runAppClaim(getOptions());
     });
 
   app
