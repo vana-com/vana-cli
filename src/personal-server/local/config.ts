@@ -50,7 +50,7 @@ export function localServerNetwork(name: VanaNetworkName): LocalServerNetwork {
 }
 
 /** The pinned server release, matching runtime-pkg/package.json. */
-export const PERSONAL_SERVER_VERSION = "1.25.0";
+export const PERSONAL_SERVER_VERSION = "1.25.1";
 
 export function localServerHome(): string {
   return path.join(getVanaHome(), "cli", "personal-server");
