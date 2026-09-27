@@ -16,6 +16,7 @@ import {
   type GatewayClient,
 } from "@opendatalabs/vana-sdk";
 import { privateKeyToAccount } from "viem/accounts";
+import { readAppProfile, saveAppProfile } from "../../core/app-profile.js";
 import {
   AppKeyMissingError,
   InvalidAppKeyError,
@@ -30,15 +31,22 @@ import { openBrowser } from "../auth.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
 import { builderRegistrationDomainFor } from "./register.js";
 
-/** Must match Account's BUILDER_CLAIM_LINK_TYPES. */
+/**
+ * Must match Account's BUILDER_CLAIM_LINK_TYPES. The app name is signed so
+ * nobody can relabel the link; Account shows it instead of the URL's host.
+ */
 export const BUILDER_CLAIM_LINK_TYPES = {
   BuilderClaimLink: [
     { name: "granteeAddress", type: "address" },
     { name: "network", type: "string" },
     { name: "nonce", type: "bytes32" },
     { name: "expiry", type: "uint64" },
+    { name: "appName", type: "string" },
   ],
 } as const;
+
+/** Account's limit for an app name. */
+export const CLAIM_LINK_APP_NAME_MAX_LENGTH = 64;
 
 /** Account accepts links up to an hour out; stay inside it with room for clock skew. */
 export const CLAIM_LINK_TTL_SEC = 50 * 60;
@@ -51,6 +59,7 @@ export interface ClaimLink {
 export async function buildClaimLink(input: {
   privateKey: `0x${string}`;
   network: ResolvedNetwork;
+  appName?: string;
   nowSec?: number;
   nonce?: `0x${string}`;
 }): Promise<ClaimLink> {
@@ -60,6 +69,9 @@ export async function buildClaimLink(input: {
   const nonce =
     input.nonce ??
     (`0x${crypto.randomBytes(32).toString("hex")}` as `0x${string}`);
+  const appName = (input.appName ?? "")
+    .trim()
+    .slice(0, CLAIM_LINK_APP_NAME_MAX_LENGTH);
   const signature = await account.signTypedData({
     domain: builderRegistrationDomainFor(input.network),
     types: BUILDER_CLAIM_LINK_TYPES,
@@ -69,6 +81,7 @@ export async function buildClaimLink(input: {
       network: input.network.name,
       nonce,
       expiry: BigInt(expiry),
+      appName,
     },
   });
   const params = new URLSearchParams({
@@ -78,21 +91,29 @@ export async function buildClaimLink(input: {
     expiry: String(expiry),
     signature,
   });
+  if (appName) params.set("name", appName);
   return {
     url: `${input.network.accountUrl}/developers/apps/claim?${params}`,
     expiry,
   };
 }
 
+export interface ClaimOptions extends AppCommandOptions {
+  /** Name to show in the owner's Account; remembered like `register --app-name`. */
+  appName?: string;
+}
+
 export interface ClaimDeps {
   createClient?: (gatewayUrl: string) => GatewayClient;
+  readProfile?: typeof readAppProfile;
+  saveProfile?: typeof saveAppProfile;
   resolveKey?: typeof resolveAppKey;
   openUrl?: (url: string) => void;
   isTty?: boolean;
 }
 
 export async function runAppClaim(
-  options: AppCommandOptions,
+  options: ClaimOptions,
   deps: ClaimDeps = {},
 ): Promise<number> {
   let network: ResolvedNetwork;
@@ -151,7 +172,24 @@ export async function runAppClaim(
     });
   }
 
-  const link = await buildClaimLink({ privateKey: key.privateKey, network });
+  if (options.appName?.trim()) {
+    try {
+      (deps.saveProfile ?? saveAppProfile)(key.address, {
+        name: options.appName,
+      });
+    } catch {
+      // Remembering the name is a convenience; the link carries it anyway.
+    }
+  }
+  const appName =
+    options.appName?.trim() ||
+    (deps.readProfile ?? readAppProfile)(key.address).name ||
+    "";
+  const link = await buildClaimLink({
+    privateKey: key.privateKey,
+    network,
+    appName,
+  });
   const isTty = deps.isTty ?? Boolean(process.stdout.isTTY);
   if (isTty && !options.json && !options.noInput) {
     (deps.openUrl ?? openBrowser)(link.url);
@@ -164,6 +202,7 @@ export async function runAppClaim(
       "Send this link to the app's owner. Opened while signed in to Vana Account, it adds the app to their Apps and goes to Fund escrow.",
     network: network.name,
     data: {
+      appName: appName || undefined,
       claimUrl: link.url,
       expiresAt: new Date(link.expiry * 1000).toISOString(),
       address: key.address,

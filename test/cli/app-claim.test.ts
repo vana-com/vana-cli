@@ -58,6 +58,7 @@ describe("buildClaimLink", () => {
     const link = await buildClaimLink({
       privateKey: KEY,
       network,
+      appName: "Hermes Agent",
       nowSec: 1_790_000_000,
       nonce: `0x${"ab".repeat(32)}`,
     });
@@ -72,6 +73,7 @@ describe("buildClaimLink", () => {
       address: account.address.toLowerCase(),
       nonce: `0x${"ab".repeat(32)}`,
       expiry: String(1_790_000_000 + CLAIM_LINK_TTL_SEC),
+      name: "Hermes Agent",
     });
     const valid = await verifyTypedData({
       address: params.address as `0x${string}`,
@@ -83,6 +85,7 @@ describe("buildClaimLink", () => {
         network: params.network,
         nonce: params.nonce as `0x${string}`,
         expiry: BigInt(params.expiry),
+        appName: params.name,
       },
       signature: params.signature as `0x${string}`,
     });
@@ -91,6 +94,30 @@ describe("buildClaimLink", () => {
 
   it("stays inside Account's one-hour window", () => {
     expect(CLAIM_LINK_TTL_SEC).toBeLessThan(60 * 60);
+  });
+
+  it("signs an empty name and leaves it out of the URL when the app has none", async () => {
+    const network = resolveNetwork("mainnet");
+    const url = new URL(
+      (await buildClaimLink({ privateKey: KEY, network })).url,
+    );
+    const params = Object.fromEntries(url.searchParams);
+    expect(params.name).toBeUndefined();
+    const valid = await verifyTypedData({
+      address: account.address,
+      domain: builderRegistrationDomainFor(network),
+      types: BUILDER_CLAIM_LINK_TYPES,
+      primaryType: "BuilderClaimLink",
+      message: {
+        granteeAddress: params.address as `0x${string}`,
+        network: params.network,
+        nonce: params.nonce as `0x${string}`,
+        expiry: BigInt(params.expiry),
+        appName: "",
+      },
+      signature: params.signature as `0x${string}`,
+    });
+    expect(valid).toBe(true);
   });
 
   it("uses a fresh nonce each time", async () => {
@@ -109,6 +136,7 @@ describe("vana app claim", () => {
       {
         resolveKey: () => resolvedKey,
         createClient: clientWith(true),
+        readProfile: () => ({ name: "Hermes Agent" }),
         openUrl,
       },
     );
@@ -121,8 +149,30 @@ describe("vana app claim", () => {
     expect(outcome.data?.fundUrl).toBe(
       `https://account.vana.org/developers/apps/mainnet/${account.address.toLowerCase()}/fund`,
     );
+    expect(outcome.data?.appName).toBe("Hermes Agent");
+    expect(String(outcome.data?.claimUrl)).toContain("name=Hermes+Agent");
     // JSON mode is for agents: never pops a browser.
     expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("uses and remembers --app-name over the saved name", async () => {
+    const saveProfile = vi.fn();
+    await runAppClaim(
+      { json: true, network: "mainnet", appName: "My Agent" },
+      {
+        resolveKey: () => resolvedKey,
+        createClient: clientWith(true),
+        readProfile: () => ({ name: "Hermes Agent" }),
+        saveProfile,
+        openUrl: vi.fn(),
+      },
+    );
+
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.data?.appName).toBe("My Agent");
+    expect(saveProfile).toHaveBeenCalledWith(account.address, {
+      name: "My Agent",
+    });
   });
 
   it("opens the link for a person at a terminal", async () => {

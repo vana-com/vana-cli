@@ -197,8 +197,15 @@ export function registerAppCommands(
     .description(
       "Print a link that adds this app to its owner's Vana Account, to fund its escrow",
     )
-    .action(async () => {
-      process.exitCode = await runAppClaim(getOptions());
+    .option(
+      "--app-name <name>",
+      "Name the owner sees in their Account (remembered; defaults to the one from register)",
+    )
+    .action(async (commandOptions: { appName?: string }) => {
+      process.exitCode = await runAppClaim({
+        ...getOptions(),
+        appName: commandOptions.appName,
+      });
     });
 
   app
