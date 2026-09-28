@@ -69,6 +69,7 @@ it from escrow and `--max-fee` to cap it. The rest of the group:
 | `vana app status <derived-scope>`                    | is the answer coming, and when                                                  |
 | `vana app lineage <scope>`                           | what an answer was computed from, redacted where it must be                     |
 | `vana app whoami`                                    | app address, key source, network, registration state                            |
+| `vana app claim`                                     | a link that adds the app to its owner's Vana Account, to fund its escrow        |
 | `vana app requests list\|show <id>`                  | what was asked, what was approved                                               |
 | `vana app escrow balance\|fund`                      | what the app can spend, and funding it                                          |
 | `vana app onchain <scope> --owner <addr>`            | data point version, hashes, deletion state                                      |
