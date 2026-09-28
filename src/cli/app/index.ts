@@ -7,6 +7,7 @@
  */
 
 import type { Command } from "commander";
+import { runAppClaim } from "./claim.js";
 import { runAppEscrowBalance, runAppEscrowFund } from "./escrow.js";
 import { runAppOnchain } from "./onchain.js";
 import { runAppRead } from "./read.js";
@@ -188,6 +189,22 @@ export function registerAppCommands(
       process.exitCode = await runAppLineage(scope, {
         ...getOptions(),
         ...commandOptions,
+      });
+    });
+
+  app
+    .command("claim")
+    .description(
+      "Print a link that adds this app to its owner's Vana Account, to fund its escrow",
+    )
+    .option(
+      "--app-name <name>",
+      "Name the owner sees in their Account (remembered; defaults to the one from register)",
+    )
+    .action(async (commandOptions: { appName?: string }) => {
+      process.exitCode = await runAppClaim({
+        ...getOptions(),
+        appName: commandOptions.appName,
       });
     });
 

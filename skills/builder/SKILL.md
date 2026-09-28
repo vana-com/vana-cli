@@ -184,6 +184,10 @@ Fund the asset the reads are actually priced in, which the exit-4 payload
 names as `asset`. On mainnet, funding requires `--yes` and spends real
 money.
 
+To have a person fund it from their browser instead, run
+`vana app claim --json` and send them `data.claimUrl`: it adds this app to
+their Vana Account and opens its Fund page.
+
 ## Checking your work
 
 ```bash
