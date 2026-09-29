@@ -115,6 +115,8 @@ export const listedSourceSchema = z
     description: z.string().optional(),
     authMode: z.enum(["automated", "interactive", "legacy"]).optional(),
     runtime: z.enum(["legacy", "pdpp"]).optional(),
+    /** `local` runs unsigned source from a directory on this machine. */
+    origin: z.enum(["local"]).optional(),
     installed: z.boolean(),
     dataState: dataStateSchema.optional(),
     lastRunOutcome: z.string().nullable().optional(),
@@ -325,6 +327,7 @@ export const cliEventTypeSchema = z.enum([
   "ingest-started",
   "jpeg",
   "legacy-auth",
+  "local-connector",
   "needs-input",
   "outcome",
   "progress-update",

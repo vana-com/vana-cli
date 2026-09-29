@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { getConnectorCacheDir } from "../core/paths.js";
+import type { LocalConnectorEntry } from "../core/state-store.js";
+import { readLocalConnectors } from "../pdpp/local-connectors.js";
 import { PDPP_PINS } from "../pdpp/pins.js";
 
 // The connector library moved to the PDP-Connect org on 2026-07-18;
@@ -68,12 +70,29 @@ export interface AvailableSource {
   authMode?: "automated" | "interactive" | "legacy";
   /** `pdpp` runs a signed Collection Profile; `legacy` a Playwright script. */
   runtime?: "legacy" | "pdpp";
+  /**
+   * `local` runs unsigned source registered with `vana connectors add`;
+   * absent for everything the CLI verifies before running.
+   */
+  origin?: "local";
+  /** The directory a local connector runs from. */
+  localPath?: string;
+}
+
+/** What the catalog needs from outside; tests inject their own. */
+export interface ListAvailableSourcesDeps {
+  readLocalConnectors: () => Promise<Record<string, LocalConnectorEntry>>;
 }
 
 export async function listAvailableSources(
   dataConnectorsDir?: string,
+  deps: Partial<ListAvailableSourcesDeps> = {},
 ): Promise<AvailableSource[]> {
-  const registry = await loadRegistry(dataConnectorsDir);
+  const readLocal = deps.readLocalConnectors ?? readLocalConnectors;
+  const [registry, localEntries] = await Promise.all([
+    loadRegistry(dataConnectorsDir),
+    readLocal().catch(() => ({}) as Record<string, LocalConnectorEntry>),
+  ]);
   const sources = await Promise.all(
     (registry.connectors ?? []).map(async (entry) => {
       const source = toAvailableSource(entry);
@@ -86,14 +105,18 @@ export async function listAvailableSources(
     }),
   );
 
+  const local = new Set(Object.keys(localEntries));
   const pinned = new Set(PDPP_PINS.map((pin) => pin.id));
   // A pinned Collection Profile replaces a legacy connector with the same id,
-  // as it does in Vana Desktop.
+  // as it does in Vana Desktop, and a local connector replaces either: it is
+  // what `vana connect <id>` would run.
   const legacy = sources
     .filter((value): value is AvailableSource => Boolean(value))
-    .filter((source) => !pinned.has(source.id))
+    .filter((source) => !pinned.has(source.id) && !local.has(source.id))
     .map((source) => ({ ...source, runtime: "legacy" as const }));
-  const collectionProfiles: AvailableSource[] = PDPP_PINS.map((pin) => ({
+  const collectionProfiles: AvailableSource[] = PDPP_PINS.filter(
+    (pin) => !local.has(pin.id),
+  ).map((pin) => ({
     id: pin.id,
     name: pin.name,
     company: pin.company,
@@ -103,9 +126,25 @@ export async function listAvailableSources(
     authMode: "legacy",
     runtime: "pdpp",
   }));
+  const localConnectors: AvailableSource[] = Object.entries(localEntries).map(
+    ([id, entry]) => ({
+      id,
+      name: entry.displayName || id,
+      description: `Runs from ${entry.path}`,
+      version: entry.version,
+      // A manual_action step is a sign-in in a browser window the owner uses;
+      // an agent cannot do it, which is what `legacy` tells the callers.
+      authMode: entry.humanInteraction?.includes("manual_action")
+        ? "legacy"
+        : "automated",
+      runtime: "pdpp",
+      origin: "local",
+      localPath: entry.path,
+    }),
+  );
 
-  return [...legacy, ...collectionProfiles].sort((left, right) =>
-    left.name.localeCompare(right.name),
+  return [...legacy, ...collectionProfiles, ...localConnectors].sort(
+    (left, right) => left.name.localeCompare(right.name),
   );
 }
 

@@ -30,7 +30,7 @@ export {
   updateSourceState,
   ensureParentDir,
 } from "./state-store.js";
-export type { CliConfig } from "./state-store.js";
+export type { CliConfig, LocalConnectorEntry } from "./state-store.js";
 export type {
   ConnectionStatus,
   SessionInitParams,

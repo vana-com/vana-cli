@@ -353,6 +353,26 @@ import {
 Available data connectors and their scopes (schema definitions):
 [`PDP-Connect/data-connectors/schemas`](https://github.com/PDP-Connect/data-connectors/tree/main/schemas)
 
+A Collection Profile connector you are still writing can run straight from
+its directory. `vana connect <key> --from <dir>` runs it once; registering
+it makes every later command use it:
+
+```bash
+vana connectors add slack_browser --from ~/src/data-connectors   # validates, saves the absolute path
+vana connect slack_browser                                       # runs from that directory
+vana collect slack_browser                                       # so do collect, --detach, the schedule and MCP
+vana connectors list
+vana connectors remove slack_browser
+```
+
+The directory needs `connectors/<key>/index.ts`, a manifest whose
+`connector_key` is `<key>`, and `node_modules/tsx` (run `npm install`
+there). A registered connector runs its source unsigned and unverified,
+every time, so register only directories you trust; each run prints
+`Running <key> from <dir>` (a `local-connector` event under `--json`).
+A key that a pinned or legacy connector already uses needs `--force`, and
+then shares that connector's state, browser profile and scope names.
+
 ## Contributing
 
 This repo uses pnpm for local development and the examples; the npm and

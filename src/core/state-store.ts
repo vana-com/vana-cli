@@ -45,11 +45,30 @@ export interface StoredSourceState {
   }>;
 }
 
+/**
+ * A Collection Profile connector registered from a directory on this machine
+ * with `vana connectors add`. It runs unsigned source through tsx, so the
+ * path is kept absolute and every run names it.
+ */
+export interface LocalConnectorEntry {
+  /** Absolute path of the directory holding `connectors/<key>/`. */
+  path: string;
+  addedAt: string;
+  displayName: string;
+  version: string;
+  /** `git rev-parse HEAD` at add time; absent when the directory is not a repo. */
+  gitHead?: string;
+  /** The manifest's `capabilities.human_interaction`, when declared. */
+  humanInteraction?: string[];
+}
+
 export interface CliConfig {
   personalServerUrl?: string;
   skillsPromptCompleted?: boolean;
   telemetryEnabled?: boolean;
   telemetryInstallId?: string;
+  /** Local Collection Profile connectors, keyed by connector key. */
+  localConnectors?: Record<string, LocalConnectorEntry>;
 }
 
 export interface CliStateFile {

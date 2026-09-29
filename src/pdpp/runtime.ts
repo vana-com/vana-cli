@@ -25,7 +25,10 @@ import {
 } from "./host.js";
 import { ensurePinnedArtifact } from "./installer.js";
 import { resolveLocalLaunch } from "./local.js";
-import { findPdppPin } from "./pins.js";
+import {
+  resolvePdppSource,
+  type LocalConnectorDeps,
+} from "./local-connectors.js";
 import type { PdppLaunch } from "./profile.js";
 import {
   runCollectionProfile,
@@ -52,13 +55,8 @@ export interface PdppRuntimeOptions {
   from?: string;
   /** Owner of the Personal Server the data goes to; state is kept per owner. */
   owner?: string | null;
-}
-
-export function isPdppSource(
-  source: string,
-  options: PdppRuntimeOptions = {},
-): boolean {
-  return Boolean(options.from) || findPdppPin(source) !== null;
+  /** How saved local connectors are looked up; tests inject their own. */
+  deps?: Partial<LocalConnectorDeps>;
 }
 
 /**
@@ -69,6 +67,7 @@ export function isPdppSource(
 export class PdppRuntime {
   readonly kind = "pdpp" as const;
   private launch: PdppLaunch | null = null;
+  private localPath: string | null = null;
   private cachedState: RuntimeState | null = null;
 
   constructor(private readonly options: PdppRuntimeOptions = {}) {}
@@ -121,21 +120,28 @@ export class PdppRuntime {
     exportFrequency?: string;
     updated?: boolean;
     previousVersion?: string;
+    /** The directory unsigned source runs from; absent for a pinned artifact. */
+    localPath?: string;
   }> {
     const logPath = getTimestampedLogPath(`fetch-${source}`);
     await ensureParentDir(logPath);
     await fsp.writeFile(logPath, "", "utf8");
     try {
-      if (this.options.from) {
-        this.launch = await resolveLocalLaunch(this.options.from, source);
+      const resolved = await resolvePdppSource(
+        source,
+        { from: this.options.from },
+        this.options.deps,
+      );
+      if (!resolved) {
+        throw new Error(
+          `No Collection Profile connector is pinned or registered for ${source}. Run \`vana connectors add ${source} --from <dir>\` to use a local one.`,
+        );
+      }
+      if (resolved.kind === "pinned") {
+        this.launch = await ensurePinnedArtifact(resolved.pin, logPath);
       } else {
-        const pin = findPdppPin(source);
-        if (!pin) {
-          throw new Error(
-            `No Collection Profile connector is pinned for ${source}.`,
-          );
-        }
-        this.launch = await ensurePinnedArtifact(pin, logPath);
+        this.launch = await resolveLocalLaunch(resolved.path, source);
+        this.localPath = resolved.path;
       }
     } catch (error) {
       await fsp.appendFile(
@@ -148,13 +154,14 @@ export class PdppRuntime {
     }
     await fsp.appendFile(
       logPath,
-      `${JSON.stringify({ type: "connector-resolved", source, origin: this.launch.origin, version: this.launch.version })}\n`,
+      `${JSON.stringify({ type: "connector-resolved", source, origin: this.launch.origin, version: this.launch.version, ...(this.localPath ? { localPath: this.localPath } : {}) })}\n`,
       "utf8",
     );
     return {
       connectorPath: this.launch.args[this.launch.args.length - 1],
       logPath,
       version: this.launch.version,
+      ...(this.localPath ? { localPath: this.localPath } : {}),
     };
   }
 
@@ -198,6 +205,18 @@ export class PdppRuntime {
     });
 
     push({ type: "run-started", source: options.source, logPath });
+    // Local source is unsigned and unverified, so every run says where it
+    // came from, in the log and in the event stream alike.
+    if (this.localPath) {
+      log(`[host] running ${launch.source} from ${this.localPath}`);
+      push({
+        type: "local-connector",
+        source: options.source,
+        connectorPath: this.localPath,
+        message: `Running ${launch.source} from ${this.localPath}`,
+        logPath,
+      });
+    }
     try {
       while (true) {
         while (queue.length > 0) {

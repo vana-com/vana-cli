@@ -111,6 +111,16 @@ pnpm cli -- <args>  # run the built CLI
   publishes on a `frpc-v<version>` tag (pinned by sha256 in `frpc.ts`, and
   checked with codesign after install), or Vana Desktop's. A new frpc
   version is a new tag, then new pins; never re-sign an existing one.
+- **A registered local connector runs unsigned code on every collect.**
+  `vana connectors add <key> --from <dir>` saves an absolute path in
+  `~/.vana/vana-connect-state.json`, and from then on `connect`, `collect`,
+  `--detach`, the schedule and the MCP `connect_source` tool all run that
+  directory's source through tsx with no digest check. Resolution order is
+  `--from`, then the saved entry, then the pin; a saved entry shadows a
+  pinned or legacy connector with the same key (and shares its state and
+  scope names), which is why `add` refuses those without `--force`. Every
+  such run must keep printing `Running <key> from <dir>` and emitting the
+  `local-connector` event; never make it silent.
 - **Legacy connectors are read from a pinned data-connectors commit.**
   PDP-Connect deleted the Playwright format from main on 2026-09-22; moving
   the pin forward means checking that commit still has `registry.json`.

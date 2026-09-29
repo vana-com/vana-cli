@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { CliEvent } from "../../src/core/cli-types.js";
+import { updateCliConfig } from "../../src/core/state-store.js";
 import { PdppRuntime } from "../../src/pdpp/runtime.js";
 
 // A checkout with one connector. It emits every chat it has not seen, judged
@@ -205,6 +206,51 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
     }
     expect(events.some((event) => event.type === "collection-complete")).toBe(
       true,
+    );
+  });
+
+  it("runs a saved local connector without --from and says where from", async () => {
+    // Registered the way `vana connectors add` stores it, in this test's HOME.
+    await updateCliConfig({
+      localConnectors: {
+        fake: {
+          path: checkout,
+          addedAt: "2026-09-28T00:00:00.000Z",
+          displayName: "Fake",
+          version: "0.0.1",
+        },
+      },
+    });
+    const runtime = new PdppRuntime({ owner: "0xOwner" });
+    const fetched = await runtime.fetchConnector("fake");
+    expect(fetched.localPath).toBe(checkout);
+    expect(fetched.connectorPath).toBe(
+      path.join(checkout, "connectors/fake/index.ts"),
+    );
+
+    const events: CliEvent[] = [];
+    for await (const event of runtime.runConnector({
+      connectorPath: "",
+      source: "fake",
+    })) {
+      events.push(event);
+    }
+    expect(events.find((event) => event.type === "local-connector")).toEqual({
+      type: "local-connector",
+      source: "fake",
+      connectorPath: checkout,
+      message: `Running fake from ${checkout}`,
+      logPath: expect.any(String),
+    });
+    expect(events.some((event) => event.type === "collection-complete")).toBe(
+      true,
+    );
+  });
+
+  it("refuses a source that is neither pinned nor registered", async () => {
+    const runtime = new PdppRuntime({ owner: "0xOwner" });
+    await expect(runtime.fetchConnector("fake")).rejects.toThrow(
+      /vana connectors add fake --from/,
     );
   });
 
