@@ -105,6 +105,56 @@ describe("resolveScopes", () => {
     ]);
   });
 
+  it("resolves a PDPP result where no stream completed to nothing", () => {
+    const result = {
+      platform: "slack_browser",
+      company: "Slack",
+      exportedAt: "2026-09-29T00:00:00Z",
+      completedStreams: [],
+    };
+
+    expect(resolveScopes("slack_browser", result, null)).toEqual([]);
+  });
+
+  it("keeps only completed streams from a partial PDPP result", () => {
+    const result = {
+      platform: "slack_browser",
+      company: "Slack",
+      exportedAt: "2026-09-29T00:00:00Z",
+      completedStreams: ["messages"],
+      "slack_browser.messages": { messages: [{ ts: "1" }] },
+    };
+
+    expect(resolveScopes("slack_browser", result, null)).toEqual([
+      {
+        scope: "slack_browser.messages",
+        data: { messages: [{ ts: "1" }] },
+      },
+    ]);
+  });
+
+  it("never maps PDPP metadata through connector metadata scopes", () => {
+    const metadata = {
+      scopes: [{ scope: "slack_browser.company" }],
+    } as unknown as ConnectorMetadata;
+    const result = {
+      platform: "slack_browser",
+      company: "Slack",
+      completedStreams: [],
+    };
+
+    expect(resolveScopes("slack_browser", result, metadata)).toEqual([]);
+  });
+
+  it("still maps a legacy flat result's company key in fallback", () => {
+    const result = { company: { name: "Acme" }, exportedAt: "2026-01-01" };
+
+    expect(resolveScopes("linkedin", result, null)).toEqual([
+      { scope: "linkedin.company", data: { name: "Acme" } },
+      { scope: "linkedin.exported_at", data: { value: "2026-01-01" } },
+    ]);
+  });
+
   it("normalizes camelCase dotted scopes to canonical snake_case", () => {
     const result = {
       "youtube.playlistItems": [{ id: "pl-1" }],

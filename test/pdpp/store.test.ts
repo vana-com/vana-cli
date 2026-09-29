@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { satisfiesNodeRange } from "../../src/pdpp/host.js";
 import {
   completedStreams,
+  describeSkips,
   mergeRun,
   ownerKey,
   projectResult,
@@ -132,6 +133,19 @@ describe("completedStreams", () => {
 
   it("drops every stream when a skip names none", () => {
     expect(completedStreams(["a", "b"], [{ reason: "whole_run" }])).toEqual([]);
+  });
+});
+
+describe("describeSkips", () => {
+  it("names each skipped stream with its reason and message", () => {
+    expect(
+      describeSkips([
+        { stream: "a", reason: "collection_interrupted", message: "closed" },
+        { reason: "whole_run" },
+      ]),
+    ).toBe(
+      "Skipped a: collection_interrupted (closed); the whole run: whole_run.",
+    );
   });
 });
 

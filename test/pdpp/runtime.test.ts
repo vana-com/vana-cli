@@ -30,6 +30,16 @@ if (process.env.FAKE_MANUAL === "1") {
     process.exit();
   }
 }
+if (process.env.FAKE_SKIP_ALL === "1") {
+  // The browser page closed under the connector: every stream is skipped,
+  // but the process itself still finishes cleanly.
+  for (const stream of ["profile", "chat_events"]) {
+    emit({ type: "SKIP_RESULT", stream, reason: "collection_interrupted", message: "page closed" });
+  }
+  emit({ type: "DONE", status: "succeeded", records_emitted: 0 });
+  await new Promise((resolve) => rl.once("close", resolve));
+  process.exit();
+}
 emit({ type: "RECORD", stream: "profile", key: "me", data: { id: "me", trigger: process.env.PDPP_RUN_TRIGGER_KIND, profileRoot: process.env.PDPP_BROWSER_PROFILE_ROOT, leaked: process.env.PDPP_FAKE_REMOTE_CDP_URL ?? null }, emitted_at: "t" });
 emit({ type: "PROGRESS", stream: "chat_events", message: "Reading chats" });
 for (const id of chats) {
@@ -58,6 +68,7 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
     HOME: process.env.HOME,
     VANA_PDPP_NODE: process.env.VANA_PDPP_NODE,
     FAKE_MANUAL: process.env.FAKE_MANUAL,
+    FAKE_SKIP_ALL: process.env.FAKE_SKIP_ALL,
     PDPP_FAKE_REMOTE_CDP_URL: process.env.PDPP_FAKE_REMOTE_CDP_URL,
   };
 
@@ -252,6 +263,43 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
     await expect(runtime.fetchConnector("fake")).rejects.toThrow(
       /vana connectors add fake --from/,
     );
+  });
+
+  it("fails a run where every stream was skipped and keeps the last result", async () => {
+    const first = await connect();
+    const resultPath =
+      first.find((event) => event.type === "collection-complete")?.resultPath ??
+      "";
+    const before = fs.readFileSync(resultPath, "utf8");
+    const stateDir = path.join(home, ".vana", "pdpp", "state", "fake");
+    const stateBefore = fs
+      .readdirSync(stateDir)
+      .map((file) => fs.readFileSync(path.join(stateDir, file), "utf8"));
+
+    process.env.FAKE_SKIP_ALL = "1";
+    const events = await connect();
+    expect(events.some((event) => event.type === "collection-complete")).toBe(
+      false,
+    );
+    const failure = events.find((event) => event.type === "runtime-error");
+    expect(failure?.message).toBe(
+      "No Fake stream finished, so nothing was saved. Skipped profile: collection_interrupted (page closed); chat_events: collection_interrupted (page closed).",
+    );
+    expect(fs.readFileSync(resultPath, "utf8")).toBe(before);
+    expect(
+      fs
+        .readdirSync(stateDir)
+        .map((file) => fs.readFileSync(path.join(stateDir, file), "utf8")),
+    ).toEqual(stateBefore);
+  });
+
+  it("writes no result at all when the first run skips every stream", async () => {
+    process.env.FAKE_SKIP_ALL = "1";
+    const events = await connect();
+    expect(events.some((event) => event.type === "runtime-error")).toBe(true);
+    expect(
+      fs.existsSync(path.join(home, ".vana", "results", "fake.json")),
+    ).toBe(false);
   });
 
   it("does not commit state from a failed run", async () => {
