@@ -74,6 +74,19 @@ export function completedStreams(
   return requested.filter((stream) => !skipped.has(stream));
 }
 
+/** One line naming every skip and its reason, for a run that saved nothing. */
+export function describeSkips(skips: SkipResult[]): string {
+  if (skips.length === 0) return "The connector reported no skips.";
+  const parts = skips.map((skip) => {
+    const what = skip.stream ?? "the whole run";
+    const why = skip.reason ?? "no reason given";
+    return skip.message
+      ? `${what}: ${why} (${skip.message})`
+      : `${what}: ${why}`;
+  });
+  return `Skipped ${parts.join("; ")}.`;
+}
+
 /**
  * Fold a finished run into the stored state. Only completed streams change:
  * a skipped stream keeps its previous records and cursor, so a partial run
