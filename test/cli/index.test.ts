@@ -427,6 +427,7 @@ describe("runCli", () => {
     stderrSpy.mockRestore();
     vi.clearAllMocks();
     vi.resetModules();
+    vi.unstubAllEnvs();
   });
 
   function normalizeRenderedTimestamps(output: string): string {
@@ -3784,6 +3785,9 @@ describe("runCli", () => {
     });
 
     it("collect runs a saved local connector, not the legacy runtime", async () => {
+      // The entry needs a manual browser step; a headless Linux runner (CI)
+      // has no display and would stop before the runtime is chosen.
+      vi.stubEnv("DISPLAY", ":0");
       mockReadCliConfig.mockResolvedValue({
         localConnectors: { slack_browser: entry },
       });
