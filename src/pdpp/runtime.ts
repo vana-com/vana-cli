@@ -37,6 +37,7 @@ import {
 import {
   collectionStatePath,
   completedStreams,
+  describeSkips,
   mergeRun,
   projectResult,
   readCollectionState,
@@ -372,6 +373,19 @@ export class PdppRuntime {
     }
 
     const completed = completedStreams(streamNames, skips);
+    if (completed.length === 0) {
+      // Nothing this run collected can be stood behind. Writing a result
+      // anyway would replace the last good one with bare metadata, and the
+      // ingest step would store that metadata as scopes. The previous state
+      // and result stay exactly as they were.
+      push({
+        type: "runtime-error",
+        source,
+        logPath,
+        message: `No ${launch.displayName} stream finished, so nothing was saved. ${describeSkips(skips)}`,
+      });
+      return;
+    }
     const merged = mergeRun(previous, {
       mode,
       completed,

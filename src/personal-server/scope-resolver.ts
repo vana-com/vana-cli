@@ -14,6 +14,17 @@ const EXCLUDED_KEYS = new Set([
 ]);
 
 /**
+ * Top-level metadata a Collection Profile (PDPP) result carries next to its
+ * `<source>.<stream>` keys. `completedStreams` only appears in those results,
+ * so it marks one.
+ */
+const PDPP_RESULT_MARKER = "completedStreams";
+
+function isPdppResult(result: Record<string, unknown>): boolean {
+  return Array.isArray(result[PDPP_RESULT_MARKER]);
+}
+
+/**
  * Ensure scope data is a JSON object for the Personal Server API.
  * Arrays are wrapped as `{ items: [...] }`. Primitives are wrapped
  * as `{ value: ... }`. Objects pass through unchanged.
@@ -49,6 +60,9 @@ function normalizeScope(scope: string): string {
  * 3. If no metadata, fall back to "{source}.{key}" for every non-metadata key
  *    (exclude: exportSummary, timestamp, version, platform)
  *
+ * A PDPP result (one carrying a `completedStreams` array) only ever resolves
+ * through strategy 1; with no dotted keys it resolves to nothing.
+ *
  * @param source - The connector source name (e.g. "github")
  * @param result - The connector output as key-value pairs
  * @param metadata - Optional connector metadata with scope definitions
@@ -71,6 +85,11 @@ export function resolveScopes(
       data: ensureObject(result[key]),
     }));
   }
+
+  // A PDPP result names its scopes as dotted keys and nothing else. Without
+  // any, no stream completed, and its metadata (company, exportedAt,
+  // completedStreams) must never fall through to become scopes.
+  if (isPdppResult(result)) return [];
 
   // Strategy 2: Use metadata scopes to map flat keys.
   if (metadata?.scopes && metadata.scopes.length > 0) {
