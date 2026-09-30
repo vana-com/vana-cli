@@ -205,6 +205,23 @@ describe("submitting to the gateway relayer", () => {
     });
   });
 
+  it("maps no HTTP answer to an unreachable, transient error", async () => {
+    const error = await submitDepositAuthorization(
+      "https://gw",
+      auth,
+      (async () => {
+        throw new TypeError("fetch failed");
+      }) as typeof fetch,
+    ).catch((e) => e);
+    expect(error).toBeInstanceOf(DepositAuthorizationError);
+    expect(error).toMatchObject({
+      status: 0,
+      transient: true,
+      rejected: false,
+    });
+    expect(error.message).toContain("fetch failed");
+  });
+
   it("refuses a 202 without a transaction hash", async () => {
     await expect(
       submitDepositAuthorization("https://gw", auth, answer(202, {})),

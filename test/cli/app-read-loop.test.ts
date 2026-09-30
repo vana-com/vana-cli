@@ -12,6 +12,7 @@ import {
 } from "../../src/cli/app/escrow.js";
 import { runAppOnchain } from "../../src/cli/app/onchain.js";
 import { appOutcomeSchema } from "../../src/cli/app/outcome.js";
+import { DepositAuthorizationError } from "../../src/core/escrow-authorization.js";
 import { createReceiptsStore, receiptKey } from "../../src/core/receipts.js";
 import { createRequestsStore } from "../../src/core/requests-store.js";
 import type { ResolvedAppKey } from "../../src/core/app-key.js";
@@ -707,6 +708,39 @@ describe("vana app escrow", () => {
       gatewayStatus: "finalized",
       gasless: true,
     });
+  });
+
+  it("reports an unreachable relayer as gateway_unreachable, not internal", async () => {
+    const exitCode = await runAppEscrowFund(
+      {
+        json: true,
+        network: "mainnet",
+        yes: true,
+        amount: "0.2",
+        asset: "0xF1815bd50389c46847f0Bda824eC8da914045D14",
+      },
+      {
+        resolveKey: () => appKey,
+        resolveAsset: async () => ({
+          address: "0xF1815bd50389c46847f0Bda824eC8da914045D14",
+          symbol: "USDC.e",
+          decimals: 6,
+        }),
+        sendGaslessDeposit: async () => {
+          throw new DepositAuthorizationError(
+            "Could not reach the gateway relayer: fetch failed",
+            0,
+            false,
+            true,
+          );
+        },
+      },
+    );
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(exitCode).not.toBe(0);
+    expect(outcome.code).toBe("gateway_unreachable");
+    expect(outcome.remedy).toContain("escrow balance");
+    expect(outcome.remedy).not.toContain("--self-pay-gas");
   });
 
   it("sends an ERC20 from the app wallet with --self-pay-gas", async () => {

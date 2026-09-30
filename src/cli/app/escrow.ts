@@ -441,10 +441,18 @@ export async function runAppEscrowFund(
         return emitAppOutcome(options, {
           status: "failed",
           code: error.transient ? "gateway_unreachable" : "internal",
-          message: `The gateway relayer did not take the deposit (${error.status}): ${error.message}`,
-          remedy: error.transient
-            ? "re-run: nothing was broadcast"
-            : "re-run with --self-pay-gas to send the deposit from the app wallet (needs VANA for gas)",
+          message:
+            error.status === 0
+              ? error.message
+              : `The gateway relayer did not take the deposit (${error.status}): ${error.message}`,
+          remedy:
+            error.status === 0
+              ? "run `vana app escrow balance --network " +
+                network.name +
+                "` first: the deposit may have gone through; re-run only if it did not"
+              : error.transient
+                ? "re-run: nothing was broadcast"
+                : "re-run with --self-pay-gas to send the deposit from the app wallet (needs VANA for gas)",
           network: network.name,
         });
       }

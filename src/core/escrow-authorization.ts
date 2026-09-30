@@ -262,14 +262,29 @@ export async function submitDepositAuthorization(
   authorization: DepositAuthorization,
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ txHash: Hex; status: string }> {
-  const response = await fetchImpl(
-    `${gatewayUrl.replace(/\/+$/, "")}/v1/escrow/deposit-with-authorization`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(authorization),
-    },
-  );
+  let response: Response;
+  try {
+    response = await fetchImpl(
+      `${gatewayUrl.replace(/\/+$/, "")}/v1/escrow/deposit-with-authorization`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(authorization),
+      },
+    );
+  } catch (error) {
+    // No HTTP answer at all (DNS, TLS, offline). The gateway may or may not
+    // have broadcast before the connection dropped, so this is "unreachable",
+    // and a re-run should check the balance before signing again.
+    throw new DepositAuthorizationError(
+      `Could not reach the gateway relayer: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      0,
+      false,
+      true,
+    );
+  }
   let body: unknown = null;
   try {
     body = await response.json();
