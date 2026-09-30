@@ -105,7 +105,15 @@ import {
   stopLocalServer,
 } from "../personal-server/local/detach.js";
 import { localServerDataDir } from "../personal-server/local/config.js";
-import { isPdppSource, PdppRuntime } from "../pdpp/runtime.js";
+import { PdppRuntime } from "../pdpp/runtime.js";
+import {
+  addLocalConnector,
+  LocalConnectorConflictError,
+  readLocalConnectors,
+  removeLocalConnector,
+  resolvePdppSource,
+} from "../pdpp/local-connectors.js";
+import { readLocalProfile } from "../pdpp/local.js";
 import {
   listAvailableSkills,
   installSkill,
@@ -359,6 +367,10 @@ Data:
 Server:
   vana server            Personal Server status and management
 
+Connectors:
+  vana connectors add <key> --from <dir>   Register a local Collection Profile connector
+  vana connectors list                     Show registered local connectors
+
 Agent:
   vana mcp               Start MCP server (for Claude Code, Cursor, etc.)
   vana skills list         List available agent skills
@@ -463,8 +475,77 @@ Examples:
   vana connect github --json --no-input
   vana connect github --json --ipc
   vana connect instinct --from ~/src/data-connectors
+  vana connectors add instinct --from ~/src/data-connectors
 `,
   );
+
+  const connectors = program
+    .command("connectors")
+    .description(
+      "Register Collection Profile connectors from a local directory",
+    );
+  connectors.addHelpText(
+    "after",
+    `
+A registered connector runs its source unsigned, straight from the directory,
+for every later \`vana connect <key>\`, \`vana collect\`, schedule and MCP call.
+Only register directories you trust.
+
+Examples:
+  vana connectors add slack_browser --from ~/src/data-connectors
+  vana connectors list
+  vana connectors remove slack_browser
+`,
+  );
+  connectors.action(() => {
+    connectors.outputHelp();
+  });
+
+  connectors
+    .command("add <key>")
+    .description("Register a connector from a directory on this machine")
+    .option(
+      "--from <dir>",
+      "Directory with connectors/<key>/index.ts and its manifest",
+    )
+    .option("--path <dir>", "Alias for --from")
+    .option(
+      "--force",
+      "Register even when the key collides with a pinned or legacy connector",
+    )
+    .option("--json", "Output machine-readable JSON")
+    .action(async (key: string, addOptions: ConnectorsAddOptions) => {
+      process.exitCode = await runCommandWithTelemetry(
+        { ...telemetryBaseContext, command: "connectors", subcommand: "add" },
+        async () => runConnectorsAdd(key, addOptions, parsedOptions),
+      );
+    });
+
+  connectors
+    .command("list")
+    .description("Show registered local connectors")
+    .option("--json", "Output machine-readable JSON")
+    .action(async () => {
+      process.exitCode = await runCommandWithTelemetry(
+        { ...telemetryBaseContext, command: "connectors", subcommand: "list" },
+        async () => runConnectorsList(parsedOptions),
+      );
+    });
+
+  connectors
+    .command("remove <key>")
+    .description("Forget a registered local connector")
+    .option("--json", "Output machine-readable JSON")
+    .action(async (key: string) => {
+      process.exitCode = await runCommandWithTelemetry(
+        {
+          ...telemetryBaseContext,
+          command: "connectors",
+          subcommand: "remove",
+        },
+        async () => runConnectorsRemove(key, parsedOptions),
+      );
+    });
 
   const sourcesCommand = program
     .command("sources [source]")
@@ -1338,13 +1419,201 @@ interface ConnectOptions {
   from?: string;
 }
 
+interface ConnectorsAddOptions {
+  from?: string;
+  /** Alias for `from`. */
+  path?: string;
+  force?: boolean;
+}
+
+/**
+ * Ids the catalog lists on its own, without local entries, so `connectors
+ * add` can tell when a key would shadow a pinned or legacy connector.
+ */
+async function loadCatalogIds(): Promise<string[]> {
+  try {
+    const sources = await listAvailableSources(
+      findDataConnectorsDir() ?? undefined,
+      { readLocalConnectors: async () => ({}) },
+    );
+    return sources.map((source) => source.id);
+  } catch {
+    return [];
+  }
+}
+
+async function runConnectorsAdd(
+  rawKey: string,
+  addOptions: ConnectorsAddOptions,
+  options: GlobalOptions,
+): Promise<number> {
+  const emit = createEmitter(options);
+  const key = rawKey.toLowerCase();
+  const dir = addOptions.from ?? addOptions.path;
+  if (!dir) {
+    const message = "connectors add needs --from <dir>.";
+    if (options.json) {
+      process.stdout.write(
+        `${JSON.stringify({ ok: false, error: "usage", key, message })}\n`,
+      );
+    } else {
+      process.stderr.write(`${message}\n`);
+    }
+    return CliExitCode.USAGE;
+  }
+
+  let result: Awaited<ReturnType<typeof addLocalConnector>>;
+  try {
+    result = await addLocalConnector(key, dir, {
+      force: Boolean(addOptions.force),
+      catalogIds: await loadCatalogIds(),
+    });
+  } catch (error) {
+    const conflict = error instanceof LocalConnectorConflictError;
+    const message = error instanceof Error ? error.message : String(error);
+    if (options.json) {
+      process.stdout.write(
+        `${JSON.stringify({
+          ok: false,
+          error: conflict ? "conflict" : "invalid_connector",
+          key,
+          ...(conflict ? { conflicts: error.conflicts } : {}),
+          message,
+        })}\n`,
+      );
+    } else {
+      emit.info(message);
+    }
+    return 1;
+  }
+
+  const { entry, conflicts, replaced } = result;
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify({ ok: true, key, ...entry, replaced, conflicts })}\n`,
+    );
+    return 0;
+  }
+
+  emit.info(
+    `${replaced ? "Updated" : "Registered"} ${key} (${entry.displayName} ${entry.version}) from ${entry.path}`,
+  );
+  if (entry.gitHead) {
+    emit.detail(`At commit ${entry.gitHead.slice(0, 12)}.`);
+  }
+  if (conflicts.length > 0) {
+    emit.info(
+      `Warning: ${key} shadows ${conflicts
+        .map((conflict) =>
+          conflict === "pinned"
+            ? "a pinned Collection Profile connector"
+            : "a legacy registry connector",
+        )
+        .join(
+          " and ",
+        )}. It shares that connector's state, browser profile and scope names.`,
+    );
+  }
+  emit.detail(
+    "Every run executes this directory's source unsigned. Remove it with `vana connectors remove` when you are done.",
+  );
+  emit.blank();
+  emit.next(`vana connect ${key}`);
+  return 0;
+}
+
+async function runConnectorsList(options: GlobalOptions): Promise<number> {
+  const emit = createEmitter(options);
+  const entries = await readLocalConnectors();
+  const connectors = Object.entries(entries)
+    .map(([key, entry]) => ({ key, ...entry }))
+    .sort((left, right) => left.key.localeCompare(right.key));
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify({ count: connectors.length, connectors })}\n`,
+    );
+    return 0;
+  }
+
+  emit.title("Local connectors");
+  emit.blank();
+  if (connectors.length === 0) {
+    emit.info("No local connectors are registered.");
+    emit.detail(
+      `Register one with ${emit.code("vana connectors add <key> --from <dir>")}.`,
+    );
+    return 0;
+  }
+
+  const keyWidth = Math.max(...connectors.map((entry) => entry.key.length));
+  const versionWidth = Math.max(
+    ...connectors.map((entry) => entry.version.length),
+  );
+  for (const entry of connectors) {
+    const head = entry.gitHead ? `  (git ${entry.gitHead.slice(0, 12)})` : "";
+    emit.info(
+      `  ${entry.key.padEnd(keyWidth)}  ${entry.version.padEnd(versionWidth)}  ${formatDisplayPath(entry.path)}${head}`,
+    );
+  }
+  emit.blank();
+  emit.detail("Each runs its directory's source unsigned on every collect.");
+  return 0;
+}
+
+async function runConnectorsRemove(
+  rawKey: string,
+  options: GlobalOptions,
+): Promise<number> {
+  const emit = createEmitter(options);
+  const key = rawKey.toLowerCase();
+  const removed = await removeLocalConnector(key);
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ ok: true, key, removed })}\n`);
+    return 0;
+  }
+
+  if (removed) {
+    emit.info(`Removed local connector ${key}.`);
+    emit.detail(
+      "Collected data and state stay on disk; connect again to use a pinned or legacy connector with this key.",
+    );
+  } else {
+    emit.info(`No local connector named ${key} is registered.`);
+  }
+  return 0;
+}
+
+/**
+ * The scopes a local connector produces: one per manifest stream, named
+ * `<key>.<stream>` the way ingest files them.
+ */
+async function readLocalConnectorScopes(
+  dir: string,
+  key: string,
+): Promise<Array<{ scope: string; label: string; description?: string }>> {
+  try {
+    const { profile } = await readLocalProfile(dir, key);
+    return profile.streams.map((stream) => ({
+      scope: `${key}.${stream.name}`,
+      label: stream.display?.label ?? `${key}.${stream.name}`,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 async function runConnect(
   rawSource: string,
   options: GlobalOptions,
   connectOptions: ConnectOptions = {},
 ): Promise<number> {
   const source = rawSource.toLowerCase();
-  const isPdpp = isPdppSource(source, { from: connectOptions.from });
+  const pdppSource = await resolvePdppSource(source, {
+    from: connectOptions.from,
+  });
+  const isPdpp = pdppSource !== null;
   const emit = createEmitter(options);
   const renderer: ConnectRenderer | null =
     !options.json && !options.quiet ? createConnectRenderer() : null;
@@ -1827,6 +2096,12 @@ async function runConnect(
 
       if (event.type === "status-update") {
         // Status updates are silent in the new design
+        continue;
+      }
+
+      if (event.type === "local-connector") {
+        // Unsigned code is running; say where from, in every mode.
+        if (event.message) renderer?.detail(event.message);
         continue;
       }
 
@@ -2344,6 +2619,9 @@ async function runList(options: GlobalOptions): Promise<number> {
         if (source.runtime === "pdpp") {
           badges.push({ text: "collection profile", tone: "muted" });
         }
+        if (source.origin === "local") {
+          badges.push({ text: "local", tone: "warning" });
+        }
         emit.sourceTitle(source.name, badges);
         emit.detail(
           `Inspect with ${emit.code(`vana data show ${source.id}`)}.`,
@@ -2363,6 +2641,9 @@ async function runList(options: GlobalOptions): Promise<number> {
       }
       if (source.runtime === "pdpp") {
         badges.push({ text: "collection profile", tone: "muted" });
+      }
+      if (source.origin === "local") {
+        badges.push({ text: "local", tone: "warning" });
       }
       emit.sourceTitle(source.name, badges);
       if (source.description) {
@@ -3565,11 +3846,14 @@ async function runSourceDetail(
   }
 
   const stored = state.sources[match.id];
-  const metadata = await readCachedConnectorMetadata(
-    match.id,
-    getConnectorCacheDir(),
-  );
-  const scopes = metadata?.scopes ?? [];
+  const metadata =
+    match.origin === "local"
+      ? null
+      : await readCachedConnectorMetadata(match.id, getConnectorCacheDir());
+  const scopes =
+    match.origin === "local" && match.localPath
+      ? await readLocalConnectorScopes(match.localPath, match.id)
+      : (metadata?.scopes ?? []);
   const sourceStatus = stored
     ? ({
         source: match.id,
@@ -3591,6 +3875,9 @@ async function runSourceDetail(
         version: match.version ?? stored?.connectorVersion,
         exportFrequency: match.exportFrequency ?? stored?.exportFrequency,
         authMode: match.authMode,
+        ...(match.origin === "local"
+          ? { origin: "local", localPath: match.localPath }
+          : {}),
         scopes,
         scopeLabels: scopes.map((s) => s.label),
         connectorVersion: stored?.connectorVersion,
@@ -3606,9 +3893,15 @@ async function runSourceDetail(
   if (badge && badge.label !== "new") {
     badgeList.push({ text: badge.label, tone: badge.style });
   }
+  if (match.origin === "local") {
+    badgeList.push({ text: "local", tone: "warning" });
+  }
   emit.sourceTitle(`${iconPrefix}${match.name}`, badgeList);
   emit.blank();
-  if (match.description) {
+  if (match.origin === "local" && match.localPath) {
+    emit.info(`Runs unsigned source from ${match.localPath}.`);
+    emit.blank();
+  } else if (match.description) {
     emit.info(cleanDescription(match.description));
     emit.blank();
   }

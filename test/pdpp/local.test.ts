@@ -78,6 +78,19 @@ describe("resolveLocalLaunch", () => {
     );
   });
 
+  it("refuses a manifest whose connector_key names another connector", async () => {
+    const root = makeRoot();
+    write(path.join(root, "connectors/instinct/index.ts"), "");
+    write(
+      path.join(root, "connectors/instinct/manifest.json"),
+      JSON.stringify({ ...manifest, connector_key: "whoop" }),
+    );
+    write(path.join(root, "node_modules/tsx/package.json"), "{}");
+    await expect(resolveLocalLaunch(root, "instinct")).rejects.toThrow(
+      /declares connector_key whoop, not instinct/,
+    );
+  });
+
   it("refuses a checkout without tsx installed", async () => {
     const root = makeRoot();
     write(path.join(root, "connectors/instinct/index.ts"), "");

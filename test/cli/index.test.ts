@@ -25,6 +25,7 @@ const mockIngestResult = vi.fn();
 const mockResolvePersonalServerAuthConfig = vi.fn();
 const mockCreatePersonalServerClient = vi.fn();
 const mockReadCliState = vi.fn();
+const mockReadCliConfig = vi.fn();
 const mockUpdateCliConfig = vi.fn();
 const mockUpdateSourceState = vi.fn();
 const mockConfirm = vi.fn();
@@ -70,6 +71,9 @@ let fetchConnectorResult = {
   logPath: "/tmp/logs/fetch.log",
 };
 let runConnectorEvents: Array<Record<string, unknown>> = [];
+let managedFetchCalls = 0;
+let pdppRuntimeOptions: Array<Record<string, unknown>> = [];
+let pdppRunConnectorEvents: Array<Record<string, unknown>> = [];
 const mockRunSelfHostedLoginFlow = vi.fn();
 const mockRunDeviceCodeFlow = vi.fn();
 const mockSaveCredentials = vi.fn();
@@ -111,6 +115,7 @@ vi.mock("../../src/runtime/index.js", () => ({
     }
 
     async fetchConnector() {
+      managedFetchCalls += 1;
       return fetchConnectorResult;
     }
 
@@ -138,6 +143,44 @@ vi.mock("../../src/runtime/index.js", () => ({
           });
           continue;
         }
+        yield event;
+      }
+    }
+  },
+}));
+
+// The Collection Profile runtime, recording how connect constructed it so a
+// test can tell a saved local connector was chosen over the legacy runtime.
+vi.mock("../../src/pdpp/runtime.js", () => ({
+  PdppRuntime: class {
+    readonly kind = "pdpp";
+    constructor(options: Record<string, unknown>) {
+      pdppRuntimeOptions.push(options);
+    }
+
+    get installSummary() {
+      return { lines: ["Node.js 24"], phase: "Installing Node.js 24" };
+    }
+
+    get state() {
+      return "installed";
+    }
+
+    async ensureInstalled() {
+      return { runtime: "installed", runtimePath: "/tmp/node" };
+    }
+
+    async fetchConnector(source: string) {
+      return {
+        connectorPath: `/abs/data-connectors/connectors/${source}/index.ts`,
+        logPath: "/tmp/logs/fetch-pdpp.log",
+        version: "0.1.0",
+        localPath: "/abs/data-connectors",
+      };
+    }
+
+    async *runConnector() {
+      for (const event of pdppRunConnectorEvents) {
         yield event;
       }
     }
@@ -207,7 +250,7 @@ vi.mock("../../src/core/index.js", async () => {
   return {
     ...actual,
     readCliState: mockReadCliState,
-    readCliConfig: vi.fn().mockResolvedValue({}),
+    readCliConfig: mockReadCliConfig,
     updateCliConfig: mockUpdateCliConfig,
     updateSourceState: mockUpdateSourceState,
     getBrowserProfilesDir: vi.fn(() => "/tmp/browser-profiles"),
@@ -292,6 +335,11 @@ describe("runCli", () => {
     mockUpdateSourceState.mockReset();
     mockUpdateCliConfig.mockReset();
     mockUpdateCliConfig.mockResolvedValue(undefined);
+    mockReadCliConfig.mockReset();
+    mockReadCliConfig.mockResolvedValue({});
+    managedFetchCalls = 0;
+    pdppRuntimeOptions = [];
+    pdppRunConnectorEvents = [];
     mockConfirm.mockReset();
     mockSelect.mockReset();
     mockSearchSelect.mockReset();
@@ -379,6 +427,7 @@ describe("runCli", () => {
     stderrSpy.mockRestore();
     vi.clearAllMocks();
     vi.resetModules();
+    vi.unstubAllEnvs();
   });
 
   function normalizeRenderedTimestamps(output: string): string {
@@ -3469,6 +3518,433 @@ describe("runCli", () => {
     const exitCode = await runCli(["node", "vana", "collect", "github"]);
 
     expect(exitCode).toBe(0);
+  });
+
+  describe("local Collection Profile connectors", () => {
+    const dir = "/abs/data-connectors";
+    const entry = {
+      path: dir,
+      addedAt: "2026-09-28T00:00:00.000Z",
+      displayName: "Slack",
+      version: "0.1.0",
+      humanInteraction: ["manual_action"],
+    };
+
+    // A checkout with one connector, as the mocked fs sees it.
+    function layOutCheckout(key: string, manifest: Record<string, unknown>) {
+      const present = new Set([
+        `${dir}/connectors/${key}/index.ts`,
+        `${dir}/connectors/${key}/manifest.json`,
+        `${dir}/node_modules/tsx`,
+      ]);
+      mockExistsSync.mockImplementation((file: string) => present.has(file));
+      mockReadFile.mockImplementation(async (file: string) => {
+        if (file === `${dir}/connectors/${key}/manifest.json`) {
+          return JSON.stringify(manifest);
+        }
+        throw new Error("missing");
+      });
+    }
+
+    it("connectors add validates the directory and saves an absolute path", async () => {
+      layOutCheckout("slack_browser", {
+        connector_key: "slack_browser",
+        version: "0.1.0",
+        display_name: "Slack",
+        streams: [{ name: "messages" }],
+        capabilities: { human_interaction: ["manual_action"] },
+      });
+      mockListAvailableSources.mockResolvedValue([
+        { id: "github", name: "GitHub" },
+      ]);
+
+      const { runCli } = await import("../../src/cli/index.js");
+      const exitCode = await runCli([
+        "node",
+        "vana",
+        "connectors",
+        "add",
+        "Slack_Browser",
+        "--from",
+        dir,
+        "--json",
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(stdout.trim())).toEqual({
+        ok: true,
+        key: "slack_browser",
+        path: dir,
+        addedAt: expect.any(String),
+        displayName: "Slack",
+        version: "0.1.0",
+        humanInteraction: ["manual_action"],
+        replaced: false,
+        conflicts: [],
+      });
+      expect(mockUpdateCliConfig).toHaveBeenCalledWith({
+        localConnectors: {
+          slack_browser: {
+            path: dir,
+            addedAt: expect.any(String),
+            displayName: "Slack",
+            version: "0.1.0",
+            humanInteraction: ["manual_action"],
+          },
+        },
+      });
+    });
+
+    it("connectors add accepts --path and prints where it runs from", async () => {
+      layOutCheckout("slack_browser", {
+        connector_key: "slack_browser",
+        version: "0.1.0",
+        display_name: "Slack",
+        streams: [{ name: "messages" }],
+      });
+      mockListAvailableSources.mockResolvedValue([]);
+
+      const { runCli } = await import("../../src/cli/index.js");
+      const exitCode = await runCli([
+        "node",
+        "vana",
+        "connectors",
+        "add",
+        "slack_browser",
+        "--path",
+        dir,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain(
+        `Registered slack_browser (Slack 0.1.0) from ${dir}`,
+      );
+      expect(stdout).toContain("unsigned");
+      expect(stdout).toContain("vana connect slack_browser");
+    });
+
+    it("connectors add refuses a manifest for another connector", async () => {
+      layOutCheckout("slack_browser", {
+        connector_key: "whoop",
+        version: "0.1.0",
+        streams: [{ name: "messages" }],
+      });
+      mockListAvailableSources.mockResolvedValue([]);
+
+      const { runCli } = await import("../../src/cli/index.js");
+      const exitCode = await runCli([
+        "node",
+        "vana",
+        "connectors",
+        "add",
+        "slack_browser",
+        "--from",
+        dir,
+        "--json",
+      ]);
+
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(stdout.trim())).toMatchObject({
+        ok: false,
+        error: "invalid_connector",
+        message: expect.stringContaining("connector_key whoop"),
+      });
+      expect(mockUpdateCliConfig).not.toHaveBeenCalled();
+    });
+
+    it("connectors add refuses a legacy or pinned key unless --force", async () => {
+      layOutCheckout("github", {
+        connector_key: "github",
+        version: "0.1.0",
+        streams: [{ name: "repositories" }],
+      });
+      mockListAvailableSources.mockResolvedValue([
+        { id: "github", name: "GitHub" },
+      ]);
+
+      const { runCli } = await import("../../src/cli/index.js");
+      const refused = await runCli([
+        "node",
+        "vana",
+        "connectors",
+        "add",
+        "github",
+        "--from",
+        dir,
+        "--json",
+      ]);
+      expect(refused).toBe(1);
+      expect(JSON.parse(stdout.trim())).toMatchObject({
+        ok: false,
+        error: "conflict",
+        conflicts: ["legacy"],
+        message: expect.stringContaining("--force"),
+      });
+      expect(mockUpdateCliConfig).not.toHaveBeenCalled();
+
+      stdout = "";
+      const forced = await runCli([
+        "node",
+        "vana",
+        "connectors",
+        "add",
+        "github",
+        "--from",
+        dir,
+        "--force",
+      ]);
+      expect(forced).toBe(0);
+      expect(stdout).toContain(
+        "Warning: github shadows a legacy registry connector",
+      );
+      expect(mockUpdateCliConfig).toHaveBeenCalledTimes(1);
+    });
+
+    it("connectors add needs a directory", async () => {
+      const { runCli } = await import("../../src/cli/index.js");
+      const exitCode = await runCli([
+        "node",
+        "vana",
+        "connectors",
+        "add",
+        "slack_browser",
+      ]);
+      expect(exitCode).toBe(2);
+      expect(stderr).toContain("--from <dir>");
+    });
+
+    it("connectors list shows saved entries", async () => {
+      mockReadCliConfig.mockResolvedValue({
+        localConnectors: {
+          slack_browser: { ...entry, gitHead: "0123456789abcdef01234567" },
+        },
+      });
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli(["node", "vana", "connectors", "list", "--json"]),
+      ).toBe(0);
+      expect(JSON.parse(stdout.trim())).toEqual({
+        count: 1,
+        connectors: [
+          {
+            key: "slack_browser",
+            ...entry,
+            gitHead: "0123456789abcdef01234567",
+          },
+        ],
+      });
+
+      stdout = "";
+      expect(await runCli(["node", "vana", "connectors", "list"])).toBe(0);
+      expect(stdout).toContain("Local connectors");
+      expect(stdout).toContain("slack_browser");
+      expect(stdout).toContain("0.1.0");
+      expect(stdout).toContain("(git 0123456789ab)");
+    });
+
+    it("connectors list says when nothing is registered", async () => {
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "connectors", "list"])).toBe(0);
+      expect(stdout).toContain("No local connectors are registered.");
+    });
+
+    it("connectors remove forgets an entry and keeps the rest", async () => {
+      mockReadCliConfig.mockResolvedValue({
+        localConnectors: {
+          slack_browser: entry,
+          other: { ...entry, displayName: "Other" },
+        },
+      });
+
+      const { runCli } = await import("../../src/cli/index.js");
+      const exitCode = await runCli([
+        "node",
+        "vana",
+        "connectors",
+        "remove",
+        "slack_browser",
+        "--json",
+      ]);
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(stdout.trim())).toEqual({
+        ok: true,
+        key: "slack_browser",
+        removed: true,
+      });
+      expect(mockUpdateCliConfig).toHaveBeenCalledWith({
+        localConnectors: { other: { ...entry, displayName: "Other" } },
+      });
+
+      stdout = "";
+      mockReadCliConfig.mockResolvedValue({ localConnectors: {} });
+      expect(
+        await runCli(["node", "vana", "connectors", "remove", "slack_browser"]),
+      ).toBe(0);
+      expect(stdout).toContain("No local connector named slack_browser");
+    });
+
+    it("collect runs a saved local connector, not the legacy runtime", async () => {
+      // The entry needs a manual browser step; a headless Linux runner (CI)
+      // has no display and would stop before the runtime is chosen.
+      vi.stubEnv("DISPLAY", ":0");
+      mockReadCliConfig.mockResolvedValue({
+        localConnectors: { slack_browser: entry },
+      });
+      mockListAvailableSources.mockResolvedValue([
+        {
+          id: "slack_browser",
+          name: "Slack",
+          authMode: "legacy",
+          runtime: "pdpp",
+          origin: "local",
+          localPath: dir,
+        },
+      ]);
+      mockReadCliState.mockResolvedValue({
+        version: 1,
+        sources: {
+          slack_browser: {
+            connectorInstalled: true,
+            sessionPresent: true,
+            lastRunAt: "2026-09-27T10:00:00Z",
+            lastRunOutcome: "connected_local_only",
+            dataState: "collected_local",
+            lastResultPath: "/tmp/results/slack_browser.json",
+          },
+        },
+      });
+      pdppRunConnectorEvents = [
+        {
+          type: "local-connector",
+          source: "slack_browser",
+          connectorPath: dir,
+          message: `Running slack_browser from ${dir}`,
+          logPath: "/tmp/logs/run.log",
+        },
+        {
+          type: "collection-complete",
+          source: "slack_browser",
+          resultPath: "/tmp/results/slack_browser.json",
+        },
+      ];
+
+      const { runCli } = await import("../../src/cli/index.js");
+      const exitCode = await runCli([
+        "node",
+        "vana",
+        "collect",
+        "slack_browser",
+        "--json",
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(managedFetchCalls).toBe(0);
+      // No --from: the runtime looks the saved entry up itself.
+      expect(pdppRuntimeOptions).toEqual([
+        { from: undefined, owner: undefined },
+      ]);
+      const events = stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(events).toContainEqual({
+        type: "local-connector",
+        source: "slack_browser",
+        connectorPath: dir,
+        message: `Running slack_browser from ${dir}`,
+        logPath: "/tmp/logs/run.log",
+      });
+      for (const event of events) {
+        if (event.type !== "outcome") cliEventSchema.parse(event);
+      }
+    });
+
+    it("connect prints where a saved local connector runs from", async () => {
+      mockReadCliConfig.mockResolvedValue({
+        localConnectors: { slack_browser: entry },
+      });
+      mockListAvailableSources.mockResolvedValue([
+        {
+          id: "slack_browser",
+          name: "Slack",
+          runtime: "pdpp",
+          origin: "local",
+          localPath: dir,
+        },
+      ]);
+      pdppRunConnectorEvents = [
+        {
+          type: "local-connector",
+          source: "slack_browser",
+          connectorPath: dir,
+          message: `Running slack_browser from ${dir}`,
+        },
+        {
+          type: "collection-complete",
+          source: "slack_browser",
+          resultPath: "/tmp/results/slack_browser.json",
+        },
+      ];
+
+      const { runCli } = await import("../../src/cli/index.js");
+      const exitCode = await runCli([
+        "node",
+        "vana",
+        "connect",
+        "slack_browser",
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(managedFetchCalls).toBe(0);
+      expect(`${stdout}${stderr}`).toContain(
+        `Running slack_browser from ${dir}`,
+      );
+    });
+
+    it("sources <key> lists a local connector's streams as scopes", async () => {
+      layOutCheckout("slack_browser", {
+        connector_key: "slack_browser",
+        version: "0.1.0",
+        display_name: "Slack",
+        streams: [
+          { name: "messages", display: { label: "Your messages" } },
+          { name: "channels" },
+        ],
+      });
+      mockListAvailableSources.mockResolvedValue([
+        {
+          id: "slack_browser",
+          name: "Slack",
+          version: "0.1.0",
+          authMode: "legacy",
+          runtime: "pdpp",
+          origin: "local",
+          localPath: dir,
+        },
+      ]);
+
+      const { runCli } = await import("../../src/cli/index.js");
+      const exitCode = await runCli([
+        "node",
+        "vana",
+        "sources",
+        "slack_browser",
+        "--json",
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(stdout.trim())).toMatchObject({
+        id: "slack_browser",
+        origin: "local",
+        localPath: dir,
+        scopes: [
+          { scope: "slack_browser.messages", label: "Your messages" },
+          { scope: "slack_browser.channels", label: "slack_browser.channels" },
+        ],
+        scopeLabels: ["Your messages", "slack_browser.channels"],
+      });
+    });
   });
 
   it("server sync returns error when no server is available", async () => {

@@ -99,4 +99,37 @@ describe("state-store", () => {
       telemetryInstallId: "inst_test",
     });
   });
+
+  it("round-trips local connectors next to the rest of the config", async () => {
+    const { updateCliConfig, readCliConfig, readCliState } =
+      await import("../../src/core/state-store.js");
+    const entry = {
+      path: "/abs/data-connectors",
+      addedAt: "2026-09-28T00:00:00.000Z",
+      displayName: "Slack",
+      version: "0.1.0",
+      gitHead: "0123456789abcdef0123456789abcdef01234567",
+      humanInteraction: ["manual_action"],
+    };
+
+    await updateCliConfig({ personalServerUrl: "http://localhost:8080" });
+    await updateCliConfig({ localConnectors: { slack_browser: entry } });
+
+    await expect(readCliConfig()).resolves.toEqual({
+      personalServerUrl: "http://localhost:8080",
+      localConnectors: { slack_browser: entry },
+    });
+    // It lives under `config` in the state file, next to sources.
+    await expect(readCliState()).resolves.toMatchObject({
+      version: 1,
+      config: { localConnectors: { slack_browser: entry } },
+      sources: {},
+    });
+
+    await updateCliConfig({ localConnectors: {} });
+    await expect(readCliConfig()).resolves.toEqual({
+      personalServerUrl: "http://localhost:8080",
+      localConnectors: {},
+    });
+  });
 });

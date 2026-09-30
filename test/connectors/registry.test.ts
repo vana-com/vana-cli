@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { fetchConnectorToCache } from "../../src/connectors/registry.js";
+import {
+  fetchConnectorToCache,
+  listAvailableSources,
+} from "../../src/connectors/registry.js";
 
 let tempRoot: string;
 let cacheDir: string;
@@ -200,5 +203,97 @@ describe("fetchConnectorToCache", () => {
     await expect(
       fetchConnectorToCache("github", cacheDir, dataConnectorsDir),
     ).rejects.toThrow("Checksum mismatch");
+  });
+});
+
+describe("listAvailableSources", () => {
+  beforeEach(async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vana-registry-test-"));
+    dataConnectorsDir = path.join(tempRoot, "data-connectors");
+    await fs.mkdir(dataConnectorsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(dataConnectorsDir, "registry.json"),
+      JSON.stringify(MOCK_REGISTRY),
+    );
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+
+  const entry = {
+    path: "/abs/data-connectors",
+    addedAt: "2026-09-28T00:00:00.000Z",
+    displayName: "Slack",
+    version: "0.2.0",
+  };
+
+  it("lists a saved local connector as a Collection Profile", async () => {
+    const sources = await listAvailableSources(dataConnectorsDir, {
+      readLocalConnectors: async () => ({
+        slack_browser: { ...entry, humanInteraction: ["manual_action"] },
+      }),
+    });
+    expect(sources.map((source) => source.id).sort()).toEqual([
+      "github",
+      "slack_browser",
+      "whoop",
+    ]);
+    expect(sources.find((source) => source.id === "slack_browser")).toEqual({
+      id: "slack_browser",
+      name: "Slack",
+      description: "Runs from /abs/data-connectors",
+      version: "0.2.0",
+      authMode: "legacy",
+      runtime: "pdpp",
+      origin: "local",
+      localPath: "/abs/data-connectors",
+    });
+    expect(sources.find((source) => source.id === "github")).toMatchObject({
+      runtime: "legacy",
+    });
+  });
+
+  it("does not call a local connector legacy without a manual step", async () => {
+    const sources = await listAvailableSources(dataConnectorsDir, {
+      readLocalConnectors: async () => ({
+        slack_browser: { ...entry, humanInteraction: ["input_request"] },
+      }),
+    });
+    expect(
+      sources.find((source) => source.id === "slack_browser"),
+    ).toMatchObject({ authMode: "automated", origin: "local" });
+  });
+
+  it("lets a local connector override a legacy or pinned one with its id", async () => {
+    const sources = await listAvailableSources(dataConnectorsDir, {
+      readLocalConnectors: async () => ({
+        github: { ...entry, displayName: "GitHub (dev)" },
+        whoop: { ...entry, displayName: "WHOOP (dev)" },
+      }),
+    });
+    expect(sources).toHaveLength(2);
+    expect(sources.find((source) => source.id === "github")).toMatchObject({
+      name: "GitHub (dev)",
+      runtime: "pdpp",
+      origin: "local",
+    });
+    expect(sources.find((source) => source.id === "whoop")).toMatchObject({
+      name: "WHOOP (dev)",
+      runtime: "pdpp",
+      origin: "local",
+    });
+  });
+
+  it("keeps the catalog when the saved entries cannot be read", async () => {
+    const sources = await listAvailableSources(dataConnectorsDir, {
+      readLocalConnectors: async () => {
+        throw new Error("corrupt state file");
+      },
+    });
+    expect(sources.map((source) => source.id).sort()).toEqual([
+      "github",
+      "whoop",
+    ]);
   });
 });
