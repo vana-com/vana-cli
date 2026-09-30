@@ -74,7 +74,7 @@ export function emitAppOutcome(
   if (!options.quiet) {
     for (const [key, value] of Object.entries(outcome.data ?? {})) {
       if (value !== undefined && value !== null) {
-        stream.write(`  ${key}: ${String(value)}\n`);
+        stream.write(renderField(key, value, "  "));
       }
     }
     if (outcome.remedy) {
@@ -82,4 +82,74 @@ export function emitAppOutcome(
     }
   }
   return exitCode;
+}
+
+function isPrimitive(value: unknown): boolean {
+  return value === null || typeof value !== "object";
+}
+
+function isFlatRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every(isPrimitive)
+  );
+}
+
+function renderInline(record: Record<string, unknown>): string {
+  return Object.entries(record)
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([k, v]) => `${k} ${String(v)}`)
+    .join(", ");
+}
+
+/**
+ * One `data` field for human mode. `String()` on an object prints
+ * "[object Object]", so structure is spelled out instead: a list of values on
+ * one line, a flat record as "key value" pairs, and anything deeper as an
+ * indented block. JSON mode is untouched; it prints `data` as it is.
+ */
+export function renderField(
+  key: string,
+  value: unknown,
+  indent: string,
+): string {
+  if (isPrimitive(value)) {
+    return `${indent}${key}: ${String(value)}\n`;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return `${indent}${key}: none\n`;
+    }
+    if (value.every(isPrimitive)) {
+      return `${indent}${key}: ${value.map(String).join(", ")}\n`;
+    }
+    return (
+      `${indent}${key}:\n` +
+      value
+        .map((item) =>
+          isFlatRecord(item)
+            ? `${indent}  - ${renderInline(item)}\n`
+            : isPrimitive(item)
+              ? `${indent}  - ${String(item)}\n`
+              : `${indent}  -\n` +
+                Object.entries(item as Record<string, unknown>)
+                  .filter(([, v]) => v !== undefined && v !== null)
+                  .map(([k, v]) => renderField(k, v, `${indent}    `))
+                  .join(""),
+        )
+        .join("")
+    );
+  }
+  if (isFlatRecord(value)) {
+    return `${indent}${key}: ${renderInline(value)}\n`;
+  }
+  return (
+    `${indent}${key}:\n` +
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined && v !== null)
+      .map(([k, v]) => renderField(k, v, `${indent}  `))
+      .join("")
+  );
 }

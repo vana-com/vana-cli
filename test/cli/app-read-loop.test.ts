@@ -650,6 +650,51 @@ describe("vana app escrow", () => {
     expect(outcome.message).toContain("0.75 VANA available");
   });
 
+  it("shows each balance in its asset's decimals in human mode, raw rows in JSON", async () => {
+    const usdc = "0xF1815bd50389c46847f0Bda824eC8da914045D14";
+    const deps = {
+      resolveKey: () => appKey,
+      resolveAsset: async () => ({
+        address: usdc,
+        symbol: "USDC.e",
+        decimals: 6,
+      }),
+      createClient: () =>
+        ({
+          getEscrowBalance: async () => ({
+            account: appKey.address,
+            balances: [
+              {
+                asset: usdc,
+                balance: "300000",
+                pendingAmount: "100000",
+                authorizedAmount: "0",
+                availableAmount: "200000",
+                updatedAt: null,
+              },
+            ],
+            deposits: { submitted: [{}], finalized: [{}], failed: [] },
+          }),
+        }) as never,
+    };
+    expect(await runAppEscrowBalance({}, deps)).toBe(0);
+    expect(stdout).toContain("0.2 USDC.e available\n");
+    expect(stdout).toContain(
+      "  balances: 0.2 USDC.e available, 0.1 USDC.e pending, 0.3 USDC.e total\n",
+    );
+    expect(stdout).toContain(
+      "  deposits: submitted 1, finalized 1, failed 0\n",
+    );
+    expect(stdout).not.toContain("[object Object]");
+
+    stdout = "";
+    expect(await runAppEscrowBalance({ json: true }, deps)).toBe(0);
+    const data = appOutcomeSchema.parse(JSON.parse(stdout)).data as {
+      balances: { availableAmount: string }[];
+    };
+    expect(data.balances[0].availableAmount).toBe("200000");
+  });
+
   it("requires --yes on mainnet with exit 7", async () => {
     const exitCode = await runAppEscrowFund(
       { json: true, network: "mainnet", amount: "1" },

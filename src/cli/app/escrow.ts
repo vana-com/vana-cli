@@ -156,25 +156,43 @@ export async function runAppEscrowBalance(
     const balance = await client.getEscrowBalance(key.address);
     // Each entry carries its own asset, and they do not share decimals:
     // native VANA has 18, USDC.e has 6.
-    const lines = await Promise.all(
+    const rows = await Promise.all(
       balance.balances.map(async (entry) => {
-        const info = await resolveAsset(entry.asset, network.rpcUrl);
-        return `${formatAssetAmount(entry.availableAmount ?? "0", info)} available`;
+        const info = await (deps.resolveAsset ?? resolveAsset)(
+          entry.asset,
+          network.rpcUrl,
+        );
+        const amount = (value: string | null | undefined) =>
+          formatAssetAmount(value ?? "0", info);
+        return {
+          summary: `${amount(entry.availableAmount)} available`,
+          // Human mode only: the raw rows are base units, which read as the
+          // wrong number without the asset's decimals beside them.
+          detail: `${amount(entry.availableAmount)} available, ${amount(
+            entry.pendingAmount,
+          )} pending, ${amount(entry.balance)} total`,
+        };
       }),
     );
+    const deposits = {
+      submitted: balance.deposits.submitted.length,
+      finalized: balance.deposits.finalized.length,
+      failed: balance.deposits.failed.length,
+    };
     return emitAppOutcome(options, {
       status: "done",
       code: "ok",
-      message: lines.length === 0 ? "Escrow is empty." : lines.join(", "),
+      message:
+        rows.length === 0
+          ? "Escrow is empty."
+          : rows.map((row) => row.summary).join(", "),
       network: network.name,
       data: {
         address: key.address,
-        balances: balance.balances,
-        deposits: {
-          submitted: balance.deposits.submitted.length,
-          finalized: balance.deposits.finalized.length,
-          failed: balance.deposits.failed.length,
-        },
+        balances: options.json
+          ? balance.balances
+          : rows.map((row) => row.detail),
+        deposits,
       },
     });
   } catch (error) {
