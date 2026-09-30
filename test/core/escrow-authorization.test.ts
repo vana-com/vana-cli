@@ -9,6 +9,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import {
   DepositAuthorizationError,
   RECEIVE_WITH_AUTHORIZATION_TYPES,
+  awaitDepositSettlement,
   computeErc3009DomainSeparator,
   deriveEscrowAuthorizationNonce,
   normalizeAuthorizationSignature,
@@ -208,5 +209,59 @@ describe("submitting to the gateway relayer", () => {
     await expect(
       submitDepositAuthorization("https://gw", auth, answer(202, {})),
     ).rejects.toThrow(/no transaction hash/);
+  });
+});
+
+describe("waiting for the gateway to credit a relayed deposit", () => {
+  const tx = `0x${"ef".repeat(32)}` as Hex;
+  const sync = (states: string[]) => {
+    let i = 0;
+    return (async (url: string, init: RequestInit) => {
+      expect(url).toBe(
+        `https://gw/v1/escrow/balance/sync?account=${signer.address}`,
+      );
+      expect(init.method).toBe("POST");
+      const state = states[Math.min(i++, states.length - 1)];
+      const deposits: Record<string, { txHash: string }[]> = {
+        submitted: [],
+        finalized: [],
+        failed: [],
+      };
+      if (state !== "none") deposits[state].push({ txHash: tx.toUpperCase() });
+      return new Response(JSON.stringify({ data: { deposits } }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+  };
+  const fast = { sleep: async () => {}, intervalMs: 0 };
+
+  it("polls until the deposit is finalized", async () => {
+    await expect(
+      awaitDepositSettlement("https://gw", signer.address, tx, {
+        ...fast,
+        fetchImpl: sync(["submitted", "submitted", "finalized"]),
+      }),
+    ).resolves.toBe("finalized");
+  });
+
+  it("reports a failed deposit", async () => {
+    await expect(
+      awaitDepositSettlement("https://gw", signer.address, tx, {
+        ...fast,
+        fetchImpl: sync(["failed"]),
+      }),
+    ).resolves.toBe("failed");
+  });
+
+  it("gives up as pending at the deadline", async () => {
+    let t = 0;
+    await expect(
+      awaitDepositSettlement("https://gw", signer.address, tx, {
+        ...fast,
+        timeoutMs: 10,
+        now: () => (t += 5),
+        fetchImpl: sync(["submitted"]),
+      }),
+    ).resolves.toBe("pending");
   });
 });

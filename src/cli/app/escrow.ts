@@ -38,6 +38,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import {
   DepositAuthorizationError,
+  awaitDepositSettlement,
   resolveErc3009Domain,
   signDepositAuthorization,
   submitDepositAuthorization,
@@ -81,6 +82,12 @@ export interface EscrowDeps {
     amountWei: bigint;
     asset?: string;
   }) => Promise<{ txHash: `0x${string}` }>;
+  /** Injectable settlement wait for tests; the real one polls the gateway. */
+  awaitSettlement?: (
+    network: ResolvedNetwork,
+    account: `0x${string}`,
+    txHash: `0x${string}`,
+  ) => Promise<"finalized" | "failed" | "pending">;
   /** Injectable asset lookup for tests; the real one reads the chain. */
   resolveAsset?: typeof resolveAsset;
   /** Injectable gasless sender for tests: sign, then hand to the relayer. */
@@ -391,17 +398,40 @@ export async function runAppEscrowFund(
         amountWei,
         asset: options.asset as `0x${string}`,
       });
+      const settlement = await (
+        deps.awaitSettlement ??
+        ((net, account, txHash) =>
+          awaitDepositSettlement(net.gatewayUrl, account, txHash))
+      )(network, key.address, relayed.txHash);
+      const data = {
+        txHash: relayed.txHash,
+        gatewayStatus: settlement === "pending" ? relayed.status : settlement,
+        gasless: true,
+        explorer: `${network.explorerUrl}/tx/${relayed.txHash}`,
+      };
+      if (settlement === "failed") {
+        return emitAppOutcome(options, {
+          status: "failed",
+          code: "internal",
+          message: `The gateway relayer sent deposit ${relayed.txHash}, but the gateway marked it failed.`,
+          remedy: "check the transaction, then re-run",
+          network: network.name,
+          data,
+        });
+      }
       return emitAppOutcome(options, {
         status: "done",
         code: "ok",
-        message: `Deposited ${options.amount} ${asset?.symbol ?? "tokens"} into escrow; the gateway relayer paid the gas.`,
+        message:
+          settlement === "finalized"
+            ? `Deposited ${options.amount} ${asset?.symbol ?? "tokens"} into escrow; the gateway relayer paid the gas.`
+            : `Deposit of ${options.amount} ${asset?.symbol ?? "tokens"} sent by the gateway relayer; not credited yet.`,
+        remedy:
+          settlement === "finalized"
+            ? undefined
+            : "run `vana app escrow balance` in a minute",
         network: network.name,
-        data: {
-          txHash: relayed.txHash,
-          gatewayStatus: relayed.status,
-          gasless: true,
-          explorer: `${network.explorerUrl}/tx/${relayed.txHash}`,
-        },
+        data,
       });
     } catch (error) {
       if (error instanceof InsufficientFundsError) {

@@ -694,6 +694,7 @@ describe("vana app escrow", () => {
           relayed.push(`${params.asset}:${params.amountWei}`);
           return { txHash: "0xfeed" as never, status: "submitted" };
         },
+        awaitSettlement: async () => "finalized",
       },
     );
     expect(exitCode).toBe(0);
@@ -703,7 +704,7 @@ describe("vana app escrow", () => {
     );
     expect(appOutcomeSchema.parse(JSON.parse(stdout)).data).toMatchObject({
       txHash: "0xfeed",
-      gatewayStatus: "submitted",
+      gatewayStatus: "finalized",
       gasless: true,
     });
   });

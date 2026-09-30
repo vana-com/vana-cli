@@ -303,3 +303,55 @@ export async function submitDepositAuthorization(
     status: typeof record.status === "string" ? record.status : "submitted",
   };
 }
+
+export type DepositSettlement = "finalized" | "failed" | "pending";
+
+/**
+ * Wait for the gateway to credit a relayed deposit. The gateway only moves a
+ * relayed deposit from pending to available when something asks it to
+ * reconcile (`POST /v1/escrow/balance/sync`); a plain balance read keeps
+ * showing it pending. The builder UI polls the same way.
+ */
+export async function awaitDepositSettlement(
+  gatewayUrl: string,
+  account: Hex,
+  txHash: Hex,
+  options: {
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+    intervalMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  } = {},
+): Promise<DepositSettlement> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const now = options.now ?? Date.now;
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const deadline = now() + (options.timeoutMs ?? 90_000);
+  const wanted = txHash.toLowerCase();
+  const url = `${gatewayUrl.replace(/\/+$/, "")}/v1/escrow/balance/sync?account=${encodeURIComponent(account)}`;
+  for (;;) {
+    try {
+      const response = await fetchImpl(url, { method: "POST" });
+      if (response.ok) {
+        const body = (await response.json()) as {
+          data?: { deposits?: Record<string, { txHash?: string }[]> };
+          deposits?: Record<string, { txHash?: string }[]>;
+        };
+        const deposits = body.data?.deposits ?? body.deposits ?? {};
+        const has = (state: string) =>
+          (deposits[state] ?? []).some(
+            (d) => d.txHash?.toLowerCase() === wanted,
+          );
+        if (has("finalized")) return "finalized";
+        if (has("failed")) return "failed";
+      }
+    } catch {
+      // A failed sync is not a failed deposit; keep asking until the deadline.
+    }
+    if (now() >= deadline) return "pending";
+    await sleep(options.intervalMs ?? 3000);
+  }
+}
