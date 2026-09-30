@@ -5,6 +5,12 @@
  * `depositNative(account)` transaction and the gateway deposit
  * registration. Either half alone produces a contract that looks funded
  * while every read still answers 402.
+ *
+ * An ERC20 that supports EIP-3009 (USDC.e does) goes through the gateway
+ * relayer instead: the app key signs an authorization, the gateway broadcasts
+ * the deposit and pays the gas, and it records the deposit itself. So an app
+ * wallet holding only USDC.e can fund its escrow. `--self-pay-gas` keeps the
+ * old path (approve + deposit sent from the app wallet, which needs VANA).
  */
 
 import {
@@ -31,6 +37,14 @@ import {
 } from "../../core/assets.js";
 import { privateKeyToAccount } from "viem/accounts";
 import {
+  DepositAuthorizationError,
+  awaitDepositSettlement,
+  resolveErc3009Domain,
+  signDepositAuthorization,
+  submitDepositAuthorization,
+  type Erc3009DomainReader,
+} from "../../core/escrow-authorization.js";
+import {
   AppKeyMissingError,
   resolveAppKey,
   type ResolvedAppKey,
@@ -50,6 +64,11 @@ export interface EscrowFundOptions extends AppCommandOptions {
    * mainnet, so funding native alone leaves every read answering 402.
    */
   asset?: string;
+  /**
+   * Send the ERC20 deposit from the app wallet and pay its gas, instead of
+   * signing an authorization for the gateway relayer.
+   */
+  selfPayGas?: boolean;
 }
 
 export interface EscrowDeps {
@@ -63,6 +82,22 @@ export interface EscrowDeps {
     amountWei: bigint;
     asset?: string;
   }) => Promise<{ txHash: `0x${string}` }>;
+  /** Injectable settlement wait for tests; the real one polls the gateway. */
+  awaitSettlement?: (
+    network: ResolvedNetwork,
+    account: `0x${string}`,
+    txHash: `0x${string}`,
+  ) => Promise<"finalized" | "failed" | "pending">;
+  /** Injectable asset lookup for tests; the real one reads the chain. */
+  resolveAsset?: typeof resolveAsset;
+  /** Injectable gasless sender for tests: sign, then hand to the relayer. */
+  sendGaslessDeposit?: (params: {
+    network: ResolvedNetwork;
+    key: ResolvedAppKey;
+    escrowContract: `0x${string}`;
+    amountWei: bigint;
+    asset: `0x${string}`;
+  }) => Promise<{ txHash: `0x${string}`; status: string }>;
 }
 
 function resolveContext(
@@ -121,25 +156,43 @@ export async function runAppEscrowBalance(
     const balance = await client.getEscrowBalance(key.address);
     // Each entry carries its own asset, and they do not share decimals:
     // native VANA has 18, USDC.e has 6.
-    const lines = await Promise.all(
+    const rows = await Promise.all(
       balance.balances.map(async (entry) => {
-        const info = await resolveAsset(entry.asset, network.rpcUrl);
-        return `${formatAssetAmount(entry.availableAmount ?? "0", info)} available`;
+        const info = await (deps.resolveAsset ?? resolveAsset)(
+          entry.asset,
+          network.rpcUrl,
+        );
+        const amount = (value: string | null | undefined) =>
+          formatAssetAmount(value ?? "0", info);
+        return {
+          summary: `${amount(entry.availableAmount)} available`,
+          // Human mode only: the raw rows are base units, which read as the
+          // wrong number without the asset's decimals beside them.
+          detail: `${amount(entry.availableAmount)} available, ${amount(
+            entry.pendingAmount,
+          )} pending, ${amount(entry.balance)} total`,
+        };
       }),
     );
+    const deposits = {
+      submitted: balance.deposits.submitted.length,
+      finalized: balance.deposits.finalized.length,
+      failed: balance.deposits.failed.length,
+    };
     return emitAppOutcome(options, {
       status: "done",
       code: "ok",
-      message: lines.length === 0 ? "Escrow is empty." : lines.join(", "),
+      message:
+        rows.length === 0
+          ? "Escrow is empty."
+          : rows.map((row) => row.summary).join(", "),
       network: network.name,
       data: {
         address: key.address,
-        balances: balance.balances,
-        deposits: {
-          submitted: balance.deposits.submitted.length,
-          finalized: balance.deposits.finalized.length,
-          failed: balance.deposits.failed.length,
-        },
+        balances: options.json
+          ? balance.balances
+          : rows.map((row) => row.detail),
+        deposits,
       },
     });
   } catch (error) {
@@ -227,6 +280,43 @@ async function defaultSendDeposit(params: {
   return { txHash };
 }
 
+async function defaultSendGaslessDeposit(params: {
+  network: ResolvedNetwork;
+  key: ResolvedAppKey;
+  escrowContract: `0x${string}`;
+  amountWei: bigint;
+  asset: `0x${string}`;
+}): Promise<{ txHash: `0x${string}`; status: string }> {
+  const chain = getChainConfig(params.network.chainId) as unknown as Chain;
+  const publicClient = createPublicClient({
+    chain,
+    transport: http(params.network.rpcUrl),
+  });
+  // Checked here, before signing: the relayer's simulation would refuse a
+  // short balance too, but as a 409 that reads like a bad signature.
+  const held = (await publicClient.readContract({
+    address: params.asset,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [params.key.address],
+  })) as bigint;
+  if (held < params.amountWei) {
+    throw new InsufficientFundsError(held, params.amountWei, params.asset);
+  }
+  const domain = await resolveErc3009Domain(
+    publicClient as unknown as Erc3009DomainReader,
+    { chainId: params.network.chainId, token: params.asset },
+  );
+  const authorization = await signDepositAuthorization({
+    signer: privateKeyToAccount(params.key.privateKey),
+    domain,
+    escrowContract: params.escrowContract,
+    account: params.key.address,
+    value: params.amountWei,
+  });
+  return submitDepositAuthorization(params.network.gatewayUrl, authorization);
+}
+
 export class InsufficientFundsError extends Error {
   constructor(
     public readonly balanceWei: bigint,
@@ -253,7 +343,10 @@ export async function runAppEscrowFund(
   const { network, key } = context;
 
   // The amount is denominated in the chosen asset, not always in VANA.
-  const asset = await resolveAsset(options.asset, network.rpcUrl);
+  const asset = await (deps.resolveAsset ?? resolveAsset)(
+    options.asset,
+    network.rpcUrl,
+  );
   if (options.asset && !asset) {
     return emitAppOutcome(options, {
       status: "failed",
@@ -296,6 +389,104 @@ export async function runAppEscrowFund(
     });
   }
 
+  const isToken = Boolean(
+    options.asset && options.asset.toLowerCase() !== NATIVE_ASSET,
+  );
+  const insufficient = (error: InsufficientFundsError) =>
+    emitAppOutcome(options, {
+      status: "failed",
+      code: "payment_required",
+      message: error.message,
+      remedy:
+        network.name === "moksha"
+          ? "fund the app wallet from the Moksha faucet: https://faucet.vana.org"
+          : `send ${isToken ? (asset?.symbol ?? "the token") : "VANA"} to ${key.address}`,
+      network: network.name,
+      data: { address: key.address },
+    });
+
+  if (isToken && !options.selfPayGas) {
+    try {
+      const relayed = await (
+        deps.sendGaslessDeposit ?? defaultSendGaslessDeposit
+      )({
+        network,
+        key,
+        escrowContract,
+        amountWei,
+        asset: options.asset as `0x${string}`,
+      });
+      const settlement = await (
+        deps.awaitSettlement ??
+        ((net, account, txHash) =>
+          awaitDepositSettlement(net.gatewayUrl, account, txHash))
+      )(network, key.address, relayed.txHash);
+      const data = {
+        txHash: relayed.txHash,
+        gatewayStatus: settlement === "pending" ? relayed.status : settlement,
+        gasless: true,
+        explorer: `${network.explorerUrl}/tx/${relayed.txHash}`,
+      };
+      if (settlement === "failed") {
+        return emitAppOutcome(options, {
+          status: "failed",
+          code: "internal",
+          message: `The gateway relayer sent deposit ${relayed.txHash}, but the gateway marked it failed.`,
+          remedy: "check the transaction, then re-run",
+          network: network.name,
+          data,
+        });
+      }
+      return emitAppOutcome(options, {
+        status: "done",
+        code: "ok",
+        message:
+          settlement === "finalized"
+            ? `Deposited ${options.amount} ${asset?.symbol ?? "tokens"} into escrow; the gateway relayer paid the gas.`
+            : `Deposit of ${options.amount} ${asset?.symbol ?? "tokens"} sent by the gateway relayer; not credited yet.`,
+        remedy:
+          settlement === "finalized"
+            ? undefined
+            : "run `vana app escrow balance` in a minute",
+        network: network.name,
+        data,
+      });
+    } catch (error) {
+      if (error instanceof InsufficientFundsError) {
+        return insufficient(error);
+      }
+      if (error instanceof DepositAuthorizationError) {
+        return emitAppOutcome(options, {
+          status: "failed",
+          code: error.transient ? "gateway_unreachable" : "internal",
+          message:
+            error.status === 0
+              ? error.message
+              : `The gateway relayer did not take the deposit (${error.status}): ${error.message}`,
+          remedy:
+            error.status === 0
+              ? "run `vana app escrow balance --network " +
+                network.name +
+                "` first: the deposit may have gone through; re-run only if it did not"
+              : error.transient
+                ? "re-run: nothing was broadcast"
+                : "re-run with --self-pay-gas to send the deposit from the app wallet (needs VANA for gas)",
+          network: network.name,
+        });
+      }
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "internal",
+        message: `Gasless deposit failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        remedy:
+          "re-run with --self-pay-gas to send the deposit from the app wallet (needs VANA for gas)",
+        network: network.name,
+      });
+    }
+  }
+
   let txHash: `0x${string}`;
   try {
     ({ txHash } = await (deps.sendDeposit ?? defaultSendDeposit)({
@@ -307,17 +498,7 @@ export async function runAppEscrowFund(
     }));
   } catch (error) {
     if (error instanceof InsufficientFundsError) {
-      return emitAppOutcome(options, {
-        status: "failed",
-        code: "payment_required",
-        message: error.message,
-        remedy:
-          network.name === "moksha"
-            ? "fund the app wallet from the Moksha faucet: https://faucet.vana.org"
-            : `send VANA to ${key.address}`,
-        network: network.name,
-        data: { address: key.address },
-      });
+      return insufficient(error);
     }
     return emitAppOutcome(options, {
       status: "failed",

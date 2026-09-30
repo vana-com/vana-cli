@@ -177,12 +177,17 @@ What differs, if you see it in the output:
 ```bash
 vana app escrow balance --json
 vana app escrow fund --amount 1 --json                      # native VANA
-vana app escrow fund --amount 5 --asset 0xF1815... --json    # an ERC20
+vana app escrow fund --amount 5 --asset 0xF1815... --json    # an ERC20, no gas
 ```
 
 Fund the asset the reads are actually priced in, which the exit-4 payload
 names as `asset`. On mainnet, funding requires `--yes` and spends real
 money.
+
+An ERC20 deposit (USDC.e) goes through the gateway relayer, which pays the
+gas, so the app wallet needs only the token, not VANA. `--self-pay-gas`
+sends it from the app wallet instead. A native VANA deposit always pays its
+own gas.
 
 To have a person fund it from their browser instead, run
 `vana app claim --json` and send them `data.claimUrl`: it adds this app to
