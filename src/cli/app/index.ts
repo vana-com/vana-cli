@@ -120,16 +120,26 @@ export function registerAppCommands(
   escrow
     .command("fund")
     .description(
-      "Deposit into escrow, native VANA or an ERC20 (on-chain tx + gateway registration)",
+      "Deposit into escrow, native VANA or an ERC20 (an ERC20 goes through the gateway relayer, which pays the gas)",
     )
     .option("--amount <amount>", "Amount to deposit, in the asset's units")
     .option("--asset <address>", "ERC20 to deposit instead of native VANA")
-    .action(async (commandOptions: { amount?: string; asset?: string }) => {
-      process.exitCode = await runAppEscrowFund({
-        ...getOptions(),
-        ...commandOptions,
-      });
-    });
+    .option(
+      "--self-pay-gas",
+      "Send an ERC20 deposit from the app wallet instead of the gateway relayer (needs VANA for gas)",
+    )
+    .action(
+      async (commandOptions: {
+        amount?: string;
+        asset?: string;
+        selfPayGas?: boolean;
+      }) => {
+        process.exitCode = await runAppEscrowFund({
+          ...getOptions(),
+          ...commandOptions,
+        });
+      },
+    );
 
   app
     .command("onchain <scope>")

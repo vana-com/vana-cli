@@ -675,6 +675,103 @@ describe("vana app escrow", () => {
     expect(outcome.remedy).toContain("faucet");
   });
 
+  it("funds an ERC20 through the gateway relayer by default", async () => {
+    const usdc = "0xF1815bd50389c46847f0Bda824eC8da914045D14";
+    const relayed: string[] = [];
+    const exitCode = await runAppEscrowFund(
+      { json: true, network: "mainnet", yes: true, amount: "0.2", asset: usdc },
+      {
+        resolveKey: () => appKey,
+        resolveAsset: async () => ({
+          address: "0xF1815bd50389c46847f0Bda824eC8da914045D14",
+          symbol: "USDC.e",
+          decimals: 6,
+        }),
+        sendDeposit: async () => {
+          throw new Error("must not send from the app wallet");
+        },
+        sendGaslessDeposit: async (params) => {
+          relayed.push(`${params.asset}:${params.amountWei}`);
+          return { txHash: "0xfeed" as never, status: "submitted" };
+        },
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(relayed).toHaveLength(1);
+    expect(relayed[0]).toMatch(
+      /^0xF1815bd50389c46847f0Bda824eC8da914045D14:\d+$/,
+    );
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).data).toMatchObject({
+      txHash: "0xfeed",
+      gatewayStatus: "submitted",
+      gasless: true,
+    });
+  });
+
+  it("sends an ERC20 from the app wallet with --self-pay-gas", async () => {
+    const submitted: string[] = [];
+    const exitCode = await runAppEscrowFund(
+      {
+        json: true,
+        amount: "0.5",
+        asset: "0xF1815bd50389c46847f0Bda824eC8da914045D14",
+        selfPayGas: true,
+      },
+      {
+        resolveKey: () => appKey,
+        resolveAsset: async () => ({
+          address: "0xF1815bd50389c46847f0Bda824eC8da914045D14",
+          symbol: "USDC.e",
+          decimals: 6,
+        }),
+        sendDeposit: async () => ({ txHash: "0xbeef" as never }),
+        sendGaslessDeposit: async () => {
+          throw new Error("must not use the relayer");
+        },
+        createClient: () =>
+          ({
+            submitEscrowDeposit: async (params: { txHash: string }) => {
+              submitted.push(params.txHash);
+              return { status: "submitted" };
+            },
+          }) as never,
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(submitted).toEqual(["0xbeef"]);
+  });
+
+  it("maps a short token balance on the gasless path to exit 4, naming the token", async () => {
+    const exitCode = await runAppEscrowFund(
+      {
+        json: true,
+        network: "mainnet",
+        yes: true,
+        amount: "5",
+        asset: "0xF1815bd50389c46847f0Bda824eC8da914045D14",
+      },
+      {
+        resolveKey: () => appKey,
+        resolveAsset: async () => ({
+          address: "0xF1815bd50389c46847f0Bda824eC8da914045D14",
+          symbol: "USDC.e",
+          decimals: 6,
+        }),
+        sendGaslessDeposit: async () => {
+          throw new InsufficientFundsError(
+            200000n,
+            5000000n,
+            "0xF1815bd50389c46847f0Bda824eC8da914045D14",
+          );
+        },
+      },
+    );
+    expect(exitCode).toBe(4);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).remedy).not.toMatch(
+      /send VANA/,
+    );
+  });
+
   it("runs both halves and reports the tx", async () => {
     const submitted: string[] = [];
     const exitCode = await runAppEscrowFund(
