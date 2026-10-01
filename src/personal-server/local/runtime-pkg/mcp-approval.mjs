@@ -7,8 +7,10 @@
 // with the owner token only this process holds. Loopback only: the approval
 // happens on the machine that runs the server.
 
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import http from "node:http";
+import path from "node:path";
 
 const APPROVAL_PATH = "/mcp";
 
@@ -32,6 +34,80 @@ export function requesterName(redirectUri) {
   if (/(^|\.)claude\.(ai|com)$/.test(host)) return "Claude";
   if (/(^|\.)chatgpt\.com$|(^|\.)openai\.com$/.test(host)) return "ChatGPT";
   return host || "An app";
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Whether the app sends the owner back to a port on this machine. Desktop and
+ * terminal MCP clients (Claude Code, Codex, Cursor) take the OAuth answer on
+ * a loopback listener, so the redirect host says nothing about who they are.
+ */
+export function isLoopbackRedirect(redirectUri) {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(redirectUri).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Executable names of local MCP clients, mapped to what people call them. */
+const LOCAL_APP_NAMES = {
+  claude: "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+  goose: "Goose",
+  windsurf: "Windsurf",
+};
+
+/** The friendly name for a process, or null when it is not a known client. */
+export function localAppName(command) {
+  const base = path.basename(String(command ?? "").trim()).toLowerCase();
+  return LOCAL_APP_NAMES[base] ?? null;
+}
+
+function run(file, args) {
+  return new Promise((resolve) => {
+    execFile(file, args, { timeout: 3_000 }, (error, stdout) =>
+      resolve(error ? "" : String(stdout)),
+    );
+  });
+}
+
+/**
+ * Which program listens on a loopback port: the MCP client waiting for its
+ * OAuth answer runs on this machine, so the owner can be told its real name.
+ * Best effort: null without lsof (Windows) or when the port is not held.
+ */
+export async function findLocalApp(port, exec = run) {
+  if (process.platform === "win32" || !Number.isInteger(port) || port <= 0)
+    return null;
+  const pid = (
+    await exec("lsof", ["-nP", "-t", `-iTCP:${port}`, "-sTCP:LISTEN"])
+  )
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!pid || !/^\d+$/.test(pid)) return null;
+  return localAppName(await exec("ps", ["-o", "comm=", "-p", pid]));
+}
+
+/** Who asks, and from where, as the approval page shows it. */
+export async function describeRequester(redirectUri, find = findLocalApp) {
+  if (!isLoopbackRedirect(redirectUri)) {
+    let host = "";
+    try {
+      host = new URL(redirectUri).host;
+    } catch {
+      host = "";
+    }
+    return { who: requesterName(redirectUri), where: host };
+  }
+  const port = Number(new URL(redirectUri).port);
+  return {
+    who: (await find(port)) ?? "An app on this computer",
+    where: "on this computer",
+  };
 }
 
 // The Vana logotype, as the server's own 1.25 approval pages draw it.
@@ -68,6 +144,7 @@ function messagePage(heading, text, isError = false) {
  */
 export async function startMcpApprovalPage(input) {
   const pending = new Map(); // authorization id -> one-time form token
+  const findApp = input.findLocalApp ?? findLocalApp;
 
   const ownerFetch = (path, init = {}) =>
     fetch(`${input.serverOrigin()}${path}`, {
@@ -157,7 +234,10 @@ export async function startMcpApprovalPage(input) {
             ),
           );
         }
-        const who = requesterName(authorization.redirectUri);
+        const { who, where } = await describeRequester(
+          authorization.redirectUri,
+          findApp,
+        );
         const scopes = await listScopes();
         const token = crypto.randomBytes(24).toString("base64url");
         pending.set(id, token);
@@ -174,7 +254,7 @@ export async function startMcpApprovalPage(input) {
           page(
             `Allow ${who}`,
             `<h1><span class="kicker">Personal Server</span>Allow ${escapeHtml(who)} to read your data</h1>
-<p>${escapeHtml(who)} (${escapeHtml(new URL(authorization.redirectUri).host)}) asks to read data from your Personal Server. It can read only what you tick, and you can revoke it any time.</p>
+<p>${escapeHtml(who)} (${escapeHtml(where)}) asks to read data from your Personal Server. It can read only what you tick, and you can revoke it any time.</p>
 <form method="post" action="${APPROVAL_PATH}">
 <input type="hidden" name="id" value="${escapeHtml(id)}"><input type="hidden" name="token" value="${escapeHtml(token)}">
 ${list}
