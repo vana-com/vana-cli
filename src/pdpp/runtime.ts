@@ -307,9 +307,17 @@ export class PdppRuntime {
         },
       });
     };
+    // Streams in the order they first produced anything. A connector may
+    // interleave streams record by record (a message, then its attachments),
+    // so a switch does not mean the previous stream is done; each stream's
+    // total is reported once, after the run.
+    const seen: string[] = [];
     const enterStream = (stream: string, message?: string) => {
-      if (activeStream && activeStream !== stream) finishStream(activeStream);
+      const firstTime = !seen.includes(stream);
+      if (firstTime) seen.push(stream);
       activeStream = stream;
+      // A switch back to a stream already announced says nothing new.
+      if (!firstTime && message === undefined) return;
       push({
         type: "progress-update",
         source,
@@ -378,7 +386,7 @@ export class PdppRuntime {
         this.interact(request, source, options, logPath, log, push),
     });
 
-    if (activeStream) finishStream(activeStream);
+    for (const stream of seen) finishStream(stream);
     log(`[host] outcome ${JSON.stringify(outcome)}`);
 
     if (outcome.status !== "succeeded") {
