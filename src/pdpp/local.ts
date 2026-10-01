@@ -84,7 +84,11 @@ export async function readLocalProfile(
     files.manifestPath,
   );
   const key = source.toLowerCase();
-  if (profile.connector_key.toLowerCase() !== key) {
+  // data-connectors names a connector's directory with underscores and its
+  // published key with hyphens (connectors/strava_browser declares
+  // strava-browser), so the two spellings are the same connector.
+  const sameKey = (value: string) => value.toLowerCase().replace(/_/g, "-");
+  if (sameKey(profile.connector_key) !== sameKey(key)) {
     throw new Error(
       `${files.manifestPath} declares connector_key ${profile.connector_key}, not ${key}.`,
     );

@@ -91,6 +91,21 @@ describe("resolveLocalLaunch", () => {
     );
   });
 
+  it("accepts the hyphenated key data-connectors publishes for an underscored directory", async () => {
+    const root = makeRoot();
+    write(path.join(root, "connectors/slack_browser/index.ts"), "");
+    write(
+      path.join(root, "connectors/slack_browser/manifest.json"),
+      JSON.stringify({ ...manifest, connector_key: "slack-browser" }),
+    );
+    write(path.join(root, "node_modules/tsx/package.json"), "{}");
+    const launch = await resolveLocalLaunch(root, "slack_browser");
+    expect(launch.profile.connector_key).toBe("slack-browser");
+    await expect(resolveLocalLaunch(root, "slack-browser")).rejects.toThrow(
+      /connectors\/slack-browser\/index\.ts/,
+    );
+  });
+
   it("refuses a checkout without tsx installed", async () => {
     const root = makeRoot();
     write(path.join(root, "connectors/instinct/index.ts"), "");
