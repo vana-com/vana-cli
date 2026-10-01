@@ -4,14 +4,18 @@ import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  describeRequester,
+  findLocalApp,
+  isLoopbackRedirect,
+  localAppName,
   requesterName,
   startMcpApprovalPage,
 } from "../../src/personal-server/local/runtime-pkg/mcp-approval.mjs";
 
 const TOKEN = "owner-token";
 
-/** A Personal Server with one pending authorization from claude.ai. */
-function fakeServer() {
+/** A Personal Server with one pending authorization from claude.ai, or from `redirectUri`. */
+function fakeServer(redirectUri = "https://claude.ai/api/mcp/auth_callback") {
   const approvals: Array<{ scopes: string[] }> = [];
   let status = "pending";
   const server = http.createServer((req, res) => {
@@ -27,7 +31,7 @@ function fakeServer() {
       res.end(
         JSON.stringify({
           id: "auth_1",
-          redirectUri: "https://claude.ai/api/mcp/auth_callback",
+          redirectUri,
           state: "st",
           status,
         }),
@@ -170,5 +174,80 @@ describe("MCP approval page", () => {
       "Claude",
     );
     expect(requesterName("https://app.example.com/cb")).toBe("app.example.com");
+  });
+});
+
+describe("MCP approval page, local client", () => {
+  it("names a client on this computer by the program holding its callback port", async () => {
+    const backend = fakeServer("http://localhost:61981/callback");
+    await new Promise<void>((resolve) =>
+      backend.server.listen(0, "127.0.0.1", resolve),
+    );
+    const { port } = backend.server.address() as AddressInfo;
+    const asked: number[] = [];
+    const page = await startMcpApprovalPage({
+      serverOrigin: () => `http://127.0.0.1:${port}`,
+      accessToken: TOKEN,
+      findLocalApp: async (callbackPort: number) => {
+        asked.push(callbackPort);
+        return "Claude Code";
+      },
+    });
+    try {
+      const html = await (
+        await fetch(`${page.url}?mcp_authorization=auth_1`)
+      ).text();
+      expect(asked).toEqual([61981]);
+      expect(html).toContain("Allow Claude Code to read your data");
+      expect(html).toContain("Claude Code (on this computer) asks");
+      expect(html).not.toContain("localhost:61981");
+    } finally {
+      page.close();
+      backend.server.close();
+    }
+  });
+
+  it("says an app on this computer when the program is unknown", async () => {
+    expect(
+      await describeRequester("http://127.0.0.1:5000/cb", async () => null),
+    ).toEqual({ who: "An app on this computer", where: "on this computer" });
+    expect(
+      await describeRequester(
+        "https://claude.ai/api/mcp/auth_callback",
+        async () => {
+          throw new Error("must not look up a remote client");
+        },
+      ),
+    ).toEqual({ who: "Claude", where: "claude.ai" });
+  });
+
+  it("treats only loopback hosts as local", () => {
+    expect(isLoopbackRedirect("http://localhost:1/cb")).toBe(true);
+    expect(isLoopbackRedirect("http://127.0.0.1:1/cb")).toBe(true);
+    expect(isLoopbackRedirect("http://[::1]:1/cb")).toBe(true);
+    expect(isLoopbackRedirect("https://localhost.example.com/cb")).toBe(false);
+    expect(isLoopbackRedirect("not a url")).toBe(false);
+  });
+
+  it("maps known client executables, by base name", () => {
+    expect(localAppName("claude")).toBe("Claude Code");
+    expect(localAppName("/usr/local/bin/codex\n")).toBe("Codex");
+    expect(localAppName("node")).toBeNull();
+  });
+
+  it("finds the program from lsof and ps, and gives up quietly", async () => {
+    if (process.platform === "win32") return;
+    const calls: string[][] = [];
+    const exec = async (file: string, args: string[]) => {
+      calls.push([file, ...args]);
+      return file === "lsof" ? "2916\n" : "claude\n";
+    };
+    expect(await findLocalApp(61981, exec)).toBe("Claude Code");
+    expect(calls).toEqual([
+      ["lsof", "-nP", "-t", "-iTCP:61981", "-sTCP:LISTEN"],
+      ["ps", "-o", "comm=", "-p", "2916"],
+    ]);
+    expect(await findLocalApp(61981, async () => "")).toBeNull();
+    expect(await findLocalApp(0, exec)).toBeNull();
   });
 });
