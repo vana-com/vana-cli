@@ -27,12 +27,15 @@ async function main() {
     HOME: workingHome,
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
     VANA_DEMO_FAST_SUCCESS: "1",
+    // Demo runs use fixture connectors; they must not report as real usage.
+    VANA_TELEMETRY_DISABLED: "1",
     ...(connectorsDir ? { VANA_DATA_CONNECTORS_DIR: connectorsDir } : {}),
   };
   const freshEnv = {
     ...process.env,
     HOME: freshHome,
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    VANA_TELEMETRY_DISABLED: "1",
     ...(connectorsDir ? { VANA_DATA_CONNECTORS_DIR: connectorsDir } : {}),
   };
   const seededInputEnv = {

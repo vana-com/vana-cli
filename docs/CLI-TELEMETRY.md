@@ -14,6 +14,8 @@ Remote telemetry is limited to operational events such as:
 - success or failure outcome
 - duration and scope counts
 - CLI version, install method, OS, architecture, and CI status
+- who is driving the run: `ci`, `agent`, `scripted`, or `none`
+- connector version
 - normalized error class
 
 Telemetry is anonymous by install. The CLI generates a local random install id
@@ -50,5 +52,5 @@ uploading it.
 ## Delivery model
 
 Telemetry batches are first written to `~/.vana/telemetry/outbox/` and then sent
-best-effort to `https://telemetry.opendatalabs.com/v1/cli/events`. Telemetry
+best-effort to `https://telemetry.opendatalabs.com/v1/telemetry/events`. Telemetry
 failures never fail the user command.
