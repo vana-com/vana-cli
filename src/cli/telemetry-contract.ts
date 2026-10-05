@@ -27,10 +27,15 @@ export type TelemetryProducer = (typeof TELEMETRY_PRODUCERS)[number];
 
 export const TELEMETRY_ERROR_CLASSES = [
   "auth_failed",
-  "personal_server_unavailable",
+  "rate_limited",
+  "upstream_error",
+  "navigation_error",
   "network_error",
+  "selector_error",
   "timeout",
+  "protocol_violation",
   "runtime_error",
+  "personal_server_unavailable",
   "unknown",
 ] as const;
 export type TelemetryErrorClass = (typeof TELEMETRY_ERROR_CLASSES)[number];

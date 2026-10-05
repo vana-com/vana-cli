@@ -1867,6 +1867,7 @@ async function runConnect(
       type: "connector-resolved",
       source: resolution.source,
       connectorPath: resolution.connectorPath,
+      ...(fetched.version ? { connectorVersion: fetched.version } : {}),
       logPath: fetched.logPath,
     });
     trackActiveTelemetryEvent("connector_version_detected", {
@@ -2226,6 +2227,7 @@ async function runConnect(
               type: "outcome",
               status: CliOutcomeStatus.RUNTIME_ERROR,
               source,
+              reason: errorMsg,
             });
             pendingExitCode = 1;
             continue;

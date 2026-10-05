@@ -163,6 +163,85 @@ describe("cli telemetry", () => {
     expect(hostTerminal!.kind.errorClass).toBe("auth_failed");
   });
 
+  it("reports one honest collection terminal per source run", async () => {
+    process.env.VANA_TELEMETRY_DEBUG = "1";
+    const { createCliTelemetrySession } =
+      await import("../../src/cli/telemetry.js");
+
+    const session = await createCliTelemetrySession({
+      command: "collect",
+      cliVersion: "0.11.6",
+      channel: "stable",
+      installMethod: "development",
+      options: {
+        json: true,
+        noInput: true,
+        quiet: false,
+        detach: false,
+        ipc: false,
+      },
+    });
+
+    // steam: asks for input nobody can give, then the connector gives up.
+    session.trackCliEvent({
+      type: "connector-resolved",
+      source: "steam",
+      connectorVersion: "1.0.1",
+    });
+    session.trackCliEvent({ type: "needs-input", source: "steam" });
+    session.trackCliEvent({
+      type: "runtime-error",
+      source: "steam",
+      message: "Input is disabled for this run.",
+    });
+
+    // shop: throws something no pattern names.
+    session.trackCliEvent({
+      type: "runtime-error",
+      source: "shop",
+      message: "Browser is closed.",
+    });
+
+    // github: writes a result file the CLI then rejects as an error.
+    session.trackCliEvent({ type: "collection-complete", source: "github" });
+    session.trackCliEvent({
+      type: "outcome",
+      status: "runtime_error",
+      source: "github",
+      reason: "Could not reach GitHub after multiple attempts.",
+    });
+
+    session.markCommandResult({ exitCode: 1 });
+    await session.persist();
+
+    const envelope = JSON.parse(stderr) as {
+      events: Array<{
+        context: { connectorVersion?: string };
+        correlation: { source?: string; collectionRunId?: string };
+        kind: Record<string, string>;
+      }>;
+    };
+    const terminals = envelope.events.filter(
+      (e) => e.kind.lifecycle === "collection" && e.kind.phase === "terminal",
+    );
+
+    expect(
+      terminals.map((e) => [
+        e.correlation.source,
+        e.kind.outcome,
+        e.kind.reason ?? e.kind.errorClass,
+      ]),
+    ).toEqual([
+      ["steam", "cancelled", "abandoned"],
+      ["shop", "failure", "runtime_error"],
+      ["github", "failure", "network_error"],
+    ]);
+    expect(terminals[0].context.connectorVersion).toBe("1.0.1");
+    expect(
+      new Set(terminals.map((e) => e.correlation.collectionRunId)).size,
+    ).toBe(3);
+  });
+
   it("flushes queued batches to the canonical telemetry endpoint", async () => {
     const { createCliTelemetrySession, flushTelemetryOutbox } =
       await import("../../src/cli/telemetry.js");

@@ -395,6 +395,8 @@ export const cliEventSchema = z.object({
   status: z.string().optional(),
   resultPath: z.string().optional(),
   connectorPath: z.string().optional(),
+  /** Version of the connector a `connector-resolved` event settled on. */
+  connectorVersion: z.string().optional(),
   logPath: z.string().optional(),
   fields: z.array(z.string()).optional(),
   url: z.string().optional(),
