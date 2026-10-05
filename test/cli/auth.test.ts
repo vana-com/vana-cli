@@ -17,6 +17,7 @@ import {
   getAuthFilePath,
   getAuthTarget,
   loadCredentials,
+  loadPersonalServerSession,
   readStoredAuthFile,
   resolveLoginServerUrl,
   resolveOAuthClientId,
@@ -912,6 +913,76 @@ describe("loadCredentials", () => {
         expires_at: "2099-01-01T00:00:00.000Z",
       },
     });
+  });
+});
+
+describe("loadPersonalServerSession", () => {
+  const originalHome = process.env.HOME;
+  const originalSessionToken = process.env.VANA_SESSION_TOKEN;
+  const past = "2020-01-01T00:00:00.000Z";
+  const future = "2099-01-01T00:00:00.000Z";
+  let tempHome: string;
+
+  async function writeAuth(accountExpiresAt: string, psExpiresAt: string) {
+    const authDir = join(tempHome, ".vana");
+    await mkdir(authDir, { recursive: true });
+    await writeFile(
+      join(authDir, "auth.json"),
+      JSON.stringify({
+        account: {
+          address: "0xabc123",
+          session_token: "vana_sess_123",
+          expires_at: accountExpiresAt,
+        },
+        personal_server: {
+          url: "http://localhost:8080",
+          session_token: "vana_ps_token",
+          expires_at: psExpiresAt,
+          started_by: "vana-server-start",
+        },
+      }),
+    );
+  }
+
+  beforeEach(async () => {
+    tempHome = await mkdtemp(join(tmpdir(), "vana-auth-"));
+    process.env.HOME = tempHome;
+    delete process.env.VANA_SESSION_TOKEN;
+  });
+
+  afterEach(async () => {
+    process.env.HOME = originalHome;
+    if (originalSessionToken === undefined) {
+      delete process.env.VANA_SESSION_TOKEN;
+    } else {
+      process.env.VANA_SESSION_TOKEN = originalSessionToken;
+    }
+    await rm(tempHome, { recursive: true, force: true });
+  });
+
+  it("returns a valid PS session after the Account session expires", async () => {
+    await writeAuth(past, future);
+
+    expect(loadCredentials()).toBeNull();
+    expect(loadPersonalServerSession()).toEqual({
+      url: "http://localhost:8080",
+      session_token: "vana_ps_token",
+      expires_at: future,
+      started_by: "vana-server-start",
+    });
+  });
+
+  it("returns null once the PS session itself expires", async () => {
+    await writeAuth(future, past);
+
+    expect(loadPersonalServerSession()).toBeNull();
+  });
+
+  it("follows the env credentials when VANA_SESSION_TOKEN is set", async () => {
+    await writeAuth(future, future);
+    process.env.VANA_SESSION_TOKEN = "env-token";
+
+    expect(loadPersonalServerSession()).toBeNull();
   });
 });
 

@@ -1559,11 +1559,95 @@ describe("runCli", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Needs attention (2)");
     expect(stdout).toContain("Healthy (1)");
+    // A 401 from the server is a lapsed CLI session, which reconnecting the
+    // source cannot fix.
     expect(stdout).toContain(
-      "Authentication required for 2 scopes. Run `vana connect youtube`.",
+      "Authentication required for 2 scopes. Run `vana login`, then `vana server sync`.",
     );
     expect(stdout).not.toContain('HTTP 401: {"error"');
-    expect(stdout).toContain("Next: `vana connect youtube`");
+    expect(stdout).toContain("Next: `vana login`");
+  });
+
+  it("keeps the reconnect remedy for sync failures that are not auth", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "youtube", name: "YouTube", authMode: "interactive" },
+    ]);
+    mockReadCliState.mockResolvedValue({
+      version: 1,
+      sources: {
+        youtube: {
+          lastRunOutcome: "connected_local_only",
+          dataState: "ingest_failed",
+          lastCollectedAt: "2026-03-23T16:05:00.000Z",
+          ingestScopes: [
+            {
+              scope: "youtube.subscriptions",
+              status: "failed",
+              error:
+                'HTTP 400: {"error":{"code":400,"errorCode":"NO_SCHEMA","message":"No schema registered"}}',
+            },
+          ],
+        },
+      },
+    });
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "status"]);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain(
+      "No schema registered. Run `vana connect youtube`.",
+    );
+    expect(stdout).not.toContain("vana login`, then");
+  });
+
+  it("labels a `vana server start` server by started_by after the Account session expires", async () => {
+    // With only the Account session expired, status used to lose started_by
+    // and call this server Vana Desktop's.
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "available",
+      url: "http://localhost:8080",
+      source: "auth",
+      health: { status: "healthy", gatewayUrl: "https://dp-rpc.vana.org" },
+    });
+    mockReadFileSync.mockImplementation((filePath: string) => {
+      if (String(filePath).endsWith("/auth.json")) {
+        return JSON.stringify({
+          account: {
+            address: "0x2ab394e4be7c43ac360d226a31e1c90bc01aafa1",
+            session_token: "vana_account_session",
+            expires_at: "2020-01-01T00:00:00.000Z",
+          },
+          personal_server: {
+            url: "http://localhost:8080",
+            session_token: "vana_ps_session",
+            expires_at: "2099-01-01T00:00:00.000Z",
+            started_by: "vana-server-start",
+          },
+        });
+      }
+      if (String(filePath).endsWith("/.vana-cli.lock")) {
+        return JSON.stringify({ pid: process.pid });
+      }
+      throw new Error("missing");
+    });
+    mockExistsSync.mockReturnValue(true);
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli([
+      "node",
+      "vana",
+      "server",
+      "status",
+      "--json",
+    ]);
+
+    expect(exitCode).toBe(0);
+    const payload = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
+    expect(payload.runBy).toBe("cli");
+    expect(payload.dataDir).toContain(
+      `${["cli", "personal-server", "mainnet"].join("/")}`,
+    );
   });
 
   it("shows the full authenticated account address in human status output", async () => {

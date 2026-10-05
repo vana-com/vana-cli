@@ -133,6 +133,7 @@ import {
 } from "./update-check.js";
 import {
   loadCredentials,
+  loadPersonalServerSession,
   readStoredAuthFile,
   saveCredentials,
   clearCredentials,
@@ -2932,16 +2933,40 @@ function formatSyncFailureSummary(source: SourceStatus): string {
     groupedFailures.set(summary, (groupedFailures.get(summary) ?? 0) + 1);
   }
 
+  // The collected data is fine; the server refused the CLI's session, which
+  // only a new login fixes.
+  const remedy = isPersonalServerAuthFailure(source)
+    ? "Run `vana login`, then `vana server sync`."
+    : `Run \`vana connect ${source.source}\`.`;
   const entries = Array.from(groupedFailures.entries());
   if (entries.length === 1) {
     const [summary, count] = entries[0];
-    return `${summary}${count > 1 ? ` for ${count} scopes` : ""}. Run \`vana connect ${source.source}\`.`;
+    return `${summary}${count > 1 ? ` for ${count} scopes` : ""}. ${remedy}`;
   }
 
   const summaryParts = entries.map(([summary, count]) =>
     count > 1 ? `${summary} (${count})` : summary,
   );
-  return `${failedScopes.length} scopes failed to sync: ${summaryParts.join("; ")}. Run \`vana connect ${source.source}\`.`;
+  return `${failedScopes.length} scopes failed to sync: ${summaryParts.join("; ")}. ${remedy}`;
+}
+
+/** A Personal Server sync error that means the server refused our session. */
+function isPersonalServerAuthError(error: string | undefined): boolean {
+  if (!error) return false;
+  return (
+    /^HTTP\s+401\b/.test(error) ||
+    humanizeIssue(error) === "Authentication required"
+  );
+}
+
+/** True when every failed scope of a source failed on Personal Server auth. */
+function isPersonalServerAuthFailure(source: SourceStatus): boolean {
+  const failedScopes =
+    source.ingestScopes?.filter((scope) => scope.status === "failed") ?? [];
+  return (
+    failedScopes.length > 0 &&
+    failedScopes.every((scope) => isPersonalServerAuthError(scope.error))
+  );
 }
 
 async function runDoctor(options: GlobalOptions): Promise<number> {
@@ -3127,7 +3152,9 @@ function localDataDir(
   network: VanaNetworkName | null,
 ): { path: string; runBy: "cli" | "desktop" } | null {
   if (!target.url || !network) return null;
-  const saved = loadCredentials()?.personal_server;
+  // Who started the server does not lapse with any session: read the saved
+  // block regardless of expiry.
+  const saved = readStoredAuthFile()?.personalServer;
   if (
     saved?.started_by === "vana-server-start" &&
     urlsMatch(saved.url, target.url) &&
@@ -4301,6 +4328,11 @@ async function runServerSync(options: GlobalOptions): Promise<number> {
         !entry.scopeResults ||
         entry.scopeResults.every((sr) => sr.status === "stored"),
     );
+    const allFailuresAuth = syncResult.sourceResults.every((entry) =>
+      (entry.scopeResults ?? []).every(
+        (sr) => sr.status === "stored" || isPersonalServerAuthError(sr.error),
+      ),
+    );
     if (storedScopeCount === 0 && failedScopeCount > 0) {
       // A success tick here reads as done to a person and exits 0 to a
       // script, when in fact nothing reached the server at all.
@@ -4308,7 +4340,14 @@ async function runServerSync(options: GlobalOptions): Promise<number> {
         `${renderer.theme.error("✗")} Synced nothing: ${failedScopeCount} scope(s) failed.`,
       );
       emit.blank();
-      emit.next("vana doctor");
+      if (allFailuresAuth) {
+        emit.detail(
+          "Your Personal Server requires authentication. Run `vana login` to authenticate, then `vana server sync`.",
+        );
+        emit.next("vana login");
+      } else {
+        emit.next("vana doctor");
+      }
     } else {
       emit.success(
         failedScopeCount > 0
@@ -5137,7 +5176,9 @@ export function buildStatusNextSteps(
     }
   } else if (highestPriority.dataState === "ingest_failed") {
     nextSteps.push(
-      `Reconnect ${highestPriorityLabel} with \`vana connect ${highestPriority.source}\`.`,
+      isPersonalServerAuthFailure(highestPriority)
+        ? "Log in again with `vana login`, then run `vana server sync`."
+        : `Reconnect ${highestPriorityLabel} with \`vana connect ${highestPriority.source}\`.`,
     );
   } else if (highestPriority.dataState === "ingest_unavailable") {
     nextSteps.push(
@@ -7528,7 +7569,7 @@ async function finishServerSetup(
   }
   const running = await findOwnRunningServer(address);
   if (running) {
-    const saved = loadCredentials()?.personal_server;
+    const saved = loadPersonalServerSession();
     const approved = Boolean(
       saved?.session_token && urlsMatch(saved.url, running),
     );
@@ -7587,20 +7628,18 @@ async function offerServerStart(
 }
 
 async function runLogout(options: GlobalOptions): Promise<number> {
-  // Revoke the token server-side before clearing local credentials
-  const creds = loadCredentials();
-  if (creds?.personal_server?.url && creds.personal_server.session_token) {
+  // Revoke the token server-side before clearing local credentials. The PS
+  // session can outlive the Account login, so look it up on its own.
+  const psSession = loadPersonalServerSession();
+  if (psSession?.url && psSession.session_token) {
     try {
-      await fetch(
-        `${creds.personal_server.url.replace(/\/$/, "")}/auth/device/token`,
-        {
-          method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${creds.personal_server.session_token}`,
-          },
-          signal: AbortSignal.timeout(5000),
+      await fetch(`${psSession.url.replace(/\/$/, "")}/auth/device/token`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${psSession.session_token}`,
         },
-      );
+        signal: AbortSignal.timeout(5000),
+      });
     } catch {
       // Best-effort — server may be down, but we still clear local creds
     }

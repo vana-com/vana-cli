@@ -6,7 +6,7 @@ import { resolveScopes } from "./scope-resolver.js";
 import { createPersonalServerClient } from "./client.js";
 import { readCachedConnectorMetadata } from "../connectors/registry.js";
 import { getConnectorCacheDir } from "../core/paths.js";
-import { loadCredentials } from "../cli/auth.js";
+import { loadCredentials, loadPersonalServerSession } from "../cli/auth.js";
 
 export { createPersonalServerClient } from "./client.js";
 export type {
@@ -89,9 +89,9 @@ export async function detectPersonalServerTarget(): Promise<PersonalServerTarget
   }
 
   // 2. Auth credentials (from `vana login`)
-  const authCreds = loadCredentials();
-  if (authCreds?.personal_server?.url) {
-    const target = await detectTargetAt(authCreds.personal_server.url, "auth");
+  const savedSession = loadPersonalServerSession();
+  if (savedSession?.url) {
+    const target = await detectTargetAt(savedSession.url, "auth");
     if (target) {
       return target;
     }
@@ -109,7 +109,7 @@ export async function detectPersonalServerTarget(): Promise<PersonalServerTarget
   // 4. Localhost port scan. One machine can host servers for several
   // identities, so the first port to answer is not necessarily ours; prefer
   // one the signed-in account owns and only fall back to a stranger's.
-  const account = authCreds?.account?.address ?? null;
+  const account = loadCredentials()?.account?.address ?? null;
   let unowned: PersonalServerTarget | null = null;
   for (const port of DEFAULT_PORTS) {
     const url = `http://localhost:${port}`;
@@ -222,12 +222,11 @@ export function resolvePersonalServerAuthConfig(
     return { type: "bearerToken", token: psToken };
   }
 
-  const creds = loadCredentials();
-  if (
-    creds?.personal_server?.session_token &&
-    urlsMatch(creds.personal_server.url, serverUrl)
-  ) {
-    return { type: "bearerToken", token: creds.personal_server.session_token };
+  // The PS session has its own expiry; an expired Account login must not
+  // strip a still-valid token from every sync.
+  const savedSession = loadPersonalServerSession();
+  if (savedSession?.session_token && urlsMatch(savedSession.url, serverUrl)) {
+    return { type: "bearerToken", token: savedSession.session_token };
   }
 
   return undefined;

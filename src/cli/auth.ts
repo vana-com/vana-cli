@@ -249,6 +249,31 @@ export function isExpired(creds: VanaCredentials): boolean {
 }
 
 /**
+ * The saved Personal Server session, checked against its own expiry. The PS
+ * token (30 days) usually outlives the Account session (hours to days), and
+ * the server still accepts it after the Account login lapses, so syncs and
+ * reads must not drop it when loadCredentials() returns null.
+ *
+ * With VANA_SESSION_TOKEN set, the env credentials win, as in
+ * loadCredentials(). A block without a parseable expires_at is returned as
+ * is: the server is the judge of a token whose lifetime we do not know.
+ */
+export function loadPersonalServerSession(): VanaCredentials["personal_server"] {
+  if (process.env.VANA_SESSION_TOKEN) {
+    return loadCredentials()?.personal_server ?? null;
+  }
+  const personalServer = readStoredAuthFile()?.personalServer ?? null;
+  if (!personalServer) {
+    return null;
+  }
+  const expiresAt = new Date(personalServer.expires_at).getTime();
+  if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+    return null;
+  }
+  return personalServer;
+}
+
+/**
  * Format an address for display: 0x2Ab3...fa1
  */
 export function formatAddress(address: string): string {
@@ -924,7 +949,7 @@ export function resolvePersonalServerUrl(): string | undefined {
   return (
     process.env.VANA_PS_URL ||
     process.env.VANA_PERSONAL_SERVER_URL ||
-    loadCredentials()?.personal_server?.url
+    loadPersonalServerSession()?.url
   );
 }
 
