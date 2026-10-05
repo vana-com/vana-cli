@@ -77,6 +77,11 @@ let pdppRunConnectorEvents: Array<Record<string, unknown>> = [];
 const mockRunSelfHostedLoginFlow = vi.fn();
 const mockRunDeviceCodeFlow = vi.fn();
 const mockSaveCredentials = vi.fn();
+const mockFindRunningServers = vi.fn();
+const mockStashPersonalServerSession = vi.fn(async () => true);
+const mockTakeStashedPersonalServerSession = vi.fn(
+  async (): Promise<unknown> => null,
+);
 const mockLoadCredentials = vi.fn(() => null);
 
 vi.mock("../../src/runtime/index.js", () => ({
@@ -209,6 +214,23 @@ vi.mock("@inquirer/prompts", () => ({
   select: mockSelect,
 }));
 
+// The EOF guard has its own tests (prompts.test.ts); here every prompt is
+// the bare mock, so assertions see exactly the config a call site passed.
+vi.mock("../../src/cli/prompts.js", async () => ({
+  ...(await vi.importActual<object>("../../src/cli/prompts.js")),
+  confirm: mockConfirm,
+  input: mockInput,
+  password: mockPassword,
+}));
+
+vi.mock("../../src/personal-server/local/server.js", async () => ({
+  ...(await vi.importActual<object>(
+    "../../src/personal-server/local/server.js",
+  )),
+  // Never probe the real localhost ports from a test.
+  findRunningServers: mockFindRunningServers,
+}));
+
 vi.mock("../../src/cli/search-select.js", () => ({
   searchSelect: mockSearchSelect,
 }));
@@ -276,6 +298,8 @@ vi.mock("../../src/cli/auth.js", async () => {
     runDeviceCodeFlow: mockRunDeviceCodeFlow,
     runSelfHostedLoginFlow: mockRunSelfHostedLoginFlow,
     saveCredentials: mockSaveCredentials,
+    stashPersonalServerSession: mockStashPersonalServerSession,
+    takeStashedPersonalServerSession: mockTakeStashedPersonalServerSession,
     // Default to the real implementation; individual tests override it with
     // mockReturnValueOnce when they need a specific credential state.
     loadCredentials: (...args: unknown[]) =>
@@ -341,6 +365,12 @@ describe("runCli", () => {
     pdppRuntimeOptions = [];
     pdppRunConnectorEvents = [];
     mockConfirm.mockReset();
+    mockStashPersonalServerSession.mockReset();
+    mockStashPersonalServerSession.mockResolvedValue(true);
+    mockTakeStashedPersonalServerSession.mockReset();
+    mockTakeStashedPersonalServerSession.mockResolvedValue(null);
+    mockFindRunningServers.mockReset();
+    mockFindRunningServers.mockResolvedValue([]);
     mockSelect.mockReset();
     mockSearchSelect.mockReset();
     mockInput.mockReset();
@@ -777,7 +807,7 @@ describe("runCli", () => {
       }
     });
 
-    it("never asks a server someone else owns", async () => {
+    it("never asks a server someone else owns, and says whose it is", async () => {
       mockDetectPersonalServerTarget.mockResolvedValue({
         state: "available",
         url: "http://localhost:8080",
@@ -786,7 +816,10 @@ describe("runCli", () => {
       });
       const { runCli } = await import("../../src/cli/index.js");
       expect(await runCli(["node", "vana", "login"])).toBe(0);
-      expect(stderr).toContain("No Personal Server found");
+      expect(stderr).toContain(
+        "The Personal Server running at http://localhost:8080 belongs to 0x0000...001, not to this account.",
+      );
+      expect(stderr).not.toContain("No Personal Server found");
       expect(mockRunSelfHostedLoginFlow).not.toHaveBeenCalled();
     });
   });
@@ -877,6 +910,240 @@ describe("runCli", () => {
     expect(mockUpdateCliConfig).toHaveBeenCalledWith({
       personalServerUrl: undefined,
     });
+  });
+
+  describe("when the browser approves a different account", () => {
+    const PREVIOUS = "0x99bf000000000000000000000000000000c3988d";
+    const NEXT = "0xaff70000000000000000000000000000000020ad";
+    const previousSession = {
+      url: "http://localhost:8080",
+      session_token: "ps_session_of_previous",
+      expires_at: "2099-01-01T00:00:00.000Z",
+      started_by: "vana-server-start",
+    };
+    const setTty = (value: boolean | undefined) => {
+      Object.defineProperty(process.stdout, "isTTY", {
+        configurable: true,
+        value,
+      });
+      Object.defineProperty(process.stdin, "isTTY", {
+        configurable: true,
+        value,
+      });
+    };
+
+    beforeEach(() => {
+      // The previous account's login expired; its PS session did not.
+      mockReadFileSync.mockImplementation((target: unknown) => {
+        if (String(target).endsWith("auth.json")) {
+          return JSON.stringify({
+            account: {
+              address: PREVIOUS,
+              session_token: "expired",
+              expires_at: "2020-01-01T00:00:00.000Z",
+            },
+            personal_server: previousSession,
+          });
+        }
+        throw new Error(`unexpected read: ${String(target)}`);
+      });
+      mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+        const creds = {
+          account: {
+            address: NEXT,
+            session_token: "fresh",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+          personal_server: null,
+        };
+        await callbacks.onAuthorized(creds);
+        return creds;
+      });
+      // The server on this machine is the previous account's.
+      mockDetectPersonalServerTarget.mockResolvedValue({
+        state: "available",
+        url: "http://localhost:8080",
+        source: "scan",
+        health: { owner: PREVIOUS },
+      });
+    });
+
+    it("says so, names the running server's owner and how to switch back", async () => {
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "login"])).toBe(0);
+
+      expect(stderr).toContain("Logged in as 0xaff7...0ad");
+      expect(stderr).toContain(
+        "This is a different account than the one signed in before (0x99bf...88d).",
+      );
+      expect(stderr).toContain(
+        "The Personal Server running at http://localhost:8080 belongs to 0x99bf...88d, not to this account.",
+      );
+      expect(stderr).toContain(
+        "sign out at https://account.vana.org, then run `vana logout` and `vana login` as 0x99bf...88d.",
+      );
+      expect(stderr).not.toContain("No Personal Server found");
+    });
+
+    it("keeps the previous account's PS session instead of discarding it", async () => {
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "login"])).toBe(0);
+
+      expect(mockStashPersonalServerSession).toHaveBeenCalledWith(
+        PREVIOUS,
+        previousSession,
+      );
+      // The new account does not inherit a session for someone else's server.
+      expect(mockSaveCredentials).toHaveBeenCalledWith(
+        expect.objectContaining({ personal_server: null }),
+      );
+      expect(stderr).toContain(
+        "0x99bf...88d's Personal Server session is kept and comes back when you log in as 0x99bf...88d again.",
+      );
+    });
+
+    it("does not offer to start a second server at a terminal", async () => {
+      const tty = { out: process.stdout.isTTY, in: process.stdin.isTTY };
+      setTty(true);
+      try {
+        const { runCli } = await import("../../src/cli/index.js");
+        expect(await runCli(["node", "vana", "login"])).toBe(0);
+        expect(mockConfirm).not.toHaveBeenCalled();
+        expect(stderr).toContain(
+          "To run a separate Personal Server for this account instead: vana server start",
+        );
+      } finally {
+        Object.defineProperty(process.stdout, "isTTY", {
+          configurable: true,
+          value: tty.out,
+        });
+        Object.defineProperty(process.stdin, "isTTY", {
+          configurable: true,
+          value: tty.in,
+        });
+      }
+    });
+
+    it("restores the parked PS session when that account signs in again", async () => {
+      mockTakeStashedPersonalServerSession.mockResolvedValue({
+        url: "http://localhost:8081",
+        session_token: "ps_session_of_next",
+        expires_at: "2099-01-01T00:00:00.000Z",
+      });
+      mockDetectPersonalServerTarget.mockResolvedValue({
+        state: "available",
+        url: "http://localhost:8081",
+        source: "config",
+        health: { owner: NEXT },
+      });
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "login"])).toBe(0);
+
+      expect(mockTakeStashedPersonalServerSession).toHaveBeenCalledWith(NEXT);
+      expect(mockSaveCredentials).toHaveBeenCalledWith(
+        expect.objectContaining({
+          personal_server: expect.objectContaining({
+            url: "http://localhost:8081",
+            session_token: "ps_session_of_next",
+          }),
+        }),
+      );
+      expect(mockUpdateCliConfig).toHaveBeenCalledWith({
+        personalServerUrl: "http://localhost:8081",
+      });
+      expect(stderr).toContain(
+        "Personal Server: http://localhost:8081 (session restored)",
+      );
+    });
+
+    it("reports the switch in the JSON outcome", async () => {
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "login", "--json"])).toBe(0);
+
+      const outcome = JSON.parse(stdout.trim().split("\n").pop() ?? "");
+      expect(outcome).toMatchObject({
+        status: "authenticated",
+        address: NEXT,
+        account_switch: {
+          previous_address: PREVIOUS,
+          previous_personal_server_kept: true,
+          running_server: { url: "http://localhost:8080", owner: PREVIOUS },
+        },
+      });
+      expect(outcome.account_switch.switch_back).toContain(
+        "https://account.vana.org",
+      );
+    });
+
+    it("does not call a same-account re-login a switch, whatever the address case", async () => {
+      mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+        const creds = {
+          account: {
+            address: PREVIOUS.toUpperCase().replace("0X", "0x"),
+            session_token: "fresh",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+          personal_server: null,
+        };
+        await callbacks.onAuthorized(creds);
+        return creds;
+      });
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "login"])).toBe(0);
+
+      expect(stderr).not.toContain("different account");
+      expect(mockStashPersonalServerSession).not.toHaveBeenCalled();
+      expect(mockSaveCredentials).toHaveBeenCalledWith(
+        expect.objectContaining({
+          personal_server: expect.objectContaining({
+            session_token: "ps_session_of_previous",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("ends cleanly with exit 7 when a prompt finds stdin closed", async () => {
+    const { PromptInputClosedError } = await import("../../src/cli/prompts.js");
+    mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+      const creds = {
+        account: {
+          address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          session_token: "fresh",
+          expires_at: "2099-01-01T00:00:00.000Z",
+        },
+        personal_server: null,
+      };
+      await callbacks.onAuthorized(creds);
+      return creds;
+    });
+    mockConfirm.mockRejectedValue(new PromptInputClosedError());
+    const tty = { out: process.stdout.isTTY, in: process.stdin.isTTY };
+    for (const stream of [process.stdout, process.stdin]) {
+      Object.defineProperty(stream, "isTTY", {
+        configurable: true,
+        value: true,
+      });
+    }
+    try {
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "login"])).toBe(7);
+      expect(mockConfirm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "Start your Personal Server now? It runs in the background.",
+        }),
+      );
+      expect(stderr).toContain("No input: stdin closed");
+    } finally {
+      Object.defineProperty(process.stdout, "isTTY", {
+        configurable: true,
+        value: tty.out,
+      });
+      Object.defineProperty(process.stdin, "isTTY", {
+        configurable: true,
+        value: tty.in,
+      });
+    }
   });
 
   it("pins the Personal Server URL returned by cloud login", async () => {

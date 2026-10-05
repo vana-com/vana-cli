@@ -208,6 +208,99 @@ function normalizeCredentialsIgnoringExpiry(parsed: LegacyVanaCredentials): {
   return { address, personalServer };
 }
 
+/** Whether two account addresses name the same account (case-insensitive). */
+export function sameAccountAddress(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
+}
+
+/**
+ * Personal Server sessions of accounts that are not signed in right now,
+ * keyed by lowercase address, next to the auth file they came from.
+ *
+ * auth.json holds one account. Signing in as another one used to drop the
+ * previous account's PS session, which only that server can mint again (a
+ * browser approval at the server), so switching back meant re-approving.
+ * Login parks it here instead and restores it when that account returns.
+ */
+export function getStashedSessionsPath(): string {
+  return getAuthFilePath().replace(/\.json$/, ".accounts.json");
+}
+
+type StashedSessions = Record<
+  string,
+  NonNullable<VanaCredentials["personal_server"]>
+>;
+
+function readStashedSessions(): StashedSessions {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(getStashedSessionsPath(), "utf8"),
+    ) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as StashedSessions)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeStashedSessions(sessions: StashedSessions): Promise<void> {
+  const filePath = getStashedSessionsPath();
+  if (Object.keys(sessions).length === 0) {
+    await fsp.rm(filePath, { force: true });
+    return;
+  }
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  await fsp.writeFile(filePath, JSON.stringify(sessions, null, 2) + "\n", {
+    mode: 0o600,
+  });
+}
+
+function isLiveSession(
+  session: NonNullable<VanaCredentials["personal_server"]>,
+): boolean {
+  if (!session.session_token) return false;
+  if (!session.expires_at) return true;
+  const expiresAt = new Date(session.expires_at).getTime();
+  return Number.isNaN(expiresAt) || expiresAt > Date.now();
+}
+
+/**
+ * Park `address`'s Personal Server session while another account is signed
+ * in. Returns false when there was nothing worth keeping.
+ */
+export async function stashPersonalServerSession(
+  address: string,
+  session: VanaCredentials["personal_server"],
+): Promise<boolean> {
+  if (!session || !isLiveSession(session)) return false;
+  const sessions = readStashedSessions();
+  sessions[address.toLowerCase()] = session;
+  await writeStashedSessions(sessions);
+  return true;
+}
+
+/**
+ * The parked Personal Server session of `address`, removed from the stash,
+ * or null when there is none still valid.
+ */
+export async function takeStashedPersonalServerSession(
+  address: string,
+): Promise<VanaCredentials["personal_server"]> {
+  const sessions = readStashedSessions();
+  const key = address.toLowerCase();
+  const session = sessions[key];
+  if (!session) return null;
+  delete sessions[key];
+  await writeStashedSessions(sessions);
+  return typeof session.url === "string" && isLiveSession(session)
+    ? session
+    : null;
+}
+
 /**
  * Save credentials to ~/.vana/auth.json with 0600 permissions.
  */
