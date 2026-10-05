@@ -22,7 +22,10 @@ import {
   resolveOAuthClientId,
   runDeviceCodeFlow,
   runSelfHostedLoginFlow,
+  sameAccountAddress,
   saveCredentials,
+  stashPersonalServerSession,
+  takeStashedPersonalServerSession,
 } from "../../src/cli/auth.js";
 
 describe("accountSessionToPreserve", () => {
@@ -979,5 +982,88 @@ describe("resolveLoginServerUrl", () => {
     expect(readStoredAuthFile()?.personalServer?.started_by).toBe(
       "vana-server-start",
     );
+  });
+});
+
+describe("parked Personal Server sessions", () => {
+  const original = {
+    home: process.env.HOME,
+    url: process.env.VANA_ACCOUNT_URL,
+    env: process.env.VANA_ENV,
+  };
+  let home = "";
+  const session = (token: string, expiresAt = "2099-01-01T00:00:00.000Z") => ({
+    url: "http://localhost:8080",
+    session_token: token,
+    expires_at: expiresAt,
+    started_by: "vana-server-start" as const,
+  });
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "vana-auth-stash-"));
+    process.env.HOME = home;
+    delete process.env.VANA_ACCOUNT_URL;
+    delete process.env.VANA_ENV;
+  });
+
+  afterEach(async () => {
+    process.env.HOME = original.home;
+    if (original.url === undefined) delete process.env.VANA_ACCOUNT_URL;
+    else process.env.VANA_ACCOUNT_URL = original.url;
+    if (original.env === undefined) delete process.env.VANA_ENV;
+    else process.env.VANA_ENV = original.env;
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("gives an account its session back once, whatever the address case", async () => {
+    expect(await stashPersonalServerSession("0xABCdef", session("ps-a"))).toBe(
+      true,
+    );
+    expect(await takeStashedPersonalServerSession("0xabcDEF")).toEqual(
+      session("ps-a"),
+    );
+    expect(await takeStashedPersonalServerSession("0xabcdef")).toBeNull();
+  });
+
+  it("keeps each account's session apart, next to its own auth file", async () => {
+    await stashPersonalServerSession("0xa", session("ps-a"));
+    await stashPersonalServerSession("0xb", session("ps-b"));
+    expect((await takeStashedPersonalServerSession("0xb"))?.session_token).toBe(
+      "ps-b",
+    );
+    expect((await takeStashedPersonalServerSession("0xa"))?.session_token).toBe(
+      "ps-a",
+    );
+    process.env.VANA_ENV = "dev";
+    await stashPersonalServerSession("0xa", session("ps-dev"));
+    delete process.env.VANA_ENV;
+    expect(await takeStashedPersonalServerSession("0xa")).toBeNull();
+  });
+
+  it("parks nothing that could not be used again", async () => {
+    expect(await stashPersonalServerSession("0xa", null)).toBe(false);
+    expect(await stashPersonalServerSession("0xa", session(""))).toBe(false);
+    expect(
+      await stashPersonalServerSession(
+        "0xa",
+        session("old", "2020-01-01T00:00:00.000Z"),
+      ),
+    ).toBe(false);
+    expect(await takeStashedPersonalServerSession("0xa")).toBeNull();
+  });
+
+  it("drops a parked session that expired while it waited", async () => {
+    await mkdir(join(home, ".vana"), { recursive: true });
+    await writeFile(
+      join(home, ".vana", "auth.accounts.json"),
+      JSON.stringify({ "0xa": session("old", "2020-01-01T00:00:00.000Z") }),
+    );
+    expect(await takeStashedPersonalServerSession("0xa")).toBeNull();
+  });
+
+  it("compares account addresses without case", () => {
+    expect(sameAccountAddress("0xAbC", "0xaBc")).toBe(true);
+    expect(sameAccountAddress("0xabc", "0xabd")).toBe(false);
+    expect(sameAccountAddress(null, null)).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import search from "@inquirer/search";
 import Fuse from "fuse.js";
+import { withInputClosedGuard } from "./prompts.js";
 
 interface SearchSelectChoice<T> {
   value: T;
@@ -31,15 +32,20 @@ export async function searchSelect<T>(
     ignoreLocation: true,
   });
 
-  const result = await search({
-    message,
-    source: async (input: string | undefined) => {
-      if (!input) return choices;
-      const results = fuse.search(input);
-      return results.map((r) => r.item);
-    },
-    theme: theme as Parameters<typeof search>[0]["theme"],
-  });
+  const result = await withInputClosedGuard((context) =>
+    search(
+      {
+        message,
+        source: async (input: string | undefined) => {
+          if (!input) return choices;
+          const results = fuse.search(input);
+          return results.map((r) => r.item);
+        },
+        theme: theme as Parameters<typeof search>[0]["theme"],
+      },
+      context,
+    ),
+  );
 
   return result as T;
 }

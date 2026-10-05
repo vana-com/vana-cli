@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
 import os from "node:os";
 
-import { confirm, input, password } from "@inquirer/prompts";
+import { confirm, input, isPromptInputClosed, password } from "./prompts.js";
 import { searchSelect } from "./search-select.js";
 import { Command, CommanderError, Option } from "commander";
 
@@ -144,6 +144,11 @@ import {
   resolveLoginServerUrl,
   runDeviceCodeFlow,
   runSelfHostedLoginFlow,
+  sameAccountAddress,
+  stashPersonalServerSession,
+  takeStashedPersonalServerSession,
+  getAccountUrl,
+  type VanaCredentials,
 } from "./auth.js";
 import {
   createCliTelemetrySession,
@@ -1130,6 +1135,12 @@ Examples:
         ? CliExitCode.USAGE
         : error.exitCode;
       return Number(process.exitCode ?? 1);
+    }
+    if (isPromptInputClosed(error)) {
+      // A prompt nobody can answer: say so instead of dying mid-question.
+      process.stderr.write(`\n${(error as Error).message}\n`);
+      process.exitCode = CliExitCode.CONFIRMATION_REQUIRED;
+      return CliExitCode.CONFIRMATION_REQUIRED;
     }
     throw error;
   }
@@ -6893,8 +6904,9 @@ async function runScheduleRemove(options: GlobalOptions): Promise<number> {
 
 function isPromptCancelled(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    (error.name === "ExitPromptError" || error.message.includes("SIGINT"))
+    isPromptInputClosed(error) ||
+    (error instanceof Error &&
+      (error.name === "ExitPromptError" || error.message.includes("SIGINT")))
   );
 }
 
@@ -7276,7 +7288,6 @@ async function runLogin(
   // For the account-switch check below: the previous auth file content even
   // when the stored credentials have expired (loadCredentials hides those).
   const previousAuth = readStoredAuthFile();
-  const previousAddress = previousAuth?.address ?? null;
   if (existing && !isExpired(existing)) {
     if (options.json) {
       process.stdout.write(
@@ -7346,28 +7357,8 @@ async function runLogin(
     );
 
     if (creds) {
-      if (
-        !creds.personal_server &&
-        previousAuth?.personalServer &&
-        (!previousAddress || previousAddress === creds.account.address)
-      ) {
-        // The cloud flow cannot mint PS sessions; keep the one we had.
-        creds.personal_server = previousAuth.personalServer;
-      }
-      await saveCredentials(creds);
-      // Always sync the pinned PS config to this login's result — including
-      // clearing it when this account has no PS, so a stale PS URL from a
-      // previously logged-in account can't linger and be used by mistake.
-      if (creds.personal_server?.url) {
-        await updateCliConfig({
-          personalServerUrl: creds.personal_server.url,
-        });
-      } else if (previousAddress && previousAddress !== creds.account.address) {
-        // A different account logged in: its pinned Personal Server URL is
-        // stale. Same-account logins keep the pin - the prod token flow
-        // carries no PS info, so its absence proves nothing.
-        await updateCliConfig({ personalServerUrl: undefined });
-      }
+      const settled = await settleCloudLogin(creds, previousAuth);
+      const runningServer = await detectRunningServer();
       process.stdout.write(
         `${JSON.stringify({
           status: "authenticated",
@@ -7376,6 +7367,18 @@ async function runLogin(
             creds.personal_server,
           ),
           expires_at: creds.account.expires_at,
+          ...(settled.restoredSession
+            ? { personal_server_restored: true }
+            : {}),
+          ...(settled.accountSwitch
+            ? {
+                account_switch: describeAccountSwitch(
+                  settled.accountSwitch,
+                  runningServer,
+                  creds.account.address,
+                ),
+              }
+            : {}),
         })}\n`,
       );
       return 0;
@@ -7398,6 +7401,8 @@ async function runLogin(
     process.stderr.write(`  ${theme.muted("Enter")} ${theme.heading(code)}\n`);
   };
   renderer.title("Vana");
+  // Set once authorized: a running server that belongs to another account.
+  let foreignServer: { url: string; owner: string } | null = null;
 
   const creds = await runDeviceCodeFlow(
     {
@@ -7408,49 +7413,51 @@ async function runLogin(
         renderer.scopeActive("Waiting for authorization");
       },
       onAuthorized: async (authedCreds) => {
-        if (
-          !authedCreds.personal_server &&
-          previousAuth?.personalServer &&
-          (!previousAddress || previousAddress === authedCreds.account.address)
-        ) {
-          // The cloud flow cannot mint PS sessions; keep the one we had.
-          authedCreds.personal_server = previousAuth.personalServer;
-        }
-        await saveCredentials(authedCreds);
-        // Always sync the pinned PS config to this login's result — including
-        // clearing it when this account has no PS, so a stale PS URL from a
-        // previously logged-in account can't linger and be used by mistake.
-        if (authedCreds.personal_server?.url) {
-          await updateCliConfig({
-            personalServerUrl: authedCreds.personal_server.url,
-          });
-        } else if (
-          previousAddress &&
-          previousAddress !== authedCreds.account.address
-        ) {
-          // See the JSON branch: clear only on an account switch.
-          await updateCliConfig({ personalServerUrl: undefined });
-        }
-        renderer.success(
-          `Logged in as ${formatAddress(authedCreds.account.address)}`,
-        );
-        if (authedCreds.personal_server) {
+        const address = authedCreds.account.address;
+        const settled = await settleCloudLogin(authedCreds, previousAuth);
+        const runningServer = await detectRunningServer();
+        const ownServer =
+          runningServer && sameAccountAddress(runningServer.owner, address)
+            ? runningServer.url
+            : null;
+        foreignServer =
+          !authedCreds.personal_server && runningServer?.owner && !ownServer
+            ? { url: runningServer.url, owner: runningServer.owner }
+            : null;
+        renderer.success(`Logged in as ${formatAddress(address)}`);
+        if (settled.accountSwitch) {
+          const previous = formatAddress(settled.accountSwitch.previousAddress);
           renderer.detail(
-            `Personal Server: ${authedCreds.personal_server.url}`,
+            `This is a different account than the one signed in before (${previous}).`,
           );
-        } else {
-          const running = await findOwnRunningServer(
-            authedCreds.account.address,
-          );
-          if (running) {
-            renderer.detail(`Personal Server: ${running} (running)`);
-          } else {
-            renderer.detail("No Personal Server found for this account yet.");
-            renderer.next("vana server start");
+          if (settled.accountSwitch.previousSessionKept) {
             renderer.detail(
-              "Or point at one you already run: vana server set-url <url>",
+              `${previous}'s Personal Server session is kept and comes back when you log in as ${previous} again.`,
             );
           }
+        }
+        if (authedCreds.personal_server) {
+          renderer.detail(
+            `Personal Server: ${authedCreds.personal_server.url}${settled.restoredSession ? " (session restored)" : ""}`,
+          );
+        } else if (ownServer) {
+          renderer.detail(`Personal Server: ${ownServer} (running)`);
+        } else if (foreignServer) {
+          renderer.detail(
+            `The Personal Server running at ${foreignServer.url} belongs to ${formatAddress(foreignServer.owner)}, not to this account.`,
+          );
+          renderer.detail(
+            `To use it, switch back: sign out at ${getAccountUrl()}, then run \`vana logout\` and \`vana login\` as ${formatAddress(foreignServer.owner)}.`,
+          );
+          renderer.detail(
+            "To run a separate Personal Server for this account instead: vana server start",
+          );
+        } else {
+          renderer.detail("No Personal Server found for this account yet.");
+          renderer.next("vana server start");
+          renderer.detail(
+            "Or point at one you already run: vana server set-url <url>",
+          );
         }
         renderer.detail("Credentials saved to ~/.vana/auth.json");
       },
@@ -7473,7 +7480,103 @@ async function runLogin(
   renderer.cleanup();
 
   if (!creds) return 1;
+  // Never offer to start a second server next to another account's without
+  // the user reading why: the lines above already said what to do.
+  if (foreignServer) return 0;
   return (await finishServerSetup(creds.account.address, options)) ?? 0;
+}
+
+interface AccountSwitch {
+  previousAddress: string;
+  /** The previous account's Personal Server session was parked for later. */
+  previousSessionKept: boolean;
+}
+
+/**
+ * Save a cloud login's credentials. The cloud flow cannot mint Personal
+ * Server sessions, so a same-account re-login keeps the stored one, and an
+ * account switch parks the previous account's session and restores the new
+ * account's own parked one, if it has one.
+ */
+async function settleCloudLogin(
+  creds: VanaCredentials,
+  previousAuth: ReturnType<typeof readStoredAuthFile>,
+): Promise<{ accountSwitch: AccountSwitch | null; restoredSession: boolean }> {
+  const previousAddress = previousAuth?.address ?? null;
+  const switched =
+    previousAddress !== null &&
+    !sameAccountAddress(previousAddress, creds.account.address);
+  let previousSessionKept = false;
+  if (switched) {
+    // Best effort: failing to park it loses no more than login used to.
+    previousSessionKept = await stashPersonalServerSession(
+      previousAddress,
+      previousAuth?.personalServer ?? null,
+    ).catch(() => false);
+  }
+  let restoredSession = false;
+  if (!creds.personal_server) {
+    if (!switched && previousAuth?.personalServer) {
+      creds.personal_server = previousAuth.personalServer;
+    } else {
+      const stashed = await takeStashedPersonalServerSession(
+        creds.account.address,
+      ).catch(() => null);
+      if (stashed) {
+        creds.personal_server = stashed;
+        restoredSession = true;
+      }
+    }
+  }
+  await saveCredentials(creds);
+  // Always sync the pinned PS config to this login's result, including
+  // clearing it when this account has no PS, so a stale PS URL from a
+  // previously logged-in account can't linger and be used by mistake.
+  if (creds.personal_server?.url) {
+    await updateCliConfig({ personalServerUrl: creds.personal_server.url });
+  } else if (switched) {
+    // A different account logged in: its pinned Personal Server URL is
+    // stale. Same-account logins keep the pin - the prod token flow
+    // carries no PS info, so its absence proves nothing.
+    await updateCliConfig({ personalServerUrl: undefined });
+  }
+  return {
+    accountSwitch: switched ? { previousAddress, previousSessionKept } : null,
+    restoredSession,
+  };
+}
+
+/** The Personal Server answering on this machine and its owner, if any. */
+async function detectRunningServer(): Promise<{
+  url: string;
+  owner: string | null;
+} | null> {
+  try {
+    const target = await detectPersonalServerTarget();
+    return target.state === "available" && target.url
+      ? { url: target.url, owner: target.health?.owner ?? null }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `account_switch` block of a JSON login outcome. */
+function describeAccountSwitch(
+  accountSwitch: AccountSwitch,
+  runningServer: { url: string; owner: string | null } | null,
+  address: string,
+): Record<string, unknown> {
+  const foreign =
+    runningServer?.owner && !sameAccountAddress(runningServer.owner, address)
+      ? runningServer
+      : null;
+  return {
+    previous_address: accountSwitch.previousAddress,
+    previous_personal_server_kept: accountSwitch.previousSessionKept,
+    running_server: foreign ? { url: foreign.url, owner: foreign.owner } : null,
+    switch_back: `Sign out at ${getAccountUrl()}, then run \`vana logout\` and \`vana login\`.`,
+  };
 }
 
 function serverStartIo(options: GlobalOptions): ServerStartIo {
