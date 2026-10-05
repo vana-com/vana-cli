@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const mocks = vi.hoisted(() => ({
   readCliConfig: vi.fn(),
   loadCredentials: vi.fn(),
+  loadPersonalServerSession: vi.fn(),
+  actualLoadPersonalServerSession: null as null | (() => unknown),
 }));
 
 vi.mock("../../src/core/state-store.js", () => ({
@@ -11,9 +16,13 @@ vi.mock("../../src/core/state-store.js", () => ({
 
 vi.mock("../../src/cli/auth.js", async () => {
   const actual = await vi.importActual<object>("../../src/cli/auth.js");
+  mocks.actualLoadPersonalServerSession = (
+    actual as { loadPersonalServerSession: () => unknown }
+  ).loadPersonalServerSession;
   return {
     ...actual,
     loadCredentials: mocks.loadCredentials,
+    loadPersonalServerSession: mocks.loadPersonalServerSession,
   };
 });
 
@@ -31,6 +40,8 @@ beforeEach(() => {
   mocks.readCliConfig.mockResolvedValue({});
   mocks.loadCredentials.mockReset();
   mocks.loadCredentials.mockReturnValue(null);
+  mocks.loadPersonalServerSession.mockReset();
+  mocks.loadPersonalServerSession.mockReturnValue(null);
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -60,17 +71,10 @@ describe("resolvePersonalServerAuthConfig", () => {
   });
 
   it("uses the saved personal server session token when the target URL matches", () => {
-    mocks.loadCredentials.mockReturnValue({
-      account: {
-        address: "0x1234567890abcdef1234567890abcdef12345678",
-        session_token: "",
-        expires_at: "2026-04-22T00:00:00.000Z",
-      },
-      personal_server: {
-        url: "http://localhost:8080/",
-        session_token: "saved-ps-token",
-        expires_at: "2026-04-22T00:00:00.000Z",
-      },
+    mocks.loadPersonalServerSession.mockReturnValue({
+      url: "http://localhost:8080/",
+      session_token: "saved-ps-token",
+      expires_at: "2026-04-22T00:00:00.000Z",
     });
 
     expect(resolvePersonalServerAuthConfig("http://localhost:8080")).toEqual({
@@ -80,22 +84,72 @@ describe("resolvePersonalServerAuthConfig", () => {
   });
 
   it("does not reuse a saved personal server session token for a different URL", () => {
-    mocks.loadCredentials.mockReturnValue({
-      account: {
-        address: "0x1234567890abcdef1234567890abcdef12345678",
-        session_token: "",
-        expires_at: "2026-04-22T00:00:00.000Z",
-      },
-      personal_server: {
-        url: "https://ps.example.com",
-        session_token: "saved-ps-token",
-        expires_at: "2026-04-22T00:00:00.000Z",
-      },
+    mocks.loadPersonalServerSession.mockReturnValue({
+      url: "https://ps.example.com",
+      session_token: "saved-ps-token",
+      expires_at: "2026-04-22T00:00:00.000Z",
     });
 
     expect(
       resolvePersonalServerAuthConfig("https://other.example.com"),
     ).toBeUndefined();
+  });
+
+  describe("with a real auth.json", () => {
+    const authDir = join(homedir(), ".vana");
+    const past = "2020-01-01T00:00:00.000Z";
+    const future = "2099-01-01T00:00:00.000Z";
+
+    async function writeAuth(accountExpiresAt: string, psExpiresAt: string) {
+      await mkdir(authDir, { recursive: true });
+      await writeFile(
+        join(authDir, "auth.json"),
+        JSON.stringify({
+          account: {
+            address: "0x1234567890abcdef1234567890abcdef12345678",
+            session_token: "account-token",
+            expires_at: accountExpiresAt,
+          },
+          personal_server: {
+            url: "http://localhost:8080",
+            session_token: "saved-ps-token",
+            expires_at: psExpiresAt,
+            started_by: "vana-server-start",
+          },
+        }),
+      );
+    }
+
+    beforeEach(() => {
+      delete process.env.VANA_PS_TOKEN;
+      delete process.env.VANA_SESSION_TOKEN;
+      mocks.loadPersonalServerSession.mockImplementation(() =>
+        mocks.actualLoadPersonalServerSession?.(),
+      );
+    });
+
+    afterEach(async () => {
+      await rm(authDir, { recursive: true, force: true });
+    });
+
+    it("keeps sending the PS token after the Account session expires", async () => {
+      // The nightly collect failed every sync with 401 MISSING_AUTH because
+      // an expired Account login hid a PS token that was still valid.
+      await writeAuth(past, future);
+
+      expect(resolvePersonalServerAuthConfig("http://localhost:8080")).toEqual({
+        type: "bearerToken",
+        token: "saved-ps-token",
+      });
+    });
+
+    it("sends nothing once the PS token itself has expired", async () => {
+      await writeAuth(future, past);
+
+      expect(
+        resolvePersonalServerAuthConfig("http://localhost:8080"),
+      ).toBeUndefined();
+    });
   });
 });
 
@@ -104,17 +158,10 @@ describe("detectPersonalServerTarget", () => {
     mocks.readCliConfig.mockResolvedValue({
       personalServerUrl: "https://dead.example.com",
     });
-    mocks.loadCredentials.mockReturnValue({
-      account: {
-        address: "0x1234567890abcdef1234567890abcdef12345678",
-        session_token: "",
-        expires_at: "2026-04-22T00:00:00.000Z",
-      },
-      personal_server: {
-        url: "http://localhost:8080",
-        session_token: "vana_ps_token",
-        expires_at: "2026-04-22T00:00:00.000Z",
-      },
+    mocks.loadPersonalServerSession.mockReturnValue({
+      url: "http://localhost:8080",
+      session_token: "vana_ps_token",
+      expires_at: "2026-04-22T00:00:00.000Z",
     });
 
     fetchMock.mockRejectedValueOnce(new Error("dead")).mockResolvedValueOnce(
