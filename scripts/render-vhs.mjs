@@ -78,6 +78,8 @@ async function main() {
 
   const basePath = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
   const baseEnvFields = {
+    // Demo runs use fixture connectors; they must not report as real usage.
+    VANA_TELEMETRY_DISABLED: "1",
     ...(connectorsDir ? { VANA_DATA_CONNECTORS_DIR: connectorsDir } : {}),
   };
 
@@ -216,6 +218,7 @@ function runTape(runner, tapePath, env) {
         "PATH",
         "VANA_DEMO_FAST_SUCCESS",
         "VANA_DATA_CONNECTORS_DIR",
+        "VANA_TELEMETRY_DISABLED",
       ];
       for (const key of forwardKeys) {
         if (env[key] != null) {
