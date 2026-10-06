@@ -100,6 +100,96 @@ describe("vana app request", () => {
     expect(exitCode).toBe(2);
   });
 
+  it("grants only the derived scope when a question omits --scopes", async () => {
+    let configured: { scopes?: string[] } = {};
+    let questions: unknown;
+    const exitCode = await runAppRequest(
+      {
+        json: true,
+        noInput: true,
+        question: "Which languages?",
+        derived: "myapp.languages",
+        sources: "github.repositories",
+      },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        createController: ((config: typeof configured) => {
+          configured = config;
+          const inner = controller([{ status: "pending" }])() as {
+            createAccessRequest: (input: { questions?: unknown }) => unknown;
+          };
+          return {
+            ...inner,
+            createAccessRequest: async (input: { questions?: unknown }) => {
+              questions = input.questions;
+              return inner.createAccessRequest(input);
+            },
+          };
+        }) as never,
+      },
+    );
+    expect(exitCode).toBe(7);
+    expect(configured.scopes).toEqual(["myapp.languages"]);
+    // The source still reaches the person's server, as the question's input.
+    expect(questions).toEqual([
+      {
+        derivedScope: "myapp.languages",
+        sourceScopes: ["github.repositories"],
+        question: "Which languages?",
+      },
+    ]);
+  });
+
+  it("refuses to grant a question's source as a raw read", async () => {
+    // The approval page tells the person the app will not see the sources.
+    const exitCode = await runAppRequest(
+      {
+        json: true,
+        noInput: true,
+        scopes: "github.repositories,myapp.languages",
+        question: "Which languages?",
+        derived: "myapp.languages",
+        sources: "github.repositories",
+      },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        createController: () => {
+          throw new Error("must not create a request");
+        },
+      },
+    );
+    expect(exitCode).toBe(2);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.code).toBe("bad_usage");
+    expect(outcome.message).toContain("github.repositories");
+    expect(outcome.remedy).toContain("--scopes myapp.languages ");
+  });
+
+  it("points next at the derived scope once a question is approved", async () => {
+    const exitCode = await runAppRequest(
+      {
+        json: true,
+        question: "Which languages?",
+        derived: "myapp.languages",
+        sources: "github.repositories",
+      },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        sleep: async () => {},
+        createController: controller([
+          { status: "approved", grantId: GRANT, scopes: ["myapp.languages"] },
+        ]),
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).remedy).toBe(
+      `vana app read myapp.languages --grant ${GRANT}`,
+    );
+  });
+
   it("persists the request before approval and exits 7 under --no-input", async () => {
     const requests = store();
     const exitCode = await runAppRequest(
@@ -315,6 +405,45 @@ describe("vana app requests", () => {
     });
     // The refresh is written back, so a later offline show still knows.
     expect(requests.get(REQUEST_ID)?.grantId).toBe(GRANT);
+  });
+
+  it("points next at a question's derived scope, never its source", async () => {
+    const requests = store();
+    requests.save({
+      requestId: REQUEST_ID,
+      appAddress: account.address,
+      network: "mainnet",
+      gatewayUrl: "https://gateway.example",
+      // A request made before the derived-only fix also granted the source.
+      scopes: ["github.repositories", "myapp.languages"],
+      approvalUrl: "https://app.vana.org/approve/abc",
+      createdAt: "2026-10-06T00:00:00Z",
+      updatedAt: "2026-10-06T00:00:00Z",
+      status: "approved",
+      grantId: GRANT,
+      questions: [
+        {
+          derivedScope: "myapp.languages",
+          sourceScopes: ["github.repositories"],
+        },
+      ],
+    });
+
+    const exitCode = await runAppRequestsShow(
+      REQUEST_ID,
+      { json: true },
+      {
+        resolveKey: () => appKey,
+        requests,
+        createController: () => {
+          throw new Error("offline");
+        },
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).remedy).toBe(
+      `vana app read myapp.languages --grant ${GRANT}`,
+    );
   });
 
   it("falls back to the local record when the service is unreachable", async () => {

@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
+import { Command } from "commander";
+import { registerAppCommands } from "../../src/cli/app/index.js";
 import { runAppAsk } from "../../src/cli/app/ask.js";
 import { runAppLineage, runAppStatus } from "../../src/cli/app/derivatives.js";
 import { appOutcomeSchema } from "../../src/cli/app/outcome.js";
@@ -249,7 +251,7 @@ describe("vana app ask", () => {
     );
   });
 
-  it("carries the question through consent and grants the derived scope too", async () => {
+  it("carries the question through consent and grants only the derived scope", async () => {
     let requested: Record<string, unknown> | undefined;
     const exitCode = await runAppAsk(
       "Which genres this month?",
@@ -269,9 +271,48 @@ describe("vana app ask", () => {
     expect(requested).toMatchObject({
       question: "Which genres this month?",
       derived: DERIVED,
-      // The derived scope must be granted as a plain read as well.
-      scopes: `spotify.history,${DERIVED}`,
+      sources: "spotify.history",
+      // The sources are the question's inputs, never a grant: the approval
+      // page tells the person the app will not see them.
+      scopes: DERIVED,
     });
+  });
+
+  it("hints with a real scope when the spec is incomplete", async () => {
+    const exitCode = await runAppAsk(
+      "what?",
+      { json: true, sources: "github.repositories" },
+      {},
+    );
+    expect(exitCode).toBe(2);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).remedy).toContain(
+      "--sources github.repositories --derived myapp.languages",
+    );
+  });
+
+  it("marks --sources and --derived as required on the command line", async () => {
+    const program = new Command().exitOverride();
+    program.configureOutput({ writeErr: () => {}, writeOut: () => {} });
+    registerAppCommands(program, () => ({}));
+    const ask = program.commands
+      .find((command) => command.name() === "app")
+      ?.commands.find((command) => command.name() === "ask");
+    expect(
+      ask?.options
+        .filter((option) => option.mandatory)
+        .map((option) => option.long),
+    ).toEqual(["--sources", "--derived"]);
+    await expect(
+      program.parseAsync([
+        "node",
+        "vana",
+        "app",
+        "ask",
+        "what?",
+        "--sources",
+        "github.repositories",
+      ]),
+    ).rejects.toMatchObject({ code: "commander.missingMandatoryOptionValue" });
   });
 
   it("stops at the request's own outcome when a person must act", async () => {
