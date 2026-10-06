@@ -71,10 +71,35 @@ export interface CliConfig {
   localConnectors?: Record<string, LocalConnectorEntry>;
 }
 
+/** How one source fared in a scheduled `collect --all`. */
+export type ScheduledSourceOutcome =
+  | "ok"
+  | "collect_failed"
+  | "sync_failed"
+  | "sync_pending";
+
+/**
+ * The last scheduled `collect --all`. A scheduler shows nobody its output,
+ * so this is the only place a failing night can surface (`vana status`).
+ */
+export interface ScheduledRunRecord {
+  startedAt: string;
+  finishedAt: string;
+  exitCode: number;
+  /** The log the job appends to, inside this state's home. */
+  logPath: string;
+  sources: Array<{
+    source: string;
+    outcome: ScheduledSourceOutcome;
+    error?: string;
+  }>;
+}
+
 export interface CliStateFile {
   version: 1;
   config?: CliConfig;
   sources: Record<string, StoredSourceState>;
+  lastScheduledRun?: ScheduledRunRecord;
 }
 
 export async function readCliState(): Promise<CliStateFile> {
@@ -117,6 +142,22 @@ export async function updateCliConfig(
     await testHooks?.beforeRead?.();
     const state = await readCliState();
     state.config = { ...(state.config ?? {}), ...patch };
+    await testHooks?.beforeWrite?.();
+    await atomicWriteFile(
+      getCliStatePath(),
+      `${JSON.stringify(state, null, 2)}\n`,
+    );
+  });
+}
+
+export async function recordScheduledRun(
+  record: ScheduledRunRecord,
+): Promise<void> {
+  await fs.mkdir(getVanaHome(), { recursive: true });
+  await withStateFileLock(async () => {
+    await testHooks?.beforeRead?.();
+    const state = await readCliState();
+    state.lastScheduledRun = record;
     await testHooks?.beforeWrite?.();
     await atomicWriteFile(
       getCliStatePath(),

@@ -28,6 +28,7 @@ const mockReadCliState = vi.fn();
 const mockReadCliConfig = vi.fn();
 const mockUpdateCliConfig = vi.fn();
 const mockUpdateSourceState = vi.fn();
+const mockRecordScheduledRun = vi.fn();
 const mockConfirm = vi.fn();
 const mockInput = vi.fn();
 const mockPassword = vi.fn();
@@ -296,6 +297,7 @@ vi.mock("../../src/core/index.js", async () => {
     readCliConfig: mockReadCliConfig,
     updateCliConfig: mockUpdateCliConfig,
     updateSourceState: mockUpdateSourceState,
+    recordScheduledRun: mockRecordScheduledRun,
     getBrowserProfilesDir: vi.fn(() => "/tmp/browser-profiles"),
     getSourceResultPath: vi.fn((s: string) => `/tmp/.vana/results/${s}.json`),
     rotateResult: vi.fn(),
@@ -378,6 +380,8 @@ describe("runCli", () => {
     mockResolvePersonalServerAuthConfig.mockReset();
     mockCreatePersonalServerClient.mockReset();
     mockUpdateSourceState.mockReset();
+    mockRecordScheduledRun.mockReset();
+    mockRecordScheduledRun.mockResolvedValue(undefined);
     mockUpdateCliConfig.mockReset();
     mockUpdateCliConfig.mockResolvedValue(undefined);
     mockReadCliConfig.mockReset();
@@ -1450,10 +1454,12 @@ describe("runCli", () => {
   });
 
   it("writes a launchd plist that resolves nothing at run time", async () => {
-    const { generateLaunchdPlist } = await import("../../src/cli/index.js");
+    const { generateLaunchdPlist, resolveScheduleTarget } =
+      await import("../../src/cli/schedule.js");
     const plist = generateLaunchdPlist(
       ["/Users/x/.nvm/versions/node/v24.14.1/bin/node", "/opt/vana/bin.js"],
       86400,
+      resolveScheduleTarget({ VANA_HOME: "/Users/x/.vana" }),
     );
 
     expect(plist).toContain(
@@ -4927,6 +4933,108 @@ describe("runCli", () => {
           }),
         ]),
       }),
+    );
+  });
+
+  it("collect --all exits non-zero and says so on stderr when sync fails, even with --quiet", async () => {
+    // A scheduled run once printed nothing and exited 0 every night while
+    // every source's sync was answered with a 401.
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "available",
+      url: "http://localhost:8080",
+    });
+    mockReadCliState.mockResolvedValue({
+      version: 1,
+      sources: {
+        github: {
+          connectorInstalled: true,
+          exportFrequency: "1d",
+          lastCollectedAt: new Date().toISOString(),
+          lastResultPath: "/tmp/results/github.json",
+          dataState: "ingest_unavailable",
+        },
+      },
+    });
+    mockIngestResult.mockResolvedValue([
+      {
+        type: "ingest-failed",
+        source: "github",
+        message: "HTTP 401",
+        scopeResults: [
+          { scope: "github.profile", status: "failed", error: "HTTP 401" },
+        ],
+      },
+    ]);
+    const previous = process.env.VANA_SCHEDULED_RUN;
+    process.env.VANA_SCHEDULED_RUN = "1";
+    try {
+      const { runCli } = await import("../../src/cli/index.js");
+      const exitCode = await runCli([
+        "node",
+        "vana",
+        "collect",
+        "--all",
+        "--quiet",
+        "--no-input",
+      ]);
+
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("1 of 1 source(s) did not collect and sync");
+      expect(stderr).toContain("github: sync failed (HTTP 401)");
+      expect(mockRecordScheduledRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          exitCode: 1,
+          sources: [
+            { source: "github", outcome: "sync_failed", error: "HTTP 401" },
+          ],
+        }),
+      );
+    } finally {
+      if (previous === undefined) delete process.env.VANA_SCHEDULED_RUN;
+      else process.env.VANA_SCHEDULED_RUN = previous;
+    }
+  });
+
+  it("collect --all run by hand records no scheduled run", async () => {
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "unavailable",
+      url: null,
+    });
+    mockReadCliState.mockResolvedValue({ version: 1, sources: {} });
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "collect", "--all"]);
+
+    expect(exitCode).toBe(0);
+    expect(mockRecordScheduledRun).not.toHaveBeenCalled();
+  });
+
+  it("status names the last scheduled collection and its log when it failed", async () => {
+    mockListAvailableSources.mockResolvedValue([]);
+    mockReadCliState.mockResolvedValue({
+      version: 1,
+      sources: {},
+      lastScheduledRun: {
+        startedAt: "2026-10-06T04:12:00.000Z",
+        finishedAt: "2026-10-06T04:13:00.000Z",
+        exitCode: 1,
+        logPath: "/Users/x/.vana/logs/schedule.log",
+        sources: ["a", "b", "c", "d", "e", "f"].map((source) => ({
+          source,
+          outcome: "sync_failed",
+          error: "HTTP 401",
+        })),
+      },
+    });
+
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli(["node", "vana", "status"]);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Last scheduled collection");
+    expect(stdout).toContain(
+      "6 of 6 failed to sync (see /Users/x/.vana/logs/schedule.log)",
     );
   });
 

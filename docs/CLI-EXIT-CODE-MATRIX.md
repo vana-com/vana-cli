@@ -38,6 +38,11 @@ field carries the finer-grained reason (`owner_not_ready`, `grant_revoked`,
   `exitCodeForOutcome`; the mapping for their statuses is:
   `personal_server_unavailable -> 5`, `needs_input -> 7`, success -> `0`,
   everything else `1`.
+- `collect --all` (what the schedule runs) exits `0` only when every source
+  it touched collected and synced. A source whose sync failed, even though
+  its data was kept locally, makes it exit `1`; when the only problem is
+  that no Personal Server answered, it exits `5`. Each failed source is
+  named on stderr, also under `--quiet`.
 - The builder command group (`vana app ...`) emits through the mapper from
   its first release.
 
