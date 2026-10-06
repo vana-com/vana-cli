@@ -50,10 +50,31 @@ import {
   getSourceResultPath,
   readCliState,
   readCliConfig,
+  recordScheduledRun,
   updateCliConfig,
   updateSourceState,
 } from "../core/index.js";
 import type { StoredSourceState } from "../core/state-store.js";
+import {
+  CRONTAB_MARKER,
+  LAUNCHD_LABEL,
+  SCHEDULED_COLLECT_ARGS,
+  SCHEDULED_RUN_ENV,
+  classifyCollectedSource,
+  collectAllExitCode,
+  describeCollectAllFailures,
+  describeScheduledRun,
+  diagnoseSchedule,
+  generateCrontabEntry,
+  generateLaunchdPlist,
+  parseCrontabEntry,
+  parseLaunchdPlist,
+  resolveScheduleTarget,
+  vanaHomeForEnv,
+  type CollectAllSourceResult,
+  type InstalledSchedule,
+  type ScheduleDrift,
+} from "./schedule.js";
 import { getVanaHome } from "../core/paths.js";
 import {
   UnknownNetworkError,
@@ -1109,10 +1130,9 @@ Examples:
     .description("Add a scheduled collection")
     .option(
       "--every <interval>",
-      "Collection interval (e.g. 24h, 12h, 1h)",
-      "24h",
+      "Collection interval (e.g. 24h, 12h, 1h); default 24h, or the existing schedule's",
     )
-    .action(async (opts: { every: string }) => {
+    .action(async (opts: { every?: string }) => {
       process.exitCode = await runCommandWithTelemetry(
         { ...telemetryBaseContext, command: "schedule", subcommand: "add" },
         async () => runScheduleAdd(opts.every, parsedOptions),
@@ -2768,6 +2788,7 @@ async function runStatus(options: GlobalOptions): Promise<number> {
         needsAttention: status.summary?.needsAttentionCount ?? 0,
       },
       sourceHealth: sourceHealthMap,
+      lastScheduledRun: state.lastScheduledRun ?? null,
       next: nextSteps[0] ?? null,
     };
     process.stdout.write(`${JSON.stringify(compactJson)}\n`);
@@ -2860,6 +2881,18 @@ async function runStatus(options: GlobalOptions): Promise<number> {
       "Pending sync",
       `${status.pendingSyncCount} dataset(s)`,
       "warning",
+    );
+  }
+  if (state.lastScheduledRun) {
+    const lastRun = describeScheduledRun(
+      state.lastScheduledRun,
+      formatTimestamp,
+      formatDisplayPath,
+    );
+    emit.keyValue(
+      "Last scheduled collection",
+      lastRun.text,
+      lastRun.failed ? "warning" : "muted",
     );
   }
 
@@ -4358,6 +4391,7 @@ async function syncPendingSources(
 
 async function runCollectAll(options: GlobalOptions): Promise<number> {
   const emit = createEmitter(options);
+  const startedAt = new Date().toISOString();
   const state = await readCliState();
   const dueSources = Object.entries(state.sources)
     .filter(
@@ -4367,41 +4401,85 @@ async function runCollectAll(options: GlobalOptions): Promise<number> {
     )
     .map(([id]) => id);
 
-  let exitCode = 0;
+  const results = new Map<string, CollectAllSourceResult>();
+  let connectExitCode: number = CliExitCode.OK;
   for (const source of dueSources) {
     const result = await runConnect(source, options, { verb: "Collect" });
-    if (result !== 0) {
-      exitCode = result;
+    if (result !== CliExitCode.OK) {
+      connectExitCode = result;
     }
+    const after = await readCliState();
+    results.set(
+      source,
+      classifyCollectedSource(source, result, after.sources[source]),
+    );
   }
 
   let syncedPendingCount = 0;
   const target = await detectPersonalServerTarget();
   if (target.state === "available") {
-    syncedPendingCount = (await syncPendingSources(target, "automatic"))
-      .syncedCount;
+    const synced = await syncPendingSources(target, "automatic");
+    syncedPendingCount = synced.syncedCount;
+    for (const entry of synced.sourceResults) {
+      if (results.get(entry.source)?.outcome === "collect_failed") continue;
+      const failed = entry.scopeResults?.find((r) => r.status === "failed");
+      results.set(
+        entry.source,
+        failed
+          ? {
+              source: entry.source,
+              outcome: "sync_failed",
+              ...(failed.error ? { error: failed.error } : {}),
+            }
+          : { source: entry.source, outcome: "ok" },
+      );
+    }
   }
 
-  if (dueSources.length === 0) {
-    if (syncedPendingCount > 0) {
-      if (options.json) {
-        process.stdout.write(
-          `${JSON.stringify({ message: `Synced ${syncedPendingCount} pending dataset(s).`, count: 0, syncedPendingCount })}\n`,
-        );
-      } else {
-        emit.info(`Synced ${syncedPendingCount} pending dataset(s).`);
-      }
-      return 0;
-    }
+  const sourceResults = [...results.values()];
+  // A source whose run already failed keeps that code; otherwise a failed
+  // or skipped sync makes the whole run fail, so a scheduler (and anyone
+  // reading its log) sees it.
+  const exitCode =
+    connectExitCode !== CliExitCode.OK
+      ? connectExitCode
+      : collectAllExitCode(sourceResults);
 
-    if (options.json) {
+  if (options.json) {
+    if (dueSources.length === 0) {
+      const message =
+        syncedPendingCount > 0
+          ? `Synced ${syncedPendingCount} pending dataset(s).`
+          : "No sources are due for collection.";
       process.stdout.write(
-        `${JSON.stringify({ message: "No sources are due for collection.", count: 0, syncedPendingCount: 0 })}\n`,
+        `${JSON.stringify({ message, count: 0, syncedPendingCount, sources: sourceResults })}\n`,
       );
-    } else {
-      emit.info("No sources are due for collection.");
     }
-    return 0;
+  } else {
+    // Failures go to stderr even under --quiet: for a scheduled run this is
+    // the only line its log will ever hold.
+    const lines = describeCollectAllFailures(sourceResults);
+    if (lines.length > 0) {
+      const stamp =
+        process.env[SCHEDULED_RUN_ENV] === "1" ? `[${startedAt}] ` : "";
+      process.stderr.write(`${stamp}${lines.join("\n")}\n`);
+    } else if (dueSources.length === 0) {
+      emit.info(
+        syncedPendingCount > 0
+          ? `Synced ${syncedPendingCount} pending dataset(s).`
+          : "No sources are due for collection.",
+      );
+    }
+  }
+
+  if (process.env[SCHEDULED_RUN_ENV] === "1") {
+    await recordScheduledRun({
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      exitCode,
+      logPath: path.join(getLogsDir(), "schedule.log"),
+      sources: sourceResults,
+    }).catch(() => undefined);
   }
 
   return exitCode;
@@ -6679,26 +6757,7 @@ async function runDetached(
 // Schedule commands
 // ---------------------------------------------------------------------------
 
-const LAUNCHD_LABEL = "com.vana.collect";
-const LAUNCHD_PLIST_PATH = path.join(
-  os.homedir(),
-  "Library",
-  "LaunchAgents",
-  `${LAUNCHD_LABEL}.plist`,
-);
-const CRONTAB_MARKER = "# vana-scheduled-collection";
 const WINDOWS_TASK_NAME = "VanaScheduledCollection";
-
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function quoteForShell(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 
 function parseIntervalSeconds(interval: string): number {
   const lower = interval.toLowerCase().trim();
@@ -6721,6 +6780,53 @@ function formatIntervalHuman(seconds: number): string {
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
   return `${Math.round(seconds / 86400)}d`;
+}
+
+/**
+ * Everything the schedule commands touch outside this process, so tests run
+ * them against a temp plist and a fake launchctl/crontab instead of the real
+ * ~/Library/LaunchAgents.
+ */
+export interface ScheduleDeps {
+  platform: NodeJS.Platform;
+  /** Absolute path of the launchd plist. */
+  plistPath: string;
+  /** The env the schedule is created from and compared against. */
+  env: Record<string, string | undefined>;
+  /** Runs a shell command and returns stdout; throws on a non-zero exit. */
+  exec: (command: string, input?: string) => string;
+  /** The program argv the scheduler should start. */
+  resolveCommand: () => string[];
+  readFile: (filePath: string) => Promise<string>;
+  writeFile: (filePath: string, content: string) => Promise<void>;
+  mkdir: (dirPath: string) => Promise<void>;
+  unlink: (filePath: string) => Promise<void>;
+}
+
+export function defaultScheduleDeps(): ScheduleDeps {
+  return {
+    platform: process.platform,
+    plistPath: path.join(
+      os.homedir(),
+      "Library",
+      "LaunchAgents",
+      `${LAUNCHD_LABEL}.plist`,
+    ),
+    env: process.env,
+    exec: (command, input) =>
+      execSync(command, {
+        encoding: "utf8",
+        input,
+        stdio: ["pipe", "pipe", "ignore"],
+      }),
+    resolveCommand: () => resolveScheduledCommand(),
+    readFile: (filePath) => fsp.readFile(filePath, "utf8"),
+    writeFile: (filePath, content) => fsp.writeFile(filePath, content),
+    mkdir: async (dirPath) => {
+      await fsp.mkdir(dirPath, { recursive: true });
+    },
+    unlink: (filePath) => fsp.unlink(filePath),
+  };
 }
 
 export class ScheduleTargetUnstableError extends Error {}
@@ -6759,44 +6865,57 @@ export function resolveScheduledCommand(
   return [execPath, entryScript];
 }
 
-async function getExistingScheduleInterval(): Promise<number | null> {
-  if (process.platform === "darwin") {
+/** The installed job as its definition reads, or null when there is none. */
+async function readInstalledSchedule(deps: ScheduleDeps): Promise<
+  | (InstalledSchedule & {
+      mechanism: "launchd" | "cron" | "schtasks";
+      definition: string;
+    })
+  | null
+> {
+  if (deps.platform === "darwin") {
     try {
-      const content = await fsp.readFile(LAUNCHD_PLIST_PATH, "utf8");
-      const match = content.match(
-        /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/,
-      );
-      return match ? parseInt(match[1], 10) : null;
+      const content = await deps.readFile(deps.plistPath);
+      return {
+        ...parseLaunchdPlist(content),
+        mechanism: "launchd",
+        definition: content,
+      };
     } catch {
       return null;
     }
   }
 
-  if (process.platform === "linux") {
+  if (deps.platform === "linux") {
     try {
-      const crontab = execSync("crontab -l 2>/dev/null", { encoding: "utf8" });
-      const vanaLine = crontab
+      const vanaLine = deps
+        .exec("crontab -l 2>/dev/null")
         .split("\n")
         .find((line) => line.includes(CRONTAB_MARKER));
       if (!vanaLine) return null;
-      // Parse hour interval from crontab: look for */N pattern
-      const hourMatch = /\*\/(\d+)/.exec(vanaLine);
-      if (hourMatch) return parseInt(hourMatch[1], 10) * 3600;
-      // Daily (0 0 * * *)
-      return 86400;
+      return {
+        ...parseCrontabEntry(vanaLine),
+        mechanism: "cron",
+        definition: vanaLine,
+      };
     } catch {
       return null;
     }
   }
 
-  if (process.platform === "win32") {
+  if (deps.platform === "win32") {
     try {
-      execSync(`schtasks /Query /TN "${WINDOWS_TASK_NAME}" /FO LIST`, {
-        encoding: "utf8",
-      });
-      // Task exists but we can't easily parse the interval; return a
-      // sentinel value (86400) to indicate "schedule present".
-      return 86400;
+      const output = deps.exec(
+        `schtasks /Query /TN "${WINDOWS_TASK_NAME}" /FO LIST`,
+      );
+      // The interval is not easily parsed back; 86400 means "present".
+      return {
+        intervalSeconds: 86400,
+        logPath: null,
+        env: {},
+        mechanism: "schtasks",
+        definition: output,
+      };
     } catch {
       return null;
     }
@@ -6805,66 +6924,53 @@ async function getExistingScheduleInterval(): Promise<number | null> {
   return null;
 }
 
-export function generateLaunchdPlist(
-  vanaCommand: string[],
-  intervalSeconds: number,
-): string {
-  const logsPath = path.join(getLogsDir(), "schedule.log");
-  const programArgs = vanaCommand
-    .map((arg) => `    <string>${escapeXml(arg)}</string>`)
-    .join("\n");
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${LAUNCHD_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-${programArgs}
-    <string>collect</string>
-    <string>--all</string>
-    <string>--quiet</string>
-    <string>--no-input</string>
-  </array>
-  <key>StartInterval</key>
-  <integer>${intervalSeconds}</integer>
-  <key>StandardOutPath</key>
-  <string>${escapeXml(logsPath)}</string>
-  <key>StandardErrorPath</key>
-  <string>${escapeXml(logsPath)}</string>
-  <key>RunAtLoad</key>
-  <true/>
-</dict>
-</plist>
-`;
+async function getExistingScheduleInterval(): Promise<number | null> {
+  const installed = await readInstalledSchedule(defaultScheduleDeps());
+  return installed ? (installed.intervalSeconds ?? 86400) : null;
 }
 
-function generateCrontabEntry(
-  vanaCommand: string[],
-  intervalHours: number,
-): string {
-  const logsPath = path.join(getLogsDir(), "schedule.log");
-  const hourExpr = intervalHours >= 24 ? "0" : `0`;
-  const dayExpr = "*";
-  const hourInterval =
-    intervalHours >= 24 ? "0" : intervalHours >= 1 ? `*/${intervalHours}` : "*";
-  const program = vanaCommand.map((arg) => quoteForShell(arg)).join(" ");
-  return `${hourExpr} ${hourInterval} ${dayExpr} * * ${program} collect --all --quiet --no-input >> ${quoteForShell(logsPath)} 2>&1 ${CRONTAB_MARKER}`;
+/** Plain words for the drift `schedule add` repairs and `list` warns about. */
+function describeScheduleDrift(drift: ScheduleDrift): string {
+  switch (drift.kind) {
+    case "log_outside_home":
+      return drift.logPath
+        ? `It logs to ${formatDisplayPath(drift.logPath)}, outside the state it collects into (${formatDisplayPath(drift.home)}).`
+        : `It keeps no log in the state it collects into (${formatDisplayPath(drift.home)}).`;
+    case "home_not_pinned":
+      return "It was written by an older CLI that does not pin its state or record its runs.";
+    case "other_home":
+      return `It collects into ${formatDisplayPath(drift.home)}, not this shell's ${formatDisplayPath(drift.currentHome)}.`;
+  }
 }
 
-async function runScheduleAdd(
-  interval: string,
+function isRepairableDrift(drift: ScheduleDrift): boolean {
+  return drift.kind !== "other_home";
+}
+
+/**
+ * Install or refresh the scheduled collection. Re-running it is the repair
+ * for a job written by an older CLI: the job is rewritten to pin the state
+ * of the shell running `add`, with its log inside that state.
+ *
+ * @param interval - `--every`; when omitted an existing job keeps its own.
+ */
+export async function runScheduleAdd(
+  interval: string | undefined,
   options: GlobalOptions,
+  deps: ScheduleDeps = defaultScheduleDeps(),
 ): Promise<number> {
   const emit = createEmitter(options);
-  const intervalSeconds = parseIntervalSeconds(interval);
+  const target = resolveScheduleTarget(deps.env, options.network);
+  const existing = await readInstalledSchedule(deps);
+  const intervalSeconds =
+    interval !== undefined
+      ? parseIntervalSeconds(interval)
+      : (existing?.intervalSeconds ?? 86400);
   const intervalLabel = formatIntervalHuman(intervalSeconds);
 
   let vanaCommand: string[];
   try {
-    vanaCommand = resolveScheduledCommand();
+    vanaCommand = deps.resolveCommand();
   } catch (error) {
     if (!(error instanceof ScheduleTargetUnstableError)) {
       throw error;
@@ -6873,68 +6979,143 @@ async function runScheduleAdd(
     emit.detail(
       "Install the CLI first (`npm install -g vana-cli`), then run `vana schedule add` from that install.",
     );
-    return 1;
+    return CliExitCode.FAILURE;
   }
 
-  await fsp.mkdir(getLogsDir(), { recursive: true });
+  await deps.mkdir(path.dirname(target.logPath));
 
-  if (process.platform === "darwin") {
-    // macOS: launchd
-    const plist = generateLaunchdPlist(vanaCommand, intervalSeconds);
-    const plistDir = path.dirname(LAUNCHD_PLIST_PATH);
-    await fsp.mkdir(plistDir, { recursive: true });
+  const repaired = existing
+    ? diagnoseSchedule(existing, target.home).drift.filter(isRepairableDrift)
+    : [];
 
-    // Unload existing if present
+  let mechanism: "launchd" | "cron" | "schtasks";
+  let definition: string;
+  if (deps.platform === "darwin") {
+    mechanism = "launchd";
+    definition = generateLaunchdPlist(vanaCommand, intervalSeconds, target);
+  } else if (deps.platform === "linux") {
+    // cron doesn't defer missed jobs (unlike launchd), so we run hourly and
+    // let isCollectionDue() filter per-source. A missed 2am tick self-heals
+    // at 3am instead of waiting 24h.
+    mechanism = "cron";
+    definition = generateCrontabEntry(vanaCommand, 1, target);
+  } else if (deps.platform === "win32") {
+    mechanism = "schtasks";
+    definition = "";
+  } else {
+    emit.info(
+      "Scheduled collection is not supported on this platform. Run `vana collect --all` manually.",
+    );
+    return CliExitCode.FAILURE;
+  }
+
+  const unchanged =
+    existing !== null &&
+    existing.mechanism === mechanism &&
+    mechanism !== "schtasks" &&
+    existing.definition.trim() === definition.trim();
+  const action: "added" | "updated" | "repaired" | "unchanged" = unchanged
+    ? "unchanged"
+    : existing === null
+      ? "added"
+      : repaired.length > 0
+        ? "repaired"
+        : "updated";
+
+  if (!unchanged) {
+    const installed = await installScheduleDefinition(
+      mechanism,
+      definition,
+      vanaCommand,
+      intervalSeconds,
+      deps,
+    );
+    if (!installed.ok) {
+      emit.info(installed.message);
+      emit.detail(installed.manual);
+      return CliExitCode.FAILURE;
+    }
+  }
+
+  trackActiveTelemetryEvent("schedule_added", {
+    metadata: { interval: intervalLabel, mechanism, action },
+  });
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify({
+        ok: true,
+        action,
+        interval: intervalLabel,
+        mechanism,
+        ...(mechanism === "launchd" ? { plistPath: deps.plistPath } : {}),
+        ...(mechanism === "schtasks"
+          ? {}
+          : { home: target.home, logPath: target.logPath }),
+        repaired: repaired.map((d) => d.kind),
+      })}\n`,
+    );
+    return CliExitCode.OK;
+  }
+
+  const every = intervalLabel === "1d" ? "daily" : `every ${intervalLabel}`;
+  if (action === "unchanged") {
+    emit.info(`The ${every} collection schedule is already up to date.`);
+  } else if (action === "repaired") {
+    emit.info(`Repaired the ${every} collection schedule.`);
+    for (const drift of repaired) {
+      emit.detail(`Was: ${describeScheduleDrift(drift)}`);
+    }
+  } else if (action === "updated") {
+    emit.info(`Updated the ${every} collection schedule.`);
+  } else {
+    emit.info(`Added ${every} collection schedule.`);
+  }
+  emit.detail(`Runs: ${emit.code("vana collect --all --quiet")}`);
+  if (mechanism !== "schtasks") {
+    emit.detail(`State: ${formatDisplayPath(target.home)}`);
+    emit.detail(`Log: ${formatDisplayPath(target.logPath)}`);
+  }
+  emit.detail(
+    `Managed by: ${mechanism === "schtasks" ? "Task Scheduler" : mechanism}`,
+  );
+  return CliExitCode.OK;
+}
+
+async function installScheduleDefinition(
+  mechanism: "launchd" | "cron" | "schtasks",
+  definition: string,
+  vanaCommand: string[],
+  intervalSeconds: number,
+  deps: ScheduleDeps,
+): Promise<{ ok: true } | { ok: false; message: string; manual: string }> {
+  if (mechanism === "launchd") {
+    // launchd keeps the job it loaded; a new plist on disk changes nothing
+    // until the old one is unloaded and the new one loaded.
     try {
-      execSync(`launchctl unload "${LAUNCHD_PLIST_PATH}" 2>/dev/null`, {
-        stdio: "ignore",
-      });
+      deps.exec(`launchctl unload "${deps.plistPath}" 2>/dev/null`);
     } catch {
       // Not loaded, that's fine
     }
-
-    await fsp.writeFile(LAUNCHD_PLIST_PATH, plist);
-
+    await deps.mkdir(path.dirname(deps.plistPath));
+    await deps.writeFile(deps.plistPath, definition);
     try {
-      execSync(`launchctl load "${LAUNCHD_PLIST_PATH}"`, { stdio: "ignore" });
+      deps.exec(`launchctl load "${deps.plistPath}"`);
+      return { ok: true };
     } catch {
-      emit.info("Could not load the launchd plist. Load it manually:");
-      emit.detail(`launchctl load "${LAUNCHD_PLIST_PATH}"`);
-      return 1;
+      return {
+        ok: false,
+        message: "Could not load the launchd plist. Load it manually:",
+        manual: `launchctl load "${deps.plistPath}"`,
+      };
     }
-
-    trackActiveTelemetryEvent("schedule_added", {
-      metadata: { interval: intervalLabel, mechanism: "launchd" },
-    });
-
-    if (options.json) {
-      process.stdout.write(
-        `${JSON.stringify({ ok: true, interval: intervalLabel, mechanism: "launchd", plistPath: LAUNCHD_PLIST_PATH })}\n`,
-      );
-      return 0;
-    }
-
-    emit.info(
-      `Added ${intervalLabel === "1d" ? "daily" : `every ${intervalLabel}`} collection schedule.`,
-    );
-    emit.detail(`Runs: ${emit.code("vana collect --all --quiet")}`);
-    emit.detail(`Managed by: launchd`);
-    return 0;
   }
 
-  if (process.platform === "linux") {
-    // Linux: cron doesn't defer missed jobs (unlike launchd), so we run
-    // hourly and let isCollectionDue() filter per-source. This way a
-    // missed 2am tick self-heals at 3am instead of waiting 24h.
-    const entry = generateCrontabEntry(vanaCommand, 1);
-
+  if (mechanism === "cron") {
     try {
-      // Read existing crontab, filter out old vana entries, add new one
       let existing = "";
       try {
-        existing = execSync("crontab -l 2>/dev/null", {
-          encoding: "utf8",
-        });
+        existing = deps.exec("crontab -l 2>/dev/null");
       } catch {
         // No existing crontab
       }
@@ -6942,311 +7123,207 @@ async function runScheduleAdd(
         .split("\n")
         .filter((line) => !line.includes(CRONTAB_MARKER))
         .join("\n");
-      const newCrontab = `${filtered.trimEnd()}\n${entry}\n`;
-      execSync("crontab -", {
-        input: newCrontab,
-        encoding: "utf8",
-      });
+      deps.exec("crontab -", `${filtered.trimEnd()}\n${definition}\n`);
+      return { ok: true };
     } catch {
-      emit.info("Could not update crontab. Add this entry manually:");
-      emit.detail(entry);
-      return 1;
+      return {
+        ok: false,
+        message: "Could not update crontab. Add this entry manually:",
+        manual: definition,
+      };
     }
-
-    trackActiveTelemetryEvent("schedule_added", {
-      metadata: { interval: intervalLabel, mechanism: "cron" },
-    });
-
-    if (options.json) {
-      process.stdout.write(
-        `${JSON.stringify({ ok: true, interval: intervalLabel, mechanism: "cron" })}\n`,
-      );
-      return 0;
-    }
-
-    emit.info(
-      `Added ${intervalLabel === "1d" ? "daily" : `every ${intervalLabel}`} collection schedule.`,
-    );
-    emit.detail(`Runs: ${emit.code("vana collect --all --quiet")}`);
-    emit.detail(`Managed by: cron`);
-    return 0;
   }
 
-  if (process.platform === "win32") {
-    // Windows: Task Scheduler
-    const intervalMinutes = Math.max(1, Math.round(intervalSeconds / 60));
-    const trCmd = `${vanaCommand.map((arg) => `\\"${arg}\\"`).join(" ")} collect --all --quiet --no-input`;
-
+  const intervalMinutes = Math.max(1, Math.round(intervalSeconds / 60));
+  const trCmd = `${vanaCommand.map((arg) => `\\"${arg}\\"`).join(" ")} ${SCHEDULED_COLLECT_ARGS.join(" ")}`;
+  try {
     try {
-      try {
-        execSync(`schtasks /Delete /TN "${WINDOWS_TASK_NAME}" /F 2>nul`, {
-          stdio: "ignore",
-        });
-      } catch {
-        // Not present, that's fine
-      }
-
-      if (intervalSeconds >= 86400) {
-        execSync(
-          `schtasks /Create /TN "${WINDOWS_TASK_NAME}" /TR "${trCmd}" /SC DAILY /ST 09:00 /F`,
-          { stdio: "ignore" },
-        );
-      } else {
-        execSync(
-          `schtasks /Create /TN "${WINDOWS_TASK_NAME}" /TR "${trCmd}" /SC MINUTE /MO ${intervalMinutes} /F`,
-          { stdio: "ignore" },
-        );
-      }
-
-      // Enable StartWhenAvailable for deferred execution
-      try {
-        execSync(
-          `powershell -Command "$t = Get-ScheduledTask '${WINDOWS_TASK_NAME}'; $t.Settings.StartWhenAvailable = $true; Set-ScheduledTask -InputObject $t"`,
-          { stdio: "ignore" },
-        );
-      } catch {
-        // Non-fatal if PowerShell cmdlet fails
-      }
+      deps.exec(`schtasks /Delete /TN "${WINDOWS_TASK_NAME}" /F 2>nul`);
     } catch {
-      emit.info("Could not create scheduled task. Create it manually:");
-      emit.detail(
+      // Not present, that's fine
+    }
+    if (intervalSeconds >= 86400) {
+      deps.exec(
         `schtasks /Create /TN "${WINDOWS_TASK_NAME}" /TR "${trCmd}" /SC DAILY /ST 09:00 /F`,
       );
-      return 1;
+    } else {
+      deps.exec(
+        `schtasks /Create /TN "${WINDOWS_TASK_NAME}" /TR "${trCmd}" /SC MINUTE /MO ${intervalMinutes} /F`,
+      );
     }
+    // Enable StartWhenAvailable for deferred execution
+    try {
+      deps.exec(
+        `powershell -Command "$t = Get-ScheduledTask '${WINDOWS_TASK_NAME}'; $t.Settings.StartWhenAvailable = $true; Set-ScheduledTask -InputObject $t"`,
+      );
+    } catch {
+      // Non-fatal if PowerShell cmdlet fails
+    }
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      message: "Could not create scheduled task. Create it manually:",
+      manual: `schtasks /Create /TN "${WINDOWS_TASK_NAME}" /TR "${trCmd}" /SC DAILY /ST 09:00 /F`,
+    };
+  }
+}
 
-    trackActiveTelemetryEvent("schedule_added", {
-      metadata: { interval: intervalLabel, mechanism: "schtasks" },
-    });
+/**
+ * Show the installed job: how often, which state it collects into, where it
+ * logs, and whether it has drifted from what `schedule add` writes today.
+ */
+export async function runScheduleList(
+  options: GlobalOptions,
+  deps: ScheduleDeps = defaultScheduleDeps(),
+): Promise<number> {
+  const emit = createEmitter(options);
+  const installed = await readInstalledSchedule(deps);
 
+  if (!installed) {
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify({ scheduled: false })}\n`);
+      return CliExitCode.OK;
+    }
+    emit.info("No scheduled collection found.");
+    emit.detail(`Add one with ${emit.code("vana schedule add")}.`);
+    return CliExitCode.OK;
+  }
+
+  const intervalSeconds = installed.intervalSeconds ?? 86400;
+  const intervalLabel = formatIntervalHuman(intervalSeconds);
+
+  if (installed.mechanism === "schtasks") {
     if (options.json) {
       process.stdout.write(
-        `${JSON.stringify({ ok: true, interval: intervalLabel, mechanism: "schtasks" })}\n`,
+        `${JSON.stringify({
+          scheduled: true,
+          mechanism: "schtasks",
+          taskName: WINDOWS_TASK_NAME,
+        })}\n`,
       );
-      return 0;
+      return CliExitCode.OK;
     }
-
-    emit.info(
-      `Added ${intervalLabel === "1d" ? "daily" : `every ${intervalLabel}`} collection schedule.`,
-    );
-    emit.detail(`Runs: ${emit.code("vana collect --all --quiet")}`);
-    emit.detail(`Managed by: Task Scheduler`);
-    return 0;
+    emit.keyValue("Scheduled collection", "Task Scheduler", "muted");
+    const statusLine = installed.definition
+      .split("\n")
+      .find((l) => l.includes("Status:"));
+    if (statusLine) {
+      emit.detail(statusLine.trim());
+    }
+    return CliExitCode.OK;
   }
 
-  // Unsupported platform
-  emit.info(
-    "Scheduled collection is not supported on this platform. Run `vana collect --all` manually.",
+  const { jobHome, drift } = diagnoseSchedule(
+    installed,
+    vanaHomeForEnv(deps.env),
   );
-  return 1;
-}
+  const outdated = drift.some(isRepairableDrift);
 
-async function runScheduleList(options: GlobalOptions): Promise<number> {
-  const emit = createEmitter(options);
-
-  if (process.platform === "darwin") {
-    // Check launchd plist
-    try {
-      await fsp.access(LAUNCHD_PLIST_PATH);
-      const content = await fsp.readFile(LAUNCHD_PLIST_PATH, "utf8");
-      const intervalMatch = content.match(
-        /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/,
-      );
-      const intervalSeconds = intervalMatch
-        ? parseInt(intervalMatch[1], 10)
-        : 86400;
-      const intervalLabel = formatIntervalHuman(intervalSeconds);
-      const nextInSeconds = intervalSeconds; // Approximate; launchd doesn't expose exact next-run
-      const nextLabel = `~${formatIntervalHuman(nextInSeconds)}`;
-
-      if (options.json) {
-        process.stdout.write(
-          `${JSON.stringify({
-            scheduled: true,
-            interval: intervalLabel,
-            intervalSeconds,
-            mechanism: "launchd",
-            plistPath: LAUNCHD_PLIST_PATH,
-          })}\n`,
-        );
-        return 0;
-      }
-
-      emit.keyValue(
-        "Daily collection",
-        `every ${intervalLabel}    next: ${nextLabel}`,
-        "muted",
-      );
-      emit.detail(`Managed by: ${LAUNCHD_PLIST_PATH}`);
-      return 0;
-    } catch {
-      // No plist found
-    }
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify({
+        scheduled: true,
+        interval: intervalLabel,
+        intervalSeconds,
+        mechanism: installed.mechanism,
+        ...(installed.mechanism === "launchd"
+          ? { plistPath: deps.plistPath }
+          : { entry: installed.definition }),
+        home: jobHome,
+        logPath: installed.logPath,
+        env: installed.env,
+        outdated,
+        warnings: drift.map((d) => ({
+          kind: d.kind,
+          message: describeScheduleDrift(d),
+        })),
+      })}\n`,
+    );
+    return CliExitCode.OK;
   }
 
-  if (process.platform === "linux") {
-    // Check crontab
+  emit.keyValue(
+    "Scheduled collection",
+    `every ${intervalLabel}`,
+    outdated ? "warning" : "muted",
+  );
+  emit.detail(`State: ${formatDisplayPath(jobHome)}`);
+  emit.detail(
+    `Log: ${installed.logPath ? formatDisplayPath(installed.logPath) : "none"}`,
+  );
+  emit.detail(
+    `Managed by: ${installed.mechanism === "launchd" ? deps.plistPath : "cron"}`,
+  );
+  for (const d of drift) {
+    emit.detail(`Warning: ${describeScheduleDrift(d)}`);
+  }
+  if (outdated) {
+    emit.detail(
+      `Repair it with ${emit.code("vana schedule add")}, run from the shell whose state it should collect into.`,
+    );
+  }
+  return CliExitCode.OK;
+}
+
+export async function runScheduleRemove(
+  options: GlobalOptions,
+  deps: ScheduleDeps = defaultScheduleDeps(),
+): Promise<number> {
+  const emit = createEmitter(options);
+  const installed = await readInstalledSchedule(deps);
+
+  let removed = false;
+  if (installed?.mechanism === "launchd") {
     try {
-      const crontab = execSync("crontab -l 2>/dev/null", {
-        encoding: "utf8",
-      });
-      const vanaLine = crontab
+      deps.exec(`launchctl unload "${deps.plistPath}"`);
+    } catch {
+      // Already unloaded
+    }
+    try {
+      await deps.unlink(deps.plistPath);
+      removed = true;
+    } catch {
+      // Gone already
+    }
+  } else if (installed?.mechanism === "cron") {
+    try {
+      const filtered = deps
+        .exec("crontab -l 2>/dev/null")
         .split("\n")
-        .find((line) => line.includes(CRONTAB_MARKER));
-      if (vanaLine) {
-        if (options.json) {
-          process.stdout.write(
-            `${JSON.stringify({
-              scheduled: true,
-              mechanism: "cron",
-              entry: vanaLine,
-            })}\n`,
-          );
-          return 0;
-        }
-
-        emit.keyValue("Daily collection", "cron", "muted");
-        emit.detail(`Entry: ${vanaLine.replace(CRONTAB_MARKER, "").trim()}`);
-        return 0;
-      }
+        .filter((line) => !line.includes(CRONTAB_MARKER))
+        .join("\n");
+      deps.exec("crontab -", `${filtered.trimEnd()}\n`);
+      removed = true;
     } catch {
       // No crontab available
     }
-  }
-
-  if (process.platform === "win32") {
+  } else if (installed?.mechanism === "schtasks") {
     try {
-      const output = execSync(
-        `schtasks /Query /TN "${WINDOWS_TASK_NAME}" /FO LIST`,
-        { encoding: "utf8" },
-      );
-      if (options.json) {
-        process.stdout.write(
-          `${JSON.stringify({
-            scheduled: true,
-            mechanism: "schtasks",
-            taskName: WINDOWS_TASK_NAME,
-          })}\n`,
-        );
-        return 0;
-      }
-      emit.keyValue("Daily collection", "Task Scheduler", "muted");
-      // Extract schedule info from output
-      const statusLine = output.split("\n").find((l) => l.includes("Status:"));
-      if (statusLine) {
-        emit.detail(statusLine.trim());
-      }
-      return 0;
+      deps.exec(`schtasks /Delete /TN "${WINDOWS_TASK_NAME}" /F`);
+      removed = true;
     } catch {
       // Task not found
     }
   }
 
-  if (options.json) {
-    process.stdout.write(`${JSON.stringify({ scheduled: false })}\n`);
-    return 0;
-  }
-
-  emit.info("No scheduled collection found.");
-  emit.detail(`Add one with ${emit.code("vana schedule add")}.`);
-  return 0;
-}
-
-async function runScheduleRemove(options: GlobalOptions): Promise<number> {
-  const emit = createEmitter(options);
-
-  if (process.platform === "darwin") {
-    try {
-      await fsp.access(LAUNCHD_PLIST_PATH);
-      try {
-        execSync(`launchctl unload "${LAUNCHD_PLIST_PATH}"`, {
-          stdio: "ignore",
-        });
-      } catch {
-        // Already unloaded
-      }
-      await fsp.unlink(LAUNCHD_PLIST_PATH);
-      trackActiveTelemetryEvent("schedule_removed", {
-        metadata: { mechanism: "launchd" },
-      });
-
-      if (options.json) {
-        process.stdout.write(
-          `${JSON.stringify({ ok: true, removed: true })}\n`,
-        );
-        return 0;
-      }
-
-      emit.info("Removed daily collection schedule.");
-      return 0;
-    } catch {
-      // No plist found, fall through
-    }
-  }
-
-  if (process.platform === "linux") {
-    try {
-      const existing = execSync("crontab -l 2>/dev/null", {
-        encoding: "utf8",
-      });
-      if (existing.includes(CRONTAB_MARKER)) {
-        const filtered = existing
-          .split("\n")
-          .filter((line) => !line.includes(CRONTAB_MARKER))
-          .join("\n");
-        execSync("crontab -", {
-          input: `${filtered.trimEnd()}\n`,
-          encoding: "utf8",
-        });
-        trackActiveTelemetryEvent("schedule_removed", {
-          metadata: { mechanism: "cron" },
-        });
-
-        if (options.json) {
-          process.stdout.write(
-            `${JSON.stringify({ ok: true, removed: true })}\n`,
-          );
-          return 0;
-        }
-
-        emit.info("Removed daily collection schedule.");
-        return 0;
-      }
-    } catch {
-      // No crontab available
-    }
-  }
-
-  if (process.platform === "win32") {
-    try {
-      execSync(`schtasks /Delete /TN "${WINDOWS_TASK_NAME}" /F`, {
-        stdio: "ignore",
-      });
-      trackActiveTelemetryEvent("schedule_removed", {
-        metadata: { mechanism: "schtasks" },
-      });
-
-      if (options.json) {
-        process.stdout.write(
-          `${JSON.stringify({ ok: true, removed: true })}\n`,
-        );
-        return 0;
-      }
-
-      emit.info("Removed daily collection schedule.");
-      return 0;
-    } catch {
-      // Task not found
-    }
+  if (removed && installed) {
+    trackActiveTelemetryEvent("schedule_removed", {
+      metadata: { mechanism: installed.mechanism },
+    });
   }
 
   if (options.json) {
-    process.stdout.write(`${JSON.stringify({ ok: true, removed: false })}\n`);
-    return 0;
+    process.stdout.write(`${JSON.stringify({ ok: true, removed })}\n`);
+    return CliExitCode.OK;
   }
 
-  emit.info("No scheduled collection found to remove.");
-  return 0;
+  emit.info(
+    removed
+      ? "Removed the collection schedule."
+      : "No scheduled collection found to remove.",
+  );
+  return CliExitCode.OK;
 }
 
 function isPromptCancelled(error: unknown): boolean {

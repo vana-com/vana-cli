@@ -28,9 +28,15 @@ export {
   readCliConfig,
   updateCliConfig,
   updateSourceState,
+  recordScheduledRun,
   ensureParentDir,
 } from "./state-store.js";
-export type { CliConfig, LocalConnectorEntry } from "./state-store.js";
+export type {
+  CliConfig,
+  LocalConnectorEntry,
+  ScheduledRunRecord,
+  ScheduledSourceOutcome,
+} from "./state-store.js";
 export type {
   ConnectionStatus,
   SessionInitParams,
