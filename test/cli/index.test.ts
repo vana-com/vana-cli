@@ -34,6 +34,9 @@ const mockPassword = vi.fn();
 const mockSelect = vi.fn();
 const mockSearchSelect = vi.fn();
 const mockReaddir = vi.fn();
+// Never read or stop the real servers vana runs on this machine.
+const mockRunningCliServers = vi.fn((): unknown[] | undefined => undefined);
+const mockStopLocalServer = vi.fn(async () => "stopped");
 const mockReadFile = vi.fn();
 const mockReadFileSync = vi.fn();
 const mockExistsSync = vi.fn();
@@ -231,6 +234,24 @@ vi.mock("../../src/personal-server/local/server.js", async () => ({
   findRunningServers: mockFindRunningServers,
 }));
 
+vi.mock("../../src/personal-server/local/data-dir.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../src/personal-server/local/data-dir.js")
+  >("../../src/personal-server/local/data-dir.js");
+  return {
+    ...actual,
+    runningCliServers: (network: "moksha" | "mainnet") =>
+      mockRunningCliServers() ?? actual.runningCliServers(network),
+  };
+});
+
+vi.mock("../../src/personal-server/local/detach.js", async () => ({
+  ...(await vi.importActual<object>(
+    "../../src/personal-server/local/detach.js",
+  )),
+  stopLocalServer: mockStopLocalServer,
+}));
+
 vi.mock("../../src/cli/search-select.js", () => ({
   searchSelect: mockSearchSelect,
 }));
@@ -376,6 +397,10 @@ describe("runCli", () => {
     mockInput.mockReset();
     mockPassword.mockReset();
     mockReaddir.mockReset();
+    mockRunningCliServers.mockReset();
+    mockRunningCliServers.mockReturnValue(undefined);
+    mockStopLocalServer.mockReset();
+    mockStopLocalServer.mockResolvedValue("stopped");
     mockReadFile.mockReset();
     mockReadFileSync.mockReset();
     mockExistsSync.mockReset();
@@ -1915,6 +1940,144 @@ describe("runCli", () => {
     expect(payload.dataDir).toContain(
       `${["cli", "personal-server", "mainnet"].join("/")}`,
     );
+  });
+
+  it("labels a `vana server start` server by its data dir after an account switch", async () => {
+    // auth.json belongs to the account signed in now, with no started_by:
+    // the lock and key in the CLI's data dir still say vana runs this one.
+    const owner = "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d";
+    const dataDir = `/home/.vana/cli/personal-server/mainnet/${owner.toLowerCase()}`;
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "available",
+      url: "http://localhost:8080",
+      source: "scan",
+      health: {
+        status: "healthy",
+        gatewayUrl: "https://dp-rpc.vana.org",
+        owner,
+        identity: "0x86f0c856718414ee5a52ab23f3ba1fd150563bb3",
+      },
+    });
+    mockReadFileSync.mockImplementation((filePath: string) => {
+      if (String(filePath).endsWith("/auth.json")) {
+        return JSON.stringify({
+          account: {
+            address: "0xaff7000000000000000000000000000000000001",
+            session_token: "vana_account_session",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+        });
+      }
+      throw new Error("missing");
+    });
+    mockExistsSync.mockReturnValue(true);
+    mockRunningCliServers.mockReturnValue([
+      {
+        dir: dataDir,
+        owner,
+        identity: "0x86F0c856718414eE5A52AB23f3bA1fd150563BB3",
+        pid: 9188,
+      },
+      {
+        dir: "/home/.vana/cli/personal-server/mainnet/0xaff7",
+        owner: "0xaff7000000000000000000000000000000000001",
+        identity: "0x0000000000000000000000000000000000000002",
+        pid: 9200,
+      },
+    ]);
+
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(await runCli(["node", "vana", "server", "status", "--json"])).toBe(
+      0,
+    );
+    const payload = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
+    expect(payload.runBy).toBe("cli");
+    expect(payload.dataDir).toBe(dataDir);
+    expect(payload.otherLocalServers).toEqual([
+      {
+        owner: "0xaff7000000000000000000000000000000000001",
+        pid: 9200,
+        dataDir: "/home/.vana/cli/personal-server/mainnet/0xaff7",
+      },
+    ]);
+
+    stdout = "";
+    expect(await runCli(["node", "vana", "server", "status"])).toBe(0);
+    expect(stdout).toContain("(vana server start for 0x99Bf...88d)");
+    expect(stdout).not.toContain("Vana Desktop");
+  });
+
+  it("server stop leaves another account's server running and says whose it is", async () => {
+    mockReadFileSync.mockImplementation((filePath: string) => {
+      if (String(filePath).endsWith("/auth.json")) {
+        return JSON.stringify({
+          account: {
+            address: "0xaff7000000000000000000000000000000000001",
+            session_token: "vana_account_session",
+            expires_at: "2020-01-01T00:00:00.000Z",
+          },
+        });
+      }
+      throw new Error("missing");
+    });
+    const owner = "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d";
+    mockRunningCliServers.mockReturnValue([
+      { dir: "/ps/mainnet", owner, identity: null, pid: 9188 },
+    ]);
+
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(
+      await runCli([
+        "node",
+        "vana",
+        "--network",
+        "mainnet",
+        "server",
+        "stop",
+        "--json",
+      ]),
+    ).toBe(0);
+    expect(mockStopLocalServer).not.toHaveBeenCalled();
+    expect(JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}")).toEqual({
+      type: "server-stop",
+      result: "not-running",
+      network: "mainnet",
+      owner: null,
+      stillRunning: [{ owner, pid: 9188 }],
+    });
+  });
+
+  it("server stop stops the signed-in account's server", async () => {
+    const owner = "0xaff7000000000000000000000000000000000001";
+    mockReadFileSync.mockImplementation((filePath: string) => {
+      if (String(filePath).endsWith("/auth.json")) {
+        return JSON.stringify({
+          account: {
+            address: owner,
+            session_token: "s",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+        });
+      }
+      throw new Error("missing");
+    });
+    mockRunningCliServers.mockReturnValue([
+      {
+        dir: "/ps/mainnet",
+        owner: "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d",
+        identity: null,
+        pid: 9188,
+      },
+      { dir: `/ps/mainnet/${owner}`, owner, identity: null, pid: 9200 },
+    ]);
+
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(await runCli(["node", "vana", "server", "stop", "--json"])).toBe(0);
+    expect(mockStopLocalServer).toHaveBeenCalledWith(`/ps/mainnet/${owner}`);
+    expect(JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}")).toMatchObject({
+      result: "stopped",
+      owner,
+    });
   });
 
   it("shows the full authenticated account address in human status output", async () => {

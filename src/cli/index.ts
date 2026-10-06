@@ -100,11 +100,12 @@ import {
 import { getPdppProfileRoot } from "../pdpp/host.js";
 import { runServerStart, type ServerStartIo } from "./server-start.js";
 import { findRunningServers } from "../personal-server/local/server.js";
+import { stopLocalServer } from "../personal-server/local/detach.js";
 import {
-  runningServerPid,
-  stopLocalServer,
-} from "../personal-server/local/detach.js";
-import { localServerDataDir } from "../personal-server/local/config.js";
+  runningCliServers,
+  serverToStop,
+  type CliServerDir,
+} from "../personal-server/local/data-dir.js";
 import { PdppRuntime } from "../pdpp/runtime.js";
 import {
   addLocalConnector,
@@ -135,6 +136,7 @@ import {
   loadCredentials,
   loadPersonalServerSession,
   readStoredAuthFile,
+  readStoredAccountAddress,
   saveCredentials,
   clearCredentials,
   isExpired,
@@ -896,21 +898,42 @@ Examples:
         { ...telemetryBaseContext, command: "server", subcommand: "stop" },
         async () => {
           const network = resolveNetwork(parsedOptions.network).name;
-          const result = await stopLocalServer(network);
+          // Stopping needs no live session: the account is the one signed in
+          // last, expired or not.
+          const account = readStoredAccountAddress();
+          const { target, others } = serverToStop(
+            runningCliServers(network),
+            account,
+          );
+          const result = target
+            ? await stopLocalServer(target.dir)
+            : "not-running";
           if (parsedOptions.json) {
             process.stdout.write(
-              `${JSON.stringify({ type: "server-stop", result, network })}\n`,
+              `${JSON.stringify({
+                type: "server-stop",
+                result,
+                network,
+                owner: target?.owner ?? null,
+                stillRunning: others.map((other) => ({
+                  owner: other.owner,
+                  pid: other.pid,
+                })),
+              })}\n`,
             );
           } else {
-            process.stderr.write(
-              `${
-                result === "stopped"
-                  ? "Stopped."
-                  : result === "not-running"
-                    ? `No Personal Server started by vana is running (${network}).`
-                    : "The server did not stop in time."
-              }\n`,
-            );
+            const lines = [
+              result === "stopped"
+                ? `Stopped${target?.owner ? ` the Personal Server of ${target.owner}` : ""}.`
+                : result === "not-running"
+                  ? `No Personal Server ${account && account !== "env" ? `of ${account} ` : ""}started by vana is running (${network}).`
+                  : "The server did not stop in time.",
+              ...others.map(
+                (other) =>
+                  `vana still runs the Personal Server of ${other.owner ?? "another account"} (pid ${other.pid}); sign in as that account to stop it.`,
+              ),
+            ];
+            process.stderr.write(`${lines.join("\n")}\n`);
           }
           return result === "timeout" ? CliExitCode.FAILURE : CliExitCode.OK;
         },
@@ -3157,26 +3180,43 @@ function networkOfGateway(gatewayUrl: unknown): VanaNetworkName | null {
   return /dp-rpc\.vana\.org/.test(gatewayUrl) ? "mainnet" : "moksha";
 }
 
-/** Where the running server keeps its data on this machine, when known. */
-function localDataDir(
+/**
+ * Where the running server keeps its data on this machine, when known: a
+ * server vana started is the one whose data dir holds a live lock and the
+ * key the server answers with, whoever is signed in now.
+ */
+export function localDataDir(
   target: PersonalServerTarget,
   network: VanaNetworkName | null,
-): { path: string; runBy: "cli" | "desktop" } | null {
+  cliServers: CliServerDir[] = network ? runningCliServers(network) : [],
+): { path: string; runBy: "cli" | "desktop"; owner: string | null } | null {
   if (!target.url || !network) return null;
-  // Who started the server does not lapse with any session: read the saved
-  // block regardless of expiry.
-  const saved = readStoredAuthFile()?.personalServer;
-  if (
-    saved?.started_by === "vana-server-start" &&
-    urlsMatch(saved.url, target.url) &&
-    runningServerPid(network)
-  ) {
-    return { path: localServerDataDir(network), runBy: "cli" };
-  }
+  const identity = target.health?.identity ?? null;
+  const owner = target.health?.owner ?? null;
+  // A server that does not report its key: the one auth.json says vana
+  // started at this URL, when that tells which one.
+  const saved = readStoredAuthFile();
+  const startedHere =
+    saved?.personalServer?.started_by === "vana-server-start" &&
+    urlsMatch(saved.personalServer.url, target.url);
+  const cli =
+    cliServers.find((server) =>
+      identity
+        ? sameAccountAddress(server.identity, identity)
+        : sameAccountAddress(server.owner, owner),
+    ) ??
+    (!identity && startedHere
+      ? (cliServers.find((server) =>
+          sameAccountAddress(server.owner, saved?.address),
+        ) ?? (cliServers.length === 1 ? cliServers[0] : undefined))
+      : undefined);
+  if (cli) return { path: cli.dir, runBy: "cli", owner: cli.owner ?? owner };
   const desktop = path.join(getVanaHome(), "desktop", "personal-server");
   const perNetwork = path.join(desktop, network);
-  if (fs.existsSync(perNetwork)) return { path: perNetwork, runBy: "desktop" };
-  if (fs.existsSync(desktop)) return { path: desktop, runBy: "desktop" };
+  if (fs.existsSync(perNetwork)) {
+    return { path: perNetwork, runBy: "desktop", owner };
+  }
+  if (fs.existsSync(desktop)) return { path: desktop, runBy: "desktop", owner };
   return null;
 }
 
@@ -3206,7 +3246,12 @@ async function runServerStatus(
   const stale = registrations.filter((server) => !server.reachable);
   const network =
     networkOfGateway(target.health?.gatewayUrl) ?? live?.network ?? null;
-  const dataDir = localDataDir(target, network);
+  const cliServers = network ? runningCliServers(network) : [];
+  const dataDir = localDataDir(target, network, cliServers);
+  // Servers vana runs here for other accounts, which this status is not about.
+  const otherCliServers = cliServers.filter(
+    (server) => server.dir !== dataDir?.path,
+  );
   const state = await readCliState();
 
   // Count scopes from state
@@ -3230,6 +3275,11 @@ async function runServerStatus(
         publicNetwork: live?.network ?? null,
         dataDir: dataDir?.path ?? null,
         runBy: dataDir?.runBy ?? null,
+        otherLocalServers: otherCliServers.map((server) => ({
+          owner: server.owner,
+          pid: server.pid,
+          dataDir: server.dir,
+        })),
         registeredServers: registrations,
         health: target.health,
         scopeCount: totalScopeCount,
@@ -3266,7 +3316,7 @@ async function runServerStatus(
   if (target.url) {
     const runBy =
       dataDir?.runBy === "cli"
-        ? "vana server start"
+        ? `vana server start${dataDir.owner ? ` for ${formatAddress(dataDir.owner)}` : ""}`
         : dataDir?.runBy === "desktop"
           ? "Vana Desktop"
           : target.source === "scan"
@@ -3280,6 +3330,13 @@ async function runServerStatus(
   }
   if (dataDir) {
     emit.keyValue("Data on disk", formatDisplayPath(dataDir.path), "muted");
+  }
+  for (const other of otherCliServers) {
+    emit.keyValue(
+      "Also running",
+      `vana server start for ${other.owner ? formatAddress(other.owner) : "another account"} (pid ${other.pid})`,
+      "muted",
+    );
   }
   if (live) {
     emit.keyValue(

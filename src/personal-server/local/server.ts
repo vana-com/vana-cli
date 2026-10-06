@@ -7,11 +7,7 @@ import path from "node:path";
 
 import type { VanaNetworkName } from "../../core/network.js";
 import type { ResolvedNode } from "../../pdpp/host.js";
-import {
-  LOCAL_SERVER_PORTS,
-  localServerDataDir,
-  localServerNetwork,
-} from "./config.js";
+import { LOCAL_SERVER_PORTS, localServerNetwork } from "./config.js";
 import type { OwnerBinding } from "./owner-binding.js";
 
 /** A server already answering on a local port, and who owns it. */
@@ -178,6 +174,8 @@ export function nextMessage(
  */
 export async function startLocalServer(input: {
   network: VanaNetworkName;
+  /** The owner's own data dir (resolveServerDataDir). */
+  dataDir: string;
   node: ResolvedNode;
   runtimeDir: string;
   binding: OwnerBinding;
@@ -187,7 +185,7 @@ export async function startLocalServer(input: {
   frpcPath?: string | null;
   readyTimeoutMs?: number;
 }): Promise<LocalServerHandle> {
-  const dataDir = localServerDataDir(input.network);
+  const dataDir = input.dataDir;
   const release = await acquireDataDirLock(dataDir);
   const accessToken = crypto.randomBytes(32).toString("hex");
   const log = fs.createWriteStream(input.logPath, { flags: "a" });
@@ -344,20 +342,18 @@ export interface PublicMarker {
   registeredAt: string;
 }
 
-function publicMarkerPath(network: VanaNetworkName): string {
-  return path.join(localServerDataDir(network), ".vana-cli-public.json");
+function publicMarkerPath(dataDir: string): string {
+  return path.join(dataDir, ".vana-cli-public.json");
 }
 
 /**
  * A registered server stays public: registrations cannot be removed, so once
  * apps may look for it, every later start brings its tunnel back.
  */
-export function readPublicMarker(
-  network: VanaNetworkName,
-): PublicMarker | null {
+export function readPublicMarker(dataDir: string): PublicMarker | null {
   try {
     const value = JSON.parse(
-      fs.readFileSync(publicMarkerPath(network), "utf8"),
+      fs.readFileSync(publicMarkerPath(dataDir), "utf8"),
     ) as Partial<PublicMarker>;
     return typeof value.serverAddress === "string" &&
       typeof value.serverUrl === "string"
@@ -373,11 +369,11 @@ export function readPublicMarker(
 }
 
 export async function writePublicMarker(
-  network: VanaNetworkName,
+  dataDir: string,
   marker: PublicMarker,
 ): Promise<void> {
   await fsp.writeFile(
-    publicMarkerPath(network),
+    publicMarkerPath(dataDir),
     `${JSON.stringify(marker, null, 2)}\n`,
     { mode: 0o600 },
   );

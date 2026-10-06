@@ -97,9 +97,13 @@ pnpm cli -- <args>  # run the built CLI
 - **Never pass PDPP\_\* through to a Collection Profile connector.** A remote
   CDP URL makes its runtime attach to that browser and close every tab in
   it; `src/pdpp/runtime.ts` strips them all before spawning.
-- **`vana server start` never shares Vana Desktop's data dir.** It runs the
-  pinned server from `~/.vana/cli/personal-server/<network>`, local only, and
-  uses a server this account already runs instead of starting a second one.
+- **`vana server start` never shares Vana Desktop's data dir, nor another
+  account's.** It runs the pinned server from
+  `~/.vana/cli/personal-server/<network>/<owner address>`, and uses a server
+  this account already runs instead of starting a second one. A server key
+  is registered to one owner, so two accounts never open one dir; an older
+  server kept straight in `<network>/` moves into its owner's dir on the
+  next start (`src/personal-server/local/data-dir.ts`).
 - **Only `--public` registers, and only a tunnel URL.** Without a tunnel the
   server offers its localhost origin as the registration URL; registering
   that would leave a push-only entry no app can reach. A registered server

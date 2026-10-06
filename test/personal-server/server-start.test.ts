@@ -11,6 +11,10 @@ import {
 } from "../../src/cli/server-start.js";
 import type { VanaCredentials } from "../../src/cli/auth.js";
 import {
+  resolveServerDataDir,
+  serverPidIn,
+} from "../../src/personal-server/local/data-dir.js";
+import {
   acquireDataDirLock,
   choosePort,
   type LocalServerHandle,
@@ -35,6 +39,7 @@ function credentials(
 }
 
 const PUBLIC_URL = "https://0xserver.server-dev.vana.org";
+const DATA_DIR = `/ps/moksha/${OWNER.toLowerCase()}`;
 
 /**
  * A running server that says whether it is registered once someone listens,
@@ -137,6 +142,11 @@ function harness(overrides: Partial<ServerStartDeps> = {}) {
     })),
     readPublicMarker: vi.fn(() => null),
     writePublicMarker: vi.fn(async () => {}),
+    resolveDataDir: vi.fn(async () => ({
+      kind: "ready" as const,
+      dir: DATA_DIR,
+    })),
+    serverPidIn: vi.fn(() => null),
     startDetached: vi.fn(
       async (input: { onEvent?: (e: Record<string, unknown>) => void }) => {
         const events = [
@@ -378,7 +388,7 @@ describe("runServerStart", () => {
       { type: "submit-registration", signature: "0xreg" },
     ]);
     expect(h.deps.writePublicMarker).toHaveBeenCalledWith(
-      "moksha",
+      DATA_DIR,
       expect.objectContaining({
         serverAddress: "0xserver",
         serverUrl: PUBLIC_URL,
@@ -456,6 +466,190 @@ describe("runServerStart", () => {
       await runServerStart({ network: "moksha", detach: true }, h.io, h.deps),
     ).toBe(1);
     expect(h.said.join("\n")).toContain("/detached.log");
+  });
+
+  it("runs the owner's own data dir and keeps its registration marker there", async () => {
+    const h = harness();
+    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
+    expect(h.deps.resolveDataDir).toHaveBeenCalledWith("moksha", OWNER, []);
+    expect(h.deps.readPublicMarker).toHaveBeenCalledWith(DATA_DIR);
+    expect(h.deps.start).toHaveBeenCalledWith(
+      expect.objectContaining({ dataDir: DATA_DIR }),
+    );
+  });
+
+  it("refuses a server already running from this owner's dir before any browser", async () => {
+    const h = harness({ serverPidIn: vi.fn(() => 9188) });
+    expect(
+      await runServerStart({ network: "moksha", detach: true }, h.io, h.deps),
+    ).toBe(1);
+    expect(h.deps.exchange).not.toHaveBeenCalled();
+    expect(h.deps.openBrowser).not.toHaveBeenCalled();
+    expect(h.deps.startDetached).not.toHaveBeenCalled();
+    expect(h.events[0]).toMatchObject({
+      type: "server-failed",
+      reason: "already-running",
+      pid: 9188,
+      message: expect.stringContaining(
+        `already running from ${DATA_DIR} (pid 9188)`,
+      ),
+    });
+    expect(h.said.join("\n")).toContain("vana server stop");
+  });
+
+  it("refuses an older server nothing says the owner of, before any browser", async () => {
+    const h = harness({
+      resolveDataDir: vi.fn(async () => ({
+        kind: "unknown-owner" as const,
+        legacyDir: "/ps/moksha",
+        dir: DATA_DIR,
+      })),
+    });
+    expect(
+      await runServerStart({ network: "moksha", detach: true }, h.io, h.deps),
+    ).toBe(1);
+    expect(h.deps.exchange).not.toHaveBeenCalled();
+    expect(h.events[0]).toMatchObject({
+      type: "server-failed",
+      reason: "data-dir-owner-unknown",
+      dataDir: "/ps/moksha",
+    });
+    expect(h.said.join("\n")).toContain(
+      `Move its files into /ps/moksha/<owner address>/ (yours: ${DATA_DIR})`,
+    );
+  });
+
+  it("says when it moved the owner's server out of the older layout", async () => {
+    const h = harness({
+      resolveDataDir: vi.fn(async () => ({
+        kind: "ready" as const,
+        dir: DATA_DIR,
+        movedFrom: "/ps/moksha",
+      })),
+    });
+    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(0);
+    expect(h.events[0]).toMatchObject({
+      type: "server-data-moved",
+      from: "/ps/moksha",
+      to: DATA_DIR,
+    });
+  });
+
+  it("settles the data dir from the binding when the session names no address", async () => {
+    const h = harness({
+      loadCredentials: vi.fn(() => credentials({ address: "env" })),
+    });
+    h.store.set("account-dev.vana.org:env", {
+      signature: "0xsig",
+      signerAddress: OWNER,
+      trustToken: null,
+    });
+    expect(
+      await runServerStart({ network: "moksha", local: true }, h.io, h.deps),
+    ).toBe(0);
+    expect(h.deps.resolveDataDir).toHaveBeenCalledWith("moksha", OWNER, []);
+  });
+
+  it("hands the owner's data dir to the background server", async () => {
+    const h = harness();
+    expect(
+      await runServerStart({ network: "moksha", detach: true }, h.io, h.deps),
+    ).toBe(0);
+    expect(h.deps.startDetached).toHaveBeenCalledWith(
+      expect.objectContaining({ dataDir: DATA_DIR }),
+    );
+  });
+
+  it("--detach tells why the background server failed, in words and in JSON", async () => {
+    const message =
+      "A Personal Server started by vana is already running from /ps (pid 9188).";
+    const h = harness({
+      startDetached: vi.fn(async (input) => {
+        const events = [
+          { type: "server-failed", message, logPath: "/nowhere.log" },
+        ];
+        for (const event of events) input.onEvent?.(event);
+        return { events, ready: false, pid: 1, logPath: "/detached.log" };
+      }),
+    });
+    expect(
+      await runServerStart({ network: "moksha", detach: true }, h.io, h.deps),
+    ).toBe(1);
+    expect(h.said).toContain(message);
+    expect(h.events).toContainEqual(
+      expect.objectContaining({ type: "server-failed", message }),
+    );
+    // The log it named does not exist, so it points at one that does.
+    expect(h.said.join("\n")).toContain("See /detached.log.");
+  });
+
+  it("writes why the server failed to the log it points at", async () => {
+    const h = harness({
+      start: vi.fn(async () => {
+        throw new Error(
+          "A Personal Server started by vana is already running from /ps (pid 9188).",
+        );
+      }),
+    });
+    expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(1);
+    const failed = h.events.find((event) => event.type === "server-failed");
+    expect(failed).toMatchObject({
+      message: expect.stringContaining("already running"),
+    });
+    expect(fs.readFileSync(String(failed?.logPath), "utf8")).toContain(
+      "already running from /ps (pid 9188)",
+    );
+  });
+
+  it("starts a second account beside the first one's running server, in its own dir", async () => {
+    // The 0.38.3 report: A's server runs from the older per-network dir and
+    // B signs in. B must get its own dir, never A's key or index.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "vana-ps-two-"));
+    const original = process.env.VANA_HOME;
+    process.env.VANA_HOME = home;
+    try {
+      const legacy = path.join(home, "cli", "personal-server", "mainnet");
+      const key = "0x86F0c856718414eE5A52AB23f3bA1fd150563BB3";
+      fs.mkdirSync(legacy, { recursive: true });
+      fs.writeFileSync(
+        path.join(legacy, "key.json"),
+        JSON.stringify({ address: key }),
+      );
+      fs.writeFileSync(
+        path.join(legacy, ".vana-cli.lock"),
+        JSON.stringify({ pid: process.pid }),
+      );
+      const h = harness({
+        loadCredentials: vi.fn(() => credentials({ address: OTHER })),
+        exchange: vi.fn(async () => ({
+          signature: "0xsig",
+          signerAddress: OTHER,
+          trustToken: null,
+        })),
+        findRunningServers: vi.fn(async () => [
+          { url: "http://localhost:8080", owner: OWNER, identity: key },
+        ]),
+        resolveDataDir: resolveServerDataDir,
+        serverPidIn,
+      });
+      expect(
+        await runServerStart(
+          { network: "mainnet", detach: true },
+          h.io,
+          h.deps,
+        ),
+      ).toBe(0);
+      expect(h.deps.exchange).toHaveBeenCalledTimes(1);
+      expect(h.deps.startDetached).toHaveBeenCalledWith(
+        expect.objectContaining({ dataDir: path.join(legacy, OTHER) }),
+      );
+      // A's server is untouched.
+      expect(fs.existsSync(path.join(legacy, "key.json"))).toBe(true);
+    } finally {
+      if (original === undefined) delete process.env.VANA_HOME;
+      else process.env.VANA_HOME = original;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("reports a server that dies on its own", async () => {

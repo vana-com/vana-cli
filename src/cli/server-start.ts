@@ -38,11 +38,15 @@ import {
   type ServerMessage,
 } from "../personal-server/local/server.js";
 import {
-  runningServerPid,
   startDetachedServer,
   type DetachedStart,
 } from "../personal-server/local/detach.js";
-import { localServerDataDir } from "../personal-server/local/config.js";
+import {
+  resolveServerDataDir,
+  runningCliServers,
+  serverPidIn,
+  type DataDirResolution,
+} from "../personal-server/local/data-dir.js";
 import {
   installFrpc,
   resolveFrpc,
@@ -92,11 +96,16 @@ export interface ServerStartDeps {
   resolveFrpc: () => Promise<FrpcResolution>;
   installFrpc: (logPath: string) => Promise<string>;
   signRegistration: typeof signServerRegistration;
-  readPublicMarker: (network: VanaNetworkName) => PublicMarker | null;
-  writePublicMarker: (
+  readPublicMarker: (dataDir: string) => PublicMarker | null;
+  writePublicMarker: (dataDir: string, marker: PublicMarker) => Promise<void>;
+  /** The owner's own data dir, moved there from an older layout if needed. */
+  resolveDataDir: (
     network: VanaNetworkName,
-    marker: PublicMarker,
-  ) => Promise<void>;
+    owner: string,
+    running: RunningServer[],
+  ) => Promise<DataDirResolution>;
+  /** The pid of a vana-started server running from a data dir. */
+  serverPidIn: (dataDir: string) => number | null;
   startDetached: typeof startDetachedServer;
   /**
    * Whether the running server, if it is the one this CLI runs for the
@@ -130,6 +139,8 @@ export function defaultServerStartDeps(): ServerStartDeps {
     signRegistration: signServerRegistration,
     readPublicMarker,
     writePublicMarker,
+    resolveDataDir: resolveServerDataDir,
+    serverPidIn,
     startDetached: startDetachedServer,
     runningServerCharges,
     waitForStop: (handle) =>
@@ -164,16 +175,12 @@ export function runningServerCharges(
   network: VanaNetworkName,
   identity: string | null,
 ): boolean | null {
-  if (!identity || !runningServerPid(network)) return null;
-  const dir = localServerDataDir(network);
-  const key = readJson(path.join(dir, "key.json"));
-  if (
-    typeof key?.address !== "string" ||
-    key.address.toLowerCase() !== identity.toLowerCase()
-  ) {
-    return null;
-  }
-  const config = readJson(path.join(dir, "server.json"));
+  if (!identity) return null;
+  const ours = runningCliServers(network).find(
+    (server) => server.identity?.toLowerCase() === identity.toLowerCase(),
+  );
+  if (!ours) return null;
+  const config = readJson(path.join(ours.dir, "server.json"));
   if (!config) return null;
   const payment = config.payment as { enabled?: unknown } | undefined;
   return payment?.enabled === true;
@@ -262,10 +269,62 @@ export async function runServerStart(
   const logPath = getTimestampedLogPath("server-start");
   await ensureParentDir(logPath);
 
+  // Each owner's server runs from its own data dir. Settle which one, and
+  // whether a server already runs from it, before anyone confirms anything.
+  const prepareDataDir = async (owner: string): Promise<string | number> => {
+    const resolved = await deps.resolveDataDir(options.network, owner, running);
+    if (resolved.kind === "unknown-owner") {
+      const message = `${resolved.legacyDir} holds a Personal Server an earlier vana started, and nothing on this machine says which account owns it. Move its files into ${path.dirname(resolved.dir)}/<owner address>/ (yours: ${resolved.dir}), then run vana server start again.`;
+      io.say(message);
+      io.event({
+        type: "server-failed",
+        reason: "data-dir-owner-unknown",
+        message,
+        dataDir: resolved.legacyDir,
+      });
+      return CliExitCode.FAILURE;
+    }
+    const pid = deps.serverPidIn(resolved.dir);
+    if (pid) {
+      const message = `A Personal Server started by vana is already running from ${resolved.dir} (pid ${pid}), but it does not answer as yours. Stop it with \`vana server stop\`, then start it again.`;
+      io.say(message);
+      io.event({
+        type: "server-failed",
+        reason: "already-running",
+        message,
+        dataDir: resolved.dir,
+        pid,
+      });
+      return CliExitCode.FAILURE;
+    }
+    if (resolved.movedFrom) {
+      io.say(
+        `Moved your server's data from ${resolved.movedFrom} to ${resolved.dir}.`,
+      );
+      io.event({
+        type: "server-data-moved",
+        from: resolved.movedFrom,
+        to: resolved.dir,
+      });
+    }
+    return resolved.dir;
+  };
+
   // Owner binding: once per account, then from the keychain.
   const accountUrl = getAccountUrl();
   const secretKey = ownerSecretKey(accountUrl, account.address);
   let binding: OwnerBinding | null = deps.secrets.get(secretKey);
+  // A session from VANA_SESSION_TOKEN names no address: then the owner is
+  // known once the binding is.
+  let dataDir: string | null = null;
+  const knownOwner = isAddress(account.address)
+    ? account.address
+    : (binding?.signerAddress ?? null);
+  if (knownOwner) {
+    const prepared = await prepareDataDir(knownOwner);
+    if (typeof prepared === "number") return prepared;
+    dataDir = prepared;
+  }
   if (!binding) {
     if (options.noInput) {
       io.say(
@@ -300,10 +359,15 @@ export async function runServerStart(
     }
     deps.secrets.set(secretKey, binding);
   }
+  if (!dataDir) {
+    const prepared = await prepareDataDir(binding.signerAddress);
+    if (typeof prepared === "number") return prepared;
+    dataDir = prepared;
+  }
 
   // Public unless asked to stay local, as Desktop's server is. A registered
   // server started --local stays registered, and apps find it offline.
-  const marker = deps.readPublicMarker(options.network);
+  const marker = deps.readPublicMarker(dataDir);
   let frpc: FrpcResolution | null = null;
   if (options.local) {
     if (marker) {
@@ -368,7 +432,10 @@ export async function runServerStart(
     io.say(
       "Starting in the background. The first start takes up to a minute...",
     );
-    return reportDetached(await startInBackground(options, io, deps), io);
+    return reportDetached(
+      await startInBackground({ ...options, dataDir }, io, deps),
+      io,
+    );
   }
 
   const port = await deps.choosePort(options.port);
@@ -385,6 +452,7 @@ export async function runServerStart(
   try {
     handle = await deps.start({
       network: options.network,
+      dataDir,
       node,
       runtimeDir,
       binding,
@@ -393,8 +461,14 @@ export async function runServerStart(
       frpcPath,
     });
   } catch (error) {
-    io.say(error instanceof Error ? error.message : String(error));
-    io.event({ type: "server-failed", logPath });
+    const message = error instanceof Error ? error.message : String(error);
+    // The server may have failed before it wrote a line: the log it points
+    // at must exist and say why.
+    await fs.promises
+      .appendFile(logPath, `[vana] ${message}\n`, { mode: 0o600 })
+      .catch(() => {});
+    io.say(message);
+    io.event({ type: "server-failed", message, logPath });
     return CliExitCode.FAILURE;
   }
 
@@ -418,6 +492,7 @@ export async function runServerStart(
   if (frpcPath) {
     const outcome = await goPublic(handle, {
       ...options,
+      dataDir,
       accountUrl,
       accessToken: account.session_token,
       ownerAddress: account.address,
@@ -462,6 +537,7 @@ async function goPublic(
   handle: LocalServerHandle,
   input: {
     network: VanaNetworkName;
+    dataDir: string;
     noInput?: boolean;
     accountUrl: string;
     accessToken: string;
@@ -557,7 +633,7 @@ async function goPublic(
     if (submitted.type === "command-failed") {
       throw new Error(String(submitted.message));
     }
-    await deps.writePublicMarker(input.network, {
+    await deps.writePublicMarker(input.dataDir, {
       serverAddress,
       serverUrl: publicUrl,
       registeredAt: new Date().toISOString(),
@@ -600,7 +676,12 @@ const FINAL_EVENTS = new Set([
  * seconds while nothing is printed: a first start can take a minute.
  */
 async function startInBackground(
-  options: { network: VanaNetworkName; port?: number; local?: boolean },
+  options: {
+    network: VanaNetworkName;
+    dataDir: string;
+    port?: number;
+    local?: boolean;
+  },
   io: ServerStartIo,
   deps: ServerStartDeps,
 ): Promise<DetachedStart> {
@@ -623,6 +704,7 @@ async function startInBackground(
   try {
     return await deps.startDetached({
       network: options.network,
+      dataDir: options.dataDir,
       port: options.port,
       local: options.local,
       onEvent: (event) => {
@@ -686,6 +768,9 @@ function sayDetachedEvent(
     case "server-already-running":
       io.say(`Your Personal Server is already running at ${text("url")}.`);
       break;
+    case "server-failed":
+      if (event.message) io.say(text("message"));
+      break;
     default:
       break;
   }
@@ -694,7 +779,16 @@ function sayDetachedEvent(
 /** Whether the background server came up; its events were told already. */
 function reportDetached(start: DetachedStart, io: ServerStartIo): number {
   if (!start.ready) {
-    io.say(`The background server did not start. See ${start.logPath}.`);
+    // The server's own log when it got as far as writing one, else the
+    // background process's output.
+    const failed = [...start.events]
+      .reverse()
+      .find((event) => event.type === "server-failed");
+    const logPath =
+      typeof failed?.logPath === "string" && fs.existsSync(failed.logPath)
+        ? failed.logPath
+        : start.logPath;
+    io.say(`The background server did not start. See ${logPath}.`);
     return start.events.some((event) => event.type === "server-already-running")
       ? CliExitCode.OK
       : CliExitCode.FAILURE;
