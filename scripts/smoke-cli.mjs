@@ -456,9 +456,9 @@ async function checkMcp() {
           `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
         );
         const tools = await request(2, "tools/list", {});
-        if (!Array.isArray(tools.tools) || tools.tools.length < 6) {
+        if (!Array.isArray(tools.tools) || tools.tools.length < 5) {
           throw new Error(
-            `expected >=6 tools, got ${JSON.stringify(tools.tools?.map?.((t) => t.name))}`,
+            `expected >=5 tools, got ${JSON.stringify(tools.tools?.map?.((t) => t.name))}`,
           );
         }
         const names = tools.tools.map((t) => t.name);
@@ -470,6 +470,9 @@ async function checkMcp() {
           "run_diagnostics",
         ];
         const missing = expected.filter((n) => !names.includes(n));
+        // generate_context stays hidden until it does something.
+        if (names.includes("generate_context"))
+          throw new Error("generate_context should not be listed yet");
         if (missing.length > 0)
           throw new Error(`missing tools: ${missing.join(",")}`);
         for (const tool of tools.tools) {
