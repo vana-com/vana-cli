@@ -4,7 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 import type { VanaNetworkName } from "../../core/network.js";
-import { localServerDataDir } from "./config.js";
+import { serverPidIn } from "./data-dir.js";
 
 /** Events after which the background server will not become ready. */
 const FAILURES = new Set([
@@ -53,6 +53,8 @@ function readEvents(logPath: string): Array<Record<string, unknown>> {
  */
 export async function startDetachedServer(input: {
   network: VanaNetworkName;
+  /** The owner's data dir; the background server's output goes there. */
+  dataDir: string;
   port?: number;
   local?: boolean;
   timeoutMs?: number;
@@ -60,9 +62,8 @@ export async function startDetachedServer(input: {
   /** Called once per event, as the background server writes it. */
   onEvent?: (event: Record<string, unknown>) => void;
 }): Promise<DetachedStart> {
-  const logDir = localServerDataDir(input.network);
-  await fsp.mkdir(logDir, { recursive: true, mode: 0o700 });
-  const logPath = path.join(logDir, "detached.log");
+  await fsp.mkdir(input.dataDir, { recursive: true, mode: 0o700 });
+  const logPath = path.join(input.dataDir, "detached.log");
   await fsp.writeFile(logPath, "", { mode: 0o600 });
   const logFd = fs.openSync(logPath, "a");
   const child = spawn(
@@ -99,14 +100,38 @@ export async function startDetachedServer(input: {
   const started = Date.now();
   let readyAt: number | null = null;
   let reported = 0;
+  // A failure the background server could not tell itself, told here the
+  // way it would have, so the terminal and --json both get a reason.
+  const failWith = (
+    events: Array<Record<string, unknown>>,
+    message: string,
+  ): DetachedStart => {
+    const event = { type: "server-failed", message, logPath };
+    input.onEvent?.(event);
+    return {
+      events: [...events, event],
+      ready: false,
+      pid: child.pid ?? null,
+      logPath,
+    };
+  };
   for (;;) {
     const events = readEvents(logPath);
     for (const event of events.slice(reported)) input.onEvent?.(event);
     reported = events.length;
     const ready = events.find((event) => event.type === "server-ready");
     const failed = events.some((event) => FAILURES.has(String(event.type)));
-    if (failed || (exited && !ready)) {
+    if (failed) {
       return { events, ready: false, pid: child.pid ?? null, logPath };
+    }
+    if (exited && !ready) {
+      const crash = crashMessage(logPath);
+      return failWith(
+        events,
+        crash
+          ? `The background server exited: ${crash}`
+          : "The background server exited before it was ready.",
+      );
     }
     if (ready) {
       readyAt ??= Date.now();
@@ -119,7 +144,12 @@ export async function startDetachedServer(input: {
       }
     }
     if (Date.now() - started > (input.timeoutMs ?? 5 * 60_000)) {
-      return { events, ready: false, pid: child.pid ?? null, logPath };
+      return ready
+        ? { events, ready: false, pid: child.pid ?? null, logPath }
+        : failWith(
+            events,
+            "The background server did not become ready in time; it may still be starting.",
+          );
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -134,32 +164,30 @@ function processIsRunning(pid: number): boolean {
   }
 }
 
-/** The pid of a `vana server start` running from this network's data dir. */
-export function runningServerPid(network: VanaNetworkName): number | null {
+/** The error a crashed background process printed, when there is one. */
+function crashMessage(logPath: string): string | null {
+  let text = "";
   try {
-    const pid = Number(
-      JSON.parse(
-        fs.readFileSync(
-          path.join(localServerDataDir(network), ".vana-cli.lock"),
-          "utf8",
-        ),
-      ).pid,
-    );
-    return pid > 0 && processIsRunning(pid) ? pid : null;
+    text = fs.readFileSync(logPath, "utf8");
   } catch {
     return null;
   }
+  const line = text
+    .split("\n")
+    .map((entry) => entry.trim())
+    .find((entry) => !entry.startsWith("{") && /\w*Error\b:/.test(entry));
+  return line ?? null;
 }
 
 /**
- * Stop the server `vana server start` runs for this network, detached or
- * not, the way Ctrl+C does, and wait until it has cleaned up.
+ * Stop the server `vana server start` runs from `dataDir`, detached or not,
+ * the way Ctrl+C does, and wait until it has cleaned up.
  */
 export async function stopLocalServer(
-  network: VanaNetworkName,
+  dataDir: string,
   timeoutMs = 20_000,
 ): Promise<"stopped" | "not-running" | "timeout"> {
-  const pid = runningServerPid(network);
+  const pid = serverPidIn(dataDir);
   if (!pid) return "not-running";
   process.kill(pid, "SIGTERM");
   const started = Date.now();

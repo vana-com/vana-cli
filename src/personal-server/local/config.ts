@@ -57,12 +57,24 @@ export function localServerHome(): string {
 }
 
 /**
- * The CLI's own data dir per network. Never Desktop's
- * (`~/.vana/desktop/personal-server/...`): two processes on one index and one
- * server key would corrupt both.
+ * The CLI's servers for one network. Before per-account dirs, this dir was
+ * itself the one server's data dir (see data-dir.ts for the move).
  */
-export function localServerDataDir(network: VanaNetworkName): string {
+export function networkServerDir(network: VanaNetworkName): string {
   return path.join(localServerHome(), network);
+}
+
+/**
+ * The CLI's own data dir per network and owner account: the server key, its
+ * index and its data belong to one owner, so two accounts never share one.
+ * Never Desktop's (`~/.vana/desktop/personal-server/...`): two processes on
+ * one index and one server key would corrupt both.
+ */
+export function accountServerDataDir(
+  network: VanaNetworkName,
+  owner: string,
+): string {
+  return path.join(networkServerDir(network), owner.toLowerCase());
 }
 
 export function localServerRuntimeDir(): string {
