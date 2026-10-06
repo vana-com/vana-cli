@@ -11,6 +11,7 @@ import fsp from "node:fs/promises";
 
 import {
   getCliStatePath,
+  getSourceResultPath,
   getBrowserProfilesDir,
   getConnectorCacheDir,
   getVanaHome,
@@ -24,6 +25,10 @@ import type {
   SourceStatus,
 } from "../core/cli-types.js";
 import type { AvailableSource } from "../connectors/registry.js";
+import {
+  formatUnknownSourceMessage,
+  lookupSource,
+} from "../connectors/lookup.js";
 import { detectPersonalServerTarget } from "../personal-server/index.js";
 import { ManagedPlaywrightRuntime } from "../runtime/index.js";
 import { formatDisplayPath } from "./render/index.js";
@@ -41,6 +46,7 @@ import {
   listInstalledConnectorFiles,
   hasCollectedData,
   isSourceAttention,
+  isRetiredSource,
   compareSourceStatusOrder,
   readResultSummary,
   summarizeResultData,
@@ -141,6 +147,20 @@ export interface DataShowNotFound {
   message: string;
   nextSteps: string[];
   datasetCount: number;
+  /** A result file the last run left without data, when there is one. */
+  resultPath?: string;
+  /** The last run's log, when the run that should have collected failed. */
+  logPath?: string;
+}
+
+/** `queryDataShow()` for an id no connector has. */
+export interface DataShowUnknownSource {
+  ok: false;
+  error: "unknown_source";
+  source: string;
+  message: string;
+  nextSteps: string[];
+  suggestedSource: string | null;
 }
 
 /** Read-failure result of `queryDataShow()`. */
@@ -155,6 +175,7 @@ export interface DataShowReadFailed {
 export type DataShowQueryResult =
   | DataShowSuccess
   | DataShowNotFound
+  | DataShowUnknownSource
   | DataShowReadFailed;
 
 /** Result of `queryDoctor()`. Matches the `CliDoctor` type exactly. */
@@ -175,7 +196,9 @@ export async function queryStatus(): Promise<StatusQueryResult> {
   const registrySources = await loadRegistrySources();
   const sourceLabels = createSourceLabelMap(registrySources);
   const sourceMetadata = createSourceMetadataMap(registrySources);
-  const sources = await gatherSourceStatuses(state.sources, sourceMetadata);
+  const sources = (
+    await gatherSourceStatuses(state.sources, sourceMetadata)
+  ).filter((source) => !isRetiredSource(source, registrySources));
 
   const pendingSyncCount = sources.filter(
     (source) =>
@@ -403,20 +426,79 @@ export async function queryDataList(): Promise<DataListQueryResult> {
 export async function queryDataShow(
   source: string,
 ): Promise<DataShowQueryResult> {
-  const sourceLabels = createSourceLabelMap(await loadRegistrySources());
+  const registrySources = await loadRegistrySources();
+  const sourceLabels = createSourceLabelMap(registrySources);
   const state = await readCliState();
-  const record = state.sources[source];
-  const resultPath = record?.lastResultPath;
   const datasetCount = Object.values(state.sources).filter((entry) =>
     Boolean(entry?.lastResultPath),
   ).length;
 
+  // An id from state is taken as is, even when its connector is gone; the
+  // rest go through the catalog, which also takes names ("Claude Code").
+  // Without a catalog, nothing can be called unknown.
+  if (!state.sources[source] && registrySources.length > 0) {
+    const { match, suggestion } = lookupSource(source, registrySources);
+    if (!match) {
+      return {
+        ok: false,
+        error: "unknown_source",
+        source,
+        message: formatUnknownSourceMessage(source, suggestion),
+        nextSteps: [
+          suggestion
+            ? `Run \`vana data show ${suggestion.id}\` if you meant ${suggestion.name}.`
+            : "Run `vana sources` to see available sources.",
+        ],
+        suggestedSource: suggestion?.id ?? null,
+      };
+    }
+    source = match.id;
+  }
+
+  const record = state.sources[source];
+  const resultPath = record?.lastResultPath;
+
   if (!resultPath) {
+    // The id as typed when the catalog has no name for it: "Claude-code"
+    // reads as a name nobody uses.
+    const name = sourceLabels[source] ?? source;
+    // A run that wrote no data (an error or an empty export) leaves a
+    // result file but no dataset; say so instead of "nothing found".
+    const leftover = getSourceResultPath(source);
+    const resultFile = fs.existsSync(leftover) ? leftover : undefined;
+    const logPath = record?.lastLogPath ?? undefined;
+    const failed =
+      Boolean(record?.lastRunOutcome) &&
+      record?.lastRunOutcome !== "connected_local_only" &&
+      record?.lastRunOutcome !== "connected_and_ingested";
+    if (resultFile || failed) {
+      const reason = record?.lastError
+        ? humanizeIssue(record.lastError).replace(/\.$/, "")
+        : null;
+      const message = failed
+        ? `${name} has no data: the last run failed${reason ? ` (${reason})` : ""}.`
+        : `${name}'s last run saved an empty result, with no data in it.`;
+      return {
+        ok: false,
+        error: "dataset_not_found",
+        source,
+        message,
+        nextSteps: [
+          ...(logPath
+            ? [`See what happened with \`vana logs ${source}\`.`]
+            : []),
+          `Run \`vana connect ${source}\` to try again.`,
+        ],
+        datasetCount,
+        ...(resultFile ? { resultPath: resultFile } : {}),
+        ...(logPath ? { logPath } : {}),
+      };
+    }
     return {
       ok: false,
       error: "dataset_not_found",
       source,
-      message: `No collected dataset found for ${displaySource(source, sourceLabels)}. Run \`vana connect ${source}\` first.`,
+      message: `No collected dataset found for ${name}. Run \`vana connect ${source}\` first.`,
       nextSteps: [
         `Run \`vana connect ${source}\` to collect data.`,
         ...(datasetCount > 0
@@ -479,7 +561,9 @@ export async function queryDoctor(): Promise<DoctorQueryResult> {
   const registrySources = await loadRegistrySources();
   const sourceMetadata = createSourceMetadataMap(registrySources);
   const sourceLabels = createSourceLabelMap(registrySources);
-  const sources = await gatherSourceStatuses(state.sources, sourceMetadata);
+  const sources = (
+    await gatherSourceStatuses(state.sources, sourceMetadata)
+  ).filter((source) => !isRetiredSource(source, registrySources));
   const cliVersion = getCliVersion();
   const cliChannel = getCliChannel(cliVersion);
   const installMethod = getCliInstallMethod();

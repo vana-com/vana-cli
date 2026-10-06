@@ -307,9 +307,12 @@ export function createFlowRenderer(options?: {
   };
 }
 
-export function createConnectRenderer(): ConnectRenderer {
+/** `verb` heads the flow: `vana collect` re-runs a connect, titled as such. */
+export function createConnectRenderer(
+  verb: "Connect" | "Collect" = "Connect",
+): ConnectRenderer {
   return createFlowRenderer({
-    formatTitle: (source) => `Connect ${source}`,
+    formatTitle: (source) => `${verb} ${source}`,
   });
 }
 

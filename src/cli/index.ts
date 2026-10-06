@@ -78,6 +78,10 @@ import type {
 } from "../core/cli-types.js";
 import type { AvailableSource } from "../connectors/registry.js";
 import {
+  formatUnknownSourceMessage,
+  lookupSource,
+} from "../connectors/lookup.js";
+import {
   fetchConnectorToCache,
   listAvailableSources,
   readCachedConnectorMetadata,
@@ -1453,6 +1457,8 @@ export async function withPhaseProgress<T>(
 interface ConnectOptions {
   /** A data-connectors checkout to run a Collection Profile connector from. */
   from?: string;
+  /** How the flow is titled; `vana collect` says Collect. */
+  verb?: "Connect" | "Collect";
 }
 
 interface ConnectorsAddOptions {
@@ -1652,7 +1658,9 @@ async function runConnect(
   const isPdpp = pdppSource !== null;
   const emit = createEmitter(options);
   const renderer: ConnectRenderer | null =
-    !options.json && !options.quiet ? createConnectRenderer() : null;
+    !options.json && !options.quiet
+      ? createConnectRenderer(connectOptions.verb)
+      : null;
   const registrySources = await loadRegistrySources();
   const sourceLabels = createSourceLabelMap(registrySources);
   const displayName = displaySource(source, sourceLabels);
@@ -2619,6 +2627,19 @@ async function runConnectEntry(options: GlobalOptions): Promise<number> {
   }
 }
 
+/**
+ * The id commands take, shown next to a name that does not spell it:
+ * "Claude Code" is run as `claude-code-local`.
+ */
+function sourceIdBadge(source: {
+  id: string;
+  name: string;
+}): Array<{ text: string; tone?: RenderTone }> {
+  return source.name.toLowerCase() === source.id
+    ? []
+    : [{ text: `(${source.id})`, tone: "muted" }];
+}
+
 async function runList(options: GlobalOptions): Promise<number> {
   const result = await querySources();
   const { sources: enrichedSources, recommendedSource } = result;
@@ -2660,7 +2681,7 @@ async function runList(options: GlobalOptions): Promise<number> {
         if (source.origin === "local") {
           badges.push({ text: "local", tone: "warning" });
         }
-        emit.sourceTitle(source.name, badges);
+        emit.sourceTitle(source.name, [...sourceIdBadge(source), ...badges]);
         emit.detail(
           `Inspect with ${emit.code(`vana data show ${source.id}`)}.`,
         );
@@ -2683,7 +2704,7 @@ async function runList(options: GlobalOptions): Promise<number> {
       if (source.origin === "local") {
         badges.push({ text: "local", tone: "warning" });
       }
-      emit.sourceTitle(source.name, badges);
+      emit.sourceTitle(source.name, [...sourceIdBadge(source), ...badges]);
       if (source.description) {
         emit.detail(cleanDescription(source.description));
       }
@@ -2802,8 +2823,13 @@ async function runStatus(options: GlobalOptions): Promise<number> {
   const attentionSources = trackedSources
     .filter(isSourceAttention)
     .sort(compareAttentionPriority);
+  const notCollectedSources = trackedSources
+    .filter(isSourceNotCollected)
+    .sort(compareSourceStatusOrder);
   const healthySources = trackedSources
-    .filter((source) => !isSourceAttention(source))
+    .filter(
+      (source) => !isSourceAttention(source) && !isSourceNotCollected(source),
+    )
     .sort(compareSourceStatusOrder);
   const sourceParts = [
     healthySources.length > 0
@@ -2815,6 +2841,9 @@ async function runStatus(options: GlobalOptions): Promise<number> {
       ? [
           `${attentionSources.length} need${attentionSources.length === 1 ? "s" : ""} attention`,
         ]
+      : []),
+    ...(notCollectedSources.length > 0
+      ? [`${notCollectedSources.length} not collected yet`]
       : []),
   ];
   emit.keyValue(
@@ -2846,6 +2875,16 @@ async function runStatus(options: GlobalOptions): Promise<number> {
     emit.blank();
     emit.section(formatCountLabel("Healthy", healthySources.length));
     for (const source of healthySources) {
+      emitHumanStatusSource(emit, source, sourceLabels);
+    }
+  }
+
+  if (notCollectedSources.length > 0) {
+    emit.blank();
+    emit.section(
+      formatCountLabel("Not collected yet", notCollectedSources.length),
+    );
+    for (const source of notCollectedSources) {
       emitHumanStatusSource(emit, source, sourceLabels);
     }
   }
@@ -2945,6 +2984,15 @@ function formatHumanStatusDetail(source: SourceStatus): string | null {
   }
   if (source.lastRunOutcome === CliOutcomeStatus.CONNECTOR_UNAVAILABLE) {
     return "No connector available. Run `vana sources`.";
+  }
+  if (
+    source.dataState === "ingested_personal_server" &&
+    source.ingestScopes?.some((scope) => scope.status === "failed")
+  ) {
+    return formatSyncFailureSummary(source);
+  }
+  if (!source.lastRunOutcome && !hasCollectedData(source.dataState)) {
+    return `Run \`vana connect ${source.source}\` to collect data.`;
   }
   if (source.skippedStreams && source.skippedStreams.length > 0) {
     const streams = source.skippedStreams
@@ -3227,9 +3275,16 @@ async function runServerStatus(
 ): Promise<number> {
   const emit = createEmitter(options);
   const target = await detectPersonalServerTarget();
-  const account = loadCredentials()?.account.address;
+  const credentials = loadCredentials();
+  const account = credentials?.account.address;
   const owner =
     target.health?.owner ?? (account && account !== "env" ? account : null);
+  // The same check `vana status` makes: the server answering here may be
+  // another account's, still running after a login switch.
+  const ownerMismatch =
+    credentials && !isExpired(credentials)
+      ? personalServerOwnerMismatch(target.health?.owner, account)
+      : null;
   // Every registration this owner has, checked from outside: the live one is
   // where apps actually reach the data; the rest are old server identities.
   const registrations = owner
@@ -3284,6 +3339,7 @@ async function runServerStatus(
         registeredServers: registrations,
         health: target.health,
         scopeCount: totalScopeCount,
+        notThisAccount: ownerMismatch !== null,
       })}\n`,
     );
     return 0;
@@ -3351,7 +3407,12 @@ async function runServerStatus(
     emit.keyValue("Version", target.health.version, "muted");
     emit.keyValue("Uptime", formatUptime(target.health.uptime), "muted");
   }
-  if (owner) emit.keyValue("Owner", owner, "muted");
+  if (ownerMismatch) {
+    emit.keyValue("Owner", `${owner} (not this account)`, "warning");
+    emit.keyValue("Signed in as", ownerMismatch.account, "muted");
+  } else if (owner) {
+    emit.keyValue("Owner", owner, "muted");
+  }
   if (totalScopeCount > 0) {
     emit.keyValue("Scopes", `${totalScopeCount} stored`, "muted");
   }
@@ -3569,26 +3630,23 @@ async function runDataList(options: GlobalOptions): Promise<number> {
   emit.blank();
   emit.info(
     joinOverviewParts([
-      formatCountLabel("dataset", datasetRecords.length),
-      formatCountLabel(
-        "local only",
+      `${datasetRecords.length} dataset${datasetRecords.length === 1 ? "" : "s"}`,
+      `${
         datasetRecords.filter(
           (dataset) => dataset.dataState !== "ingested_personal_server",
-        ).length,
-      ),
-      formatCountLabel(
-        "synced",
+        ).length
+      } local only`,
+      `${
         datasetRecords.filter(
           (dataset) => dataset.dataState === "ingested_personal_server",
-        ).length,
-      ),
+        ).length
+      } synced`,
       datasetRecords.some((dataset) => dataset.dataState === "ingest_failed")
-        ? formatCountLabel(
-            "sync failed",
+        ? `${
             datasetRecords.filter(
               (dataset) => dataset.dataState === "ingest_failed",
-            ).length,
-          )
+            ).length
+          } sync failed`
         : "",
     ]),
   );
@@ -3637,6 +3695,29 @@ async function runDataShow(
   const result = await queryDataShow(source);
 
   if (!result.ok) {
+    if (result.error === "unknown_source") {
+      if (options.json) {
+        process.stdout.write(
+          `${JSON.stringify({
+            error: result.error,
+            source: result.source,
+            message: result.message,
+            suggestedSource: result.suggestedSource,
+            nextSteps: result.nextSteps,
+          })}\n`,
+        );
+      } else {
+        const emit = createEmitter(options);
+        emit.info(result.message);
+        emit.blank();
+        emit.next(
+          result.suggestedSource
+            ? `vana data show ${result.suggestedSource}`
+            : "vana sources",
+        );
+      }
+      return 1;
+    }
     if (result.error === "dataset_not_found") {
       if (options.json) {
         process.stdout.write(
@@ -3645,13 +3726,28 @@ async function runDataShow(
             source: result.source,
             message: result.message,
             nextSteps: result.nextSteps,
+            ...(result.resultPath ? { resultPath: result.resultPath } : {}),
+            ...(result.logPath ? { logPath: result.logPath } : {}),
           })}\n`,
         );
       } else {
         const emit = createEmitter(options);
         emit.info(result.message);
+        if (result.resultPath || result.logPath) {
+          emit.blank();
+        }
+        if (result.resultPath) {
+          emit.keyValue(
+            "Result file",
+            formatDisplayPath(result.resultPath),
+            "muted",
+          );
+        }
+        if (result.logPath) {
+          emit.keyValue("Run log", formatDisplayPath(result.logPath), "muted");
+        }
         emit.blank();
-        emit.next(`vana connect ${source}`);
+        emit.next(`vana connect ${result.source}`);
       }
       return 1;
     }
@@ -3684,7 +3780,7 @@ async function runDataShow(
 
   const emit = createEmitter(options);
   const state = await readCliState();
-  const record = state.sources[source];
+  const record = state.sources[result.source];
   emit.title(`${result.name} data`);
   emit.blank();
   if (result.summary) {
@@ -3708,7 +3804,7 @@ async function runDataShow(
   if (result.datasetCount > 1) {
     emit.next("vana data list");
   } else {
-    emit.next(`vana connect ${source}`);
+    emit.next(`vana connect ${result.source}`);
   }
   return 0;
 }
@@ -3856,19 +3952,16 @@ async function runLogs(
   }
 
   emit.info(
+    // Counts in a sentence: the sections below carry the headings.
     joinOverviewParts([
       logSummary.attentionCount > 0
-        ? formatCountLabel("need attention", logSummary.attentionCount)
+        ? `${logSummary.attentionCount} need${logSummary.attentionCount === 1 ? "s" : ""} attention`
         : "",
       logSummary.successfulCount > 0
-        ? formatCountLabel("successful", logSummary.successfulCount)
+        ? `${logSummary.successfulCount} successful`
         : "",
-      logSummary.localCount > 0
-        ? formatCountLabel("local", logSummary.localCount)
-        : "",
-      logSummary.syncedCount > 0
-        ? formatCountLabel("synced", logSummary.syncedCount)
-        : "",
+      logSummary.localCount > 0 ? `${logSummary.localCount} local` : "",
+      logSummary.syncedCount > 0 ? `${logSummary.syncedCount} synced` : "",
     ]),
   );
   emit.blank();
@@ -3926,19 +4019,16 @@ async function runSourceDetail(
   const emit = createEmitter(options);
   const registrySources = await loadRegistrySources();
   const state = await readCliState();
-  const match = registrySources.find(
-    (s) => s.id === source || s.name.toLowerCase() === source.toLowerCase(),
-  );
+  const { match, suggestion } = lookupSource(source, registrySources);
 
   if (!match) {
+    const message = formatUnknownSourceMessage(source, suggestion);
     if (options.json) {
       process.stdout.write(
-        `${JSON.stringify({ error: "unknown_source", source, message: `Unknown source: ${source}. Run \`vana sources\` to see available options.` })}\n`,
+        `${JSON.stringify({ error: "unknown_source", source, message, suggestedSource: suggestion?.id ?? null })}\n`,
       );
     } else {
-      emit.info(
-        `Unknown source: ${source}. Run \`vana sources\` to see available options.`,
-      );
+      emit.info(message);
     }
     return 1;
   }
@@ -4060,7 +4150,7 @@ async function runCollect(
     return 1;
   }
 
-  return runConnect(source, options);
+  return runConnect(source, options, { verb: "Collect" });
 }
 
 type SyncRetryMode = "automatic" | "manual";
@@ -4243,13 +4333,20 @@ async function syncPendingSources(
 
     if (ingestCompleted || ingestPartial) {
       syncedCount++;
+      const dataState = deriveSyncedDataState(
+        mergedScopes,
+        stored.dataState as SourceStatus["dataState"] | null | undefined,
+      );
       await updateSourceState(source, {
-        dataState: deriveSyncedDataState(
-          mergedScopes,
-          stored.dataState as SourceStatus["dataState"] | null | undefined,
-        ),
+        dataState,
         ingestScopes: mergedScopes,
         lastError: summarizeSyncError(mergedScopes),
+        // The run's failed sync is now done; leaving the outcome would keep
+        // the source under "Needs attention".
+        ...(stored.lastRunOutcome === CliOutcomeStatus.INGEST_FAILED &&
+        dataState === "ingested_personal_server"
+          ? { lastRunOutcome: CliOutcomeStatus.CONNECTED_AND_INGESTED }
+          : {}),
       });
     }
 
@@ -4272,7 +4369,7 @@ async function runCollectAll(options: GlobalOptions): Promise<number> {
 
   let exitCode = 0;
   for (const source of dueSources) {
-    const result = await runConnect(source, options);
+    const result = await runConnect(source, options, { verb: "Collect" });
     if (result !== 0) {
       exitCode = result;
     }
@@ -4792,6 +4889,10 @@ function humanizeField(value: string): string {
 }
 
 export function humanizeIssue(message: string): string {
+  const scopeSummary = summarizeScopeErrors(message);
+  if (scopeSummary) {
+    return scopeSummary;
+  }
   if (/checksum|mismatch/i.test(message)) {
     return "Connector is out of date. Will auto-update on next connect.";
   }
@@ -4800,6 +4901,45 @@ export function humanizeIssue(message: string): string {
     return transportSummary;
   }
   return message;
+}
+
+// "github.repos: HTTP 401: {...}; github.profile: HTTP 401: {...}", the
+// per-scope sync error stored as one string.
+const SCOPE_ERROR_PREFIX = /(?:^|;\s+)([a-z0-9_-]+(?:\.[a-z0-9_-]+)+):\s+/gi;
+
+/**
+ * One line for a per-scope sync error, with identical errors counted once:
+ * "Authentication required (HTTP 401) for 6 scopes" instead of six raw
+ * JSON bodies. Null when the message is not a per-scope list.
+ */
+function summarizeScopeErrors(message: string): string | null {
+  const starts = [...message.matchAll(SCOPE_ERROR_PREFIX)];
+  if (starts.length === 0 || starts[0].index !== 0) return null;
+  const errors = starts.map((start, i) =>
+    message
+      .slice(
+        (start.index ?? 0) + start[0].length,
+        starts[i + 1]?.index ?? message.length,
+      )
+      .trim(),
+  );
+  // One "host.name: reason" is an ordinary message, not a scope list.
+  if (errors.length === 1 && !/^HTTP\s+\d+/.test(errors[0])) return null;
+  const groups = new Map<string, number>();
+  errors.forEach((error) => {
+    const status = error.match(/^HTTP\s+(\d+)\b/)?.[1];
+    const summary = summarizeTransportError(error) ?? error;
+    const label = status ? `${summary} (HTTP ${status})` : summary;
+    groups.set(label, (groups.get(label) ?? 0) + 1);
+  });
+  const entries = [...groups.entries()];
+  if (entries.length === 1) {
+    const [label, count] = entries[0];
+    return `${label} for ${count} scope${count === 1 ? "" : "s"}`;
+  }
+  return `${starts.length} scopes failed: ${entries
+    .map(([label, count]) => (count > 1 ? `${label} (${count})` : label))
+    .join("; ")}`;
 }
 
 function summarizeTransportError(message: string): string | null {
@@ -5113,12 +5253,15 @@ function formatSourceStatusDetails(source: SourceStatus): SourceStatusDetail[] {
     });
   }
 
-  if (source.lastRunOutcome === CliOutcomeStatus.INGEST_FAILED) {
+  if (
+    source.lastRunOutcome === CliOutcomeStatus.INGEST_FAILED &&
+    source.dataState !== "ingested_personal_server"
+  ) {
     details.push(
       source.lastError
         ? {
             kind: "text",
-            message: `${source.lastError} Inspect the local dataset with \`vana data show ${source.source}\`.`,
+            message: `${humanizeIssue(source.lastError).replace(/\.$/, "")}. Inspect the local dataset with \`vana data show ${source.source}\`.`,
           }
         : {
             kind: "text",
@@ -6027,6 +6170,14 @@ export function isSourceAttention(source: SourceStatus): boolean {
     return true;
   }
 
+  // Synced, but some scopes did not make it ("partial sync").
+  if (
+    source.dataState === "ingested_personal_server" &&
+    source.ingestScopes?.some((scope) => scope.status === "failed")
+  ) {
+    return true;
+  }
+
   if (
     source.connectionHealth === "needs_reauth" ||
     source.connectionHealth === "error" ||
@@ -6036,6 +6187,28 @@ export function isSourceAttention(source: SourceStatus): boolean {
   }
 
   return rankSourceStatus(source) <= 4;
+}
+
+/**
+ * A source whose connector is no longer in the catalog and that never
+ * collected anything: a leftover state entry (an id that was renamed, like
+ * `claude-code` to `claude-code-local`) nothing can act on. Without a
+ * catalog to compare against, nothing counts as retired.
+ */
+export function isRetiredSource(
+  source: SourceStatus,
+  registrySources: ReadonlyArray<{ id: string }>,
+): boolean {
+  return (
+    registrySources.length > 0 &&
+    !registrySources.some((entry) => entry.id === source.source) &&
+    !hasCollectedData(source.dataState)
+  );
+}
+
+/** Installed, or tried, but holds no data yet and needs nothing fixed. */
+export function isSourceNotCollected(source: SourceStatus): boolean {
+  return !isSourceAttention(source) && !hasCollectedData(source.dataState);
 }
 
 function compareAttentionPriority(
@@ -6080,7 +6253,12 @@ export function rankSourceStatus(source: SourceStatus): number {
   if (source.lastRunOutcome === CliOutcomeStatus.LEGACY_AUTH) {
     return 1;
   }
-  if (source.lastRunOutcome === CliOutcomeStatus.INGEST_FAILED) {
+  // A later `vana server sync` that stored the data settles a failed sync;
+  // older state files still carry the failed outcome next to it.
+  if (
+    source.lastRunOutcome === CliOutcomeStatus.INGEST_FAILED &&
+    source.dataState !== "ingested_personal_server"
+  ) {
     return 2;
   }
   if (source.lastRunOutcome === CliOutcomeStatus.RUNTIME_ERROR) {

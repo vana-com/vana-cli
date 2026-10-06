@@ -359,6 +359,10 @@ export const datasetNotFoundErrorSchema = z.object({
   name: z.string().optional(),
   message: z.string(),
   nextSteps: z.array(z.string()).optional(),
+  /** A result file the last run left without data. */
+  resultPath: z.string().optional(),
+  /** The log of the run that failed to collect. */
+  logPath: z.string().optional(),
 });
 export type DatasetNotFoundError = z.infer<typeof datasetNotFoundErrorSchema>;
 

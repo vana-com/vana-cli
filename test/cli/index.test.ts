@@ -2001,10 +2001,22 @@ describe("runCli", () => {
       },
     ]);
 
+    // Signed in as 0xaff7, looking at 0x99Bf's server: say so, as
+    // `vana status` does.
+    expect(payload.notThisAccount).toBe(true);
+
     stdout = "";
     expect(await runCli(["node", "vana", "server", "status"])).toBe(0);
     expect(stdout).toContain("(vana server start for 0x99Bf...88d)");
     expect(stdout).not.toContain("Vana Desktop");
+    expect(stdout).toContain(`Owner:         ${owner} (not this account)`);
+    expect(stdout).toContain(
+      "Signed in as:  0xaff7000000000000000000000000000000000001",
+    );
+
+    stdout = "";
+    expect(await runCli(["node", "vana", "status"])).toBe(0);
+    expect(stdout).toContain(`${owner} (not this account)`);
   });
 
   it("server stop leaves another account's server running and says whose it is", async () => {
@@ -2800,7 +2812,7 @@ describe("runCli", () => {
     expect(normalizeRenderedTimestamps(stdout)).toMatchInlineSnapshot(`
       "Collected data (2)
 
-      Dataset (2) · Local only (2) · Synced (0)
+      2 datasets · 2 local only · 0 synced
 
       GitHub local
         Profile: tnunamak
@@ -3033,7 +3045,7 @@ describe("runCli", () => {
     expect(normalizeRenderedTimestamps(stdout)).toMatchInlineSnapshot(`
       "Run logs (2)
 
-      Need attention (1) · Successful (1) · Local (1)
+      1 needs attention · 1 successful · 1 local
 
       Needs attention (1)
       Shop manual step
@@ -4032,6 +4044,341 @@ describe("runCli", () => {
     const exitCode = await runCli(["node", "vana", "collect", "github"]);
 
     expect(exitCode).toBe(0);
+  });
+
+  it("titles a collect run Collect, not Connect", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ]);
+    mockReadCliState.mockResolvedValue({
+      version: 1,
+      sources: {
+        github: {
+          connectorInstalled: true,
+          sessionPresent: true,
+          lastRunOutcome: "connected_local_only",
+          dataState: "collected_local",
+          lastResultPath: "/tmp/results/github.json",
+        },
+      },
+    });
+    fetchConnectorResult = {
+      connectorPath: "/tmp/connectors/github/github-playwright.js",
+      logPath: "/tmp/logs/fetch.log",
+    };
+    runConnectorEvents = [
+      {
+        type: "collection-complete",
+        source: "github",
+        resultPath: "/tmp/results/github.json",
+      },
+    ];
+
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(await runCli(["node", "vana", "collect", "github"])).toBe(0);
+    const output = stdout + stderr;
+    expect(output).toContain("Collect GitHub");
+    expect(output).not.toContain("Connect GitHub");
+  });
+
+  describe("status grouping", () => {
+    it("counts a source synced after a failed sync as healthy, and an installed one as not collected", async () => {
+      mockListAvailableSources.mockResolvedValue([
+        { id: "github", name: "GitHub", authMode: "interactive" },
+        { id: "slack", name: "Slack", authMode: "interactive" },
+        { id: "claude-code-local", name: "Claude Code", authMode: "automated" },
+      ]);
+      mockReaddir.mockImplementation(
+        async (dir: string, opts?: { withFileTypes?: boolean }) => {
+          if (opts?.withFileTypes) {
+            return [{ name: "slack", isDirectory: () => true }];
+          }
+          if (String(dir).endsWith("/slack")) return ["slack-playwright.js"];
+          return [];
+        },
+      );
+      mockReadCliState.mockResolvedValue({
+        version: 1,
+        sources: {
+          // A run whose sync failed, then a `vana server sync` that stored
+          // everything: state files written before the fix keep the outcome.
+          github: {
+            connectorInstalled: true,
+            lastRunOutcome: "ingest_failed",
+            dataState: "ingested_personal_server",
+            lastResultPath: "/tmp/results/github.json",
+            ingestScopes: [{ scope: "github.repos", status: "stored" }],
+          },
+          // A connector id that was renamed long ago, with nothing collected.
+          "claude-code": {
+            lastRunAt: "2026-05-01T00:00:00.000Z",
+            lastRunOutcome: "connector_unavailable",
+            dataState: "none",
+          },
+        },
+      });
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "status"])).toBe(0);
+
+      expect(stdout).toContain("Sources:       1 healthy, 1 not collected yet");
+      expect(stdout).not.toContain("Needs attention");
+      expect(stdout).toMatch(/Healthy \(1\)\n\s+GitHub:\s+synced/);
+      expect(stdout).toMatch(/Not collected yet \(1\)\n\s+Slack:\s+installed/);
+      expect(stdout).toContain("Run `vana connect slack` to collect data.");
+      expect(stdout).not.toContain("Claude-code");
+      expect(stdout).not.toContain("No connector available");
+
+      stdout = "";
+      expect(await runCli(["node", "vana", "status", "--json"])).toBe(0);
+      const payload = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
+      expect(payload.sources.needsAttention).toBe(0);
+    });
+
+    it("keeps a partial sync under attention", async () => {
+      mockListAvailableSources.mockResolvedValue([
+        { id: "github", name: "GitHub", authMode: "interactive" },
+      ]);
+      mockReadCliState.mockResolvedValue({
+        version: 1,
+        sources: {
+          github: {
+            connectorInstalled: true,
+            lastRunOutcome: "connected_and_ingested",
+            dataState: "ingested_personal_server",
+            lastResultPath: "/tmp/results/github.json",
+            ingestScopes: [
+              { scope: "github.repos", status: "stored" },
+              { scope: "github.starred", status: "failed", error: "timeout" },
+            ],
+          },
+        },
+      });
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "status"])).toBe(0);
+      expect(stdout).toMatch(
+        /Needs attention \(1\)\n\s+GitHub:\s+partial sync/,
+      );
+    });
+
+    it("server sync settles the failed outcome it fixed", async () => {
+      mockDetectPersonalServerTarget.mockResolvedValue({
+        state: "available",
+        url: "http://localhost:8080",
+      });
+      mockReadCliState.mockResolvedValue({
+        version: 1,
+        sources: {
+          github: {
+            connectorInstalled: true,
+            lastRunOutcome: "ingest_failed",
+            lastResultPath: "/tmp/results/github.json",
+            dataState: "ingest_failed",
+            ingestScopes: [
+              { scope: "github.repos", status: "failed", error: "HTTP 401" },
+            ],
+          },
+        },
+      });
+      mockIngestResult.mockResolvedValue([
+        {
+          type: "ingest-complete",
+          source: "github",
+          scopeResults: [{ scope: "github.repos", status: "stored" }],
+        },
+      ]);
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "server", "sync", "--json"])).toBe(
+        0,
+      );
+      expect(mockUpdateSourceState).toHaveBeenCalledWith(
+        "github",
+        expect.objectContaining({
+          dataState: "ingested_personal_server",
+          lastRunOutcome: "connected_and_ingested",
+        }),
+      );
+    });
+  });
+
+  describe("source ids and lookups", () => {
+    const catalog = [
+      { id: "claude-code-local", name: "Claude Code", authMode: "automated" },
+      { id: "claude-export", name: "Claude", authMode: "automated" },
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ];
+
+    it("lists the id next to a name that does not spell it", async () => {
+      mockListAvailableSources.mockResolvedValue(catalog);
+      mockReadCliState.mockResolvedValue({ version: 1, sources: {} });
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "sources"])).toBe(0);
+      expect(stdout).toContain("Claude Code (claude-code-local)");
+      expect(stdout).toContain("Claude (claude-export)");
+      expect(stdout).not.toContain("(github)");
+    });
+
+    it("finds a source by a name-like spelling", async () => {
+      mockListAvailableSources.mockResolvedValue(catalog);
+      mockReadCliState.mockResolvedValue({ version: 1, sources: {} });
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli(["node", "vana", "sources", "claude-code", "--json"]),
+      ).toBe(0);
+      expect(JSON.parse(stdout.trim()).id).toBe("claude-code-local");
+    });
+
+    it("suggests the closest id for an unknown source", async () => {
+      mockListAvailableSources.mockResolvedValue(catalog);
+      mockReadCliState.mockResolvedValue({ version: 1, sources: {} });
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "sources", "githb"])).toBe(1);
+      expect(stdout).toContain(
+        "Unknown source: githb. Did you mean github? Run `vana sources` to see available options.",
+      );
+    });
+
+    it("data show calls an unknown id unknown and points at vana sources", async () => {
+      mockListAvailableSources.mockResolvedValue(catalog);
+      mockReadCliState.mockResolvedValue({ version: 1, sources: {} });
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli(["node", "vana", "data", "show", "nonexistent"]),
+      ).toBe(1);
+      expect(stdout).toContain(
+        "Unknown source: nonexistent. Run `vana sources` to see available options.",
+      );
+      expect(stdout).toContain("Next: `vana sources`");
+      expect(stdout).not.toContain("Nonexistent");
+      expect(stdout).not.toContain("vana connect nonexistent");
+
+      stdout = "";
+      expect(
+        await runCli(["node", "vana", "data", "show", "nonexistent", "--json"]),
+      ).toBe(1);
+      expect(JSON.parse(stdout.trim())).toMatchObject({
+        error: "unknown_source",
+        source: "nonexistent",
+        suggestedSource: null,
+      });
+    });
+
+    it("data show resolves a display-name spelling to the id", async () => {
+      mockListAvailableSources.mockResolvedValue(catalog);
+      mockReadCliState.mockResolvedValue({ version: 1, sources: {} });
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli(["node", "vana", "data", "show", "Claude Code"]),
+      ).toBe(1);
+      expect(stdout).toContain(
+        "No collected dataset found for Claude Code. Run `vana connect claude-code-local` first.",
+      );
+    });
+
+    it("data show names a failed run that left an empty result file", async () => {
+      mockListAvailableSources.mockResolvedValue([
+        { id: "youtube", name: "YouTube", authMode: "interactive" },
+      ]);
+      mockReadCliState.mockResolvedValue({
+        version: 1,
+        sources: {
+          youtube: {
+            connectorInstalled: true,
+            lastRunOutcome: "runtime_error",
+            lastError: "Sign-in did not finish.",
+            lastLogPath: "/tmp/.vana/logs/run-youtube.log",
+          },
+        },
+      });
+      mockExistsSync.mockImplementation(
+        (filePath: string) => filePath === "/tmp/.vana/results/youtube.json",
+      );
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "data", "show", "youtube"])).toBe(1);
+      expect(stdout).toContain(
+        "YouTube has no data: the last run failed (Sign-in did not finish).",
+      );
+      expect(stdout).toContain("/tmp/.vana/logs/run-youtube.log");
+      expect(stdout).toContain("/tmp/.vana/results/youtube.json");
+      expect(stdout).not.toContain("No collected dataset found");
+
+      stdout = "";
+      expect(
+        await runCli(["node", "vana", "data", "show", "youtube", "--json"]),
+      ).toBe(1);
+      const parsed = datasetNotFoundErrorSchema.parse(
+        JSON.parse(stdout.trim()),
+      );
+      expect(parsed).toMatchObject({
+        logPath: "/tmp/.vana/logs/run-youtube.log",
+        resultPath: "/tmp/.vana/results/youtube.json",
+      });
+    });
+
+    it("data show says an empty result file holds no data", async () => {
+      mockListAvailableSources.mockResolvedValue([
+        { id: "youtube", name: "YouTube", authMode: "interactive" },
+      ]);
+      mockReadCliState.mockResolvedValue({ version: 1, sources: {} });
+      mockExistsSync.mockImplementation(
+        (filePath: string) => filePath === "/tmp/.vana/results/youtube.json",
+      );
+
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "data", "show", "youtube"])).toBe(1);
+      expect(stdout).toContain(
+        "YouTube's last run saved an empty result, with no data in it.",
+      );
+    });
+  });
+
+  it("doctor collapses identical per-scope sync errors", async () => {
+    const unauthorized =
+      'HTTP 401: {"error":{"code":401,"errorCode":"MISSING_AUTH","message":"Missing authentication"}}';
+    const scopes = [
+      "github.profile",
+      "github.repos",
+      "github.starred",
+      "github.orgs",
+      "github.gists",
+      "github.followers",
+    ];
+    mockListAvailableSources.mockResolvedValue([
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ]);
+    mockReadCliState.mockResolvedValue({
+      version: 1,
+      sources: {
+        github: {
+          connectorInstalled: true,
+          lastRunAt: "2026-03-15T10:00:00Z",
+          lastRunOutcome: "ingest_failed",
+          dataState: "ingest_failed",
+          lastResultPath: "/tmp/results/github.json",
+          lastError: scopes
+            .map((scope) => `${scope}: ${unauthorized}`)
+            .join("; "),
+          ingestScopes: scopes.map((scope) => ({
+            scope,
+            status: "failed",
+            error: unauthorized,
+          })),
+        },
+      },
+    });
+
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(await runCli(["node", "vana", "doctor"])).toBe(0);
+    expect(stdout).not.toContain('{"error"');
+    expect(stdout).toContain("Authentication required (HTTP 401) for 6 scopes");
   });
 
   describe("local Collection Profile connectors", () => {
