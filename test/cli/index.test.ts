@@ -2814,7 +2814,7 @@ describe("runCli", () => {
       Spotify local
         Profile: tnunamak
         Playlists: 2
-        Playlists: Focus, Deep Work
+        Playlist names: Focus, Deep Work
         State:         Saved locally
         Updated: <timestamp>
         Path:          /tmp/.vana/spotify-result.json

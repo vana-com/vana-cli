@@ -20,13 +20,23 @@ import {
   queryDataShow,
   queryDoctor,
 } from "./queries.js";
+import {
+  DEFAULT_SLICE_LIMIT,
+  DEFAULT_SLICE_MAX_BYTES,
+  MAX_SLICE_LIMIT,
+  UnknownScopeError,
+  describeScopes,
+  sliceScope,
+  type DataSlice,
+  type ScopeOverview,
+} from "./data-slice.js";
 
-/**
- * Start the MCP server on stdio.
- *
- * Returns a promise that resolves when the transport disconnects.
- */
-export async function startMcpServer(): Promise<void> {
+export interface McpServerDeps {
+  queryDataShow?: typeof queryDataShow;
+}
+
+/** Build the MCP server with every tool registered, not yet connected. */
+export function createMcpServer(deps: McpServerDeps = {}): McpServer {
   const version = getCliVersion();
 
   const server = new McpServer({
@@ -74,12 +84,52 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     "show_data",
-    "Inspect collected data for a connected source. Shows data summary, sync status, and file paths",
-    { source: z.string().describe("Source identifier (e.g. github, twitter)") },
-    async ({ source }) => {
-      const result = await queryDataShow(source);
+    [
+      "Inspect or read collected data for a connected source.",
+      "Without `scope` it returns an overview: summary, sync state, file path, and every scope with its item count and size in bytes (no data).",
+      `With \`scope\` it returns one page of that scope's items: \`offset\` (default 0) and \`limit\` (default ${DEFAULT_SLICE_LIMIT}, max ${MAX_SLICE_LIMIT}) page through them, \`query\` keeps only items whose JSON contains the text (case-insensitive).`,
+      `A page never exceeds about ${Math.round(DEFAULT_SLICE_MAX_BYTES / 1000)} KB; when more remain the result gives \`nextOffset\` to pass next.`,
+    ].join(" "),
+    {
+      source: z.string().describe("Source identifier (e.g. github, chatgpt)"),
+      scope: z
+        .string()
+        .optional()
+        .describe(
+          "Scope to read, as listed in the overview (e.g. github.repositories, or just repositories). Omit for the overview.",
+        ),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Index of the first item to return (default 0)"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(MAX_SLICE_LIMIT)
+        .optional()
+        .describe(
+          `Maximum items to return (default ${DEFAULT_SLICE_LIMIT}); the size cap may return fewer`,
+        ),
+      query: z
+        .string()
+        .optional()
+        .describe(
+          "Case-insensitive text filter: keep only items whose JSON contains it",
+        ),
+    },
+    async (args) => {
+      const result = await showData(args, deps);
+      // A page is sized against compact JSON; indenting it would push it
+      // past the cap.
+      const text = args.scope
+        ? JSON.stringify(result)
+        : JSON.stringify(result, null, 2);
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text", text }],
+        ...(result.ok ? {} : { isError: true }),
       };
     },
   );
@@ -127,22 +177,19 @@ export async function startMcpServer(): Promise<void> {
     },
   );
 
-  // ── Tool: generate_context (placeholder) ─────────────────────────────
+  // generate_context is not registered until it does something: a listed
+  // tool that only answers "not yet implemented" wastes an agent's call.
 
-  server.tool(
-    "generate_context",
-    "Generate prioritized suggestions for the next agent prompt based on connected personal data (coming soon)",
-    async () => {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "Not yet implemented. Install with: vana skills install next-prompt",
-          },
-        ],
-      };
-    },
-  );
+  return server;
+}
+
+/**
+ * Start the MCP server on stdio.
+ *
+ * Returns a promise that resolves when the transport disconnects.
+ */
+export async function startMcpServer(): Promise<void> {
+  const server = createMcpServer();
 
   // ── Connect transport and run ────────────────────────────────────────
 
@@ -185,6 +232,103 @@ export async function startMcpServer(): Promise<void> {
     process.stdin.once("end", onStdinEnd);
     transport.onclose = () => done();
   });
+}
+
+// ── show_data ────────────────────────────────────────────────────────
+
+export interface ShowDataArgs {
+  source: string;
+  scope?: string;
+  offset?: number;
+  limit?: number;
+  query?: string;
+}
+
+export type ShowDataResult =
+  | {
+      ok: true;
+      source: string;
+      name: string;
+      path: string;
+      lastRunAt: string | null;
+      dataState: string | null;
+      summary: string[];
+      exportSummary: unknown;
+      scopes: ScopeOverview[];
+      howToRead: string;
+    }
+  | ({ ok: true; source: string; name: string } & DataSlice)
+  | {
+      ok: false;
+      error: string;
+      source: string;
+      message: string;
+      availableScopes?: string[];
+      nextSteps?: string[];
+    };
+
+/**
+ * The bounded answer to show_data: an overview of a dataset, or one page of
+ * one scope. Never the whole dataset, which can be tens of megabytes.
+ */
+export async function showData(
+  args: ShowDataArgs,
+  deps: McpServerDeps = {},
+): Promise<ShowDataResult> {
+  const result = await (deps.queryDataShow ?? queryDataShow)(args.source);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      source: result.source,
+      message: result.message,
+      ...("nextSteps" in result ? { nextSteps: result.nextSteps } : {}),
+    };
+  }
+
+  if (!args.scope) {
+    const scopes = describeScopes(result.data);
+    const example = scopes.find((entry) => entry.kind === "list") ?? scopes[0];
+    return {
+      ok: true,
+      source: result.source,
+      name: result.name,
+      path: result.path,
+      lastRunAt: result.lastRunAt,
+      dataState: result.dataState ?? null,
+      summary: result.summary?.lines ?? [],
+      exportSummary: result.data.exportSummary ?? null,
+      scopes,
+      howToRead: example
+        ? `Call show_data with source "${result.source}" and scope "${example.scope}" to read items; add offset/limit to page and query to filter.`
+        : "This dataset holds no scopes to read.",
+    };
+  }
+
+  try {
+    return {
+      ok: true,
+      source: result.source,
+      name: result.name,
+      ...sliceScope(result.data, {
+        scope: args.scope,
+        offset: args.offset,
+        limit: args.limit,
+        query: args.query,
+      }),
+    };
+  } catch (error) {
+    if (error instanceof UnknownScopeError) {
+      return {
+        ok: false,
+        error: "scope_not_found",
+        source: result.source,
+        message: error.message,
+        availableScopes: error.available,
+      };
+    }
+    throw error;
+  }
 }
 
 // ── Child process runner for connect_source ──────────────────────────

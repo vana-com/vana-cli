@@ -162,6 +162,7 @@ import {
   setTelemetryEnabled,
   trackActiveTelemetryEvent,
 } from "./telemetry.js";
+import { dataScopeKeys, scopeLeaf, scopeList } from "./data-slice.js";
 
 interface GlobalOptions {
   json?: boolean;
@@ -6135,52 +6136,121 @@ export function summarizeResultData(
     typeof data.exportSummary === "object" && data.exportSummary
       ? (data.exportSummary as Record<string, unknown>)
       : null;
-  const profile =
-    typeof data.profile === "object" && data.profile
-      ? (data.profile as Record<string, unknown>)
+
+  const username = findProfileUsername(data);
+  if (username) {
+    lines.push(`Profile: ${username}`);
+  }
+
+  // Connectors key their data either flat (`repositories`) or by scope
+  // (`github.repositories`, holding `{ repositories: [...] }`); count every
+  // list either way.
+  const counted = new Set<string>();
+  for (const scope of dataScopeKeys(data)) {
+    const items = scopeList(scope, data[scope]);
+    if (!items) {
+      continue;
+    }
+    const leaf = scopeLeaf(scope);
+    counted.add(normalizeCountKey(leaf));
+    lines.push(`${humanizeKey(leaf)}: ${items.length}`);
+    const previewLabel = NAMED_PREVIEW_LABELS[leaf];
+    const preview = previewLabel
+      ? summarizeNamedItems(items, previewLabel)
       : null;
-
-  if (profile?.username && typeof profile.username === "string") {
-    lines.push(`Profile: ${profile.username}`);
-  }
-
-  if (Array.isArray(data.repositories)) {
-    lines.push(`Repositories: ${data.repositories.length}`);
-    const preview = summarizeNamedItems(data.repositories, "Latest repos");
     if (preview) {
       lines.push(preview);
     }
   }
 
-  if (Array.isArray(data.starred)) {
-    lines.push(`Starred: ${data.starred.length}`);
-  }
-
-  if (Array.isArray(data.orders)) {
-    lines.push(`Orders: ${data.orders.length}`);
-  }
-
-  if (Array.isArray(data.playlists)) {
-    lines.push(`Playlists: ${data.playlists.length}`);
-    const preview = summarizeNamedItems(data.playlists, "Playlists");
-    if (preview) {
-      lines.push(preview);
+  const details = exportSummary?.details;
+  if (details && typeof details === "object" && !Array.isArray(details)) {
+    // `{ repositories: 10, events: 300 }`: add the counts no list showed.
+    for (const [key, value] of Object.entries(details)) {
+      if (typeof value === "number" && !counted.has(normalizeCountKey(key))) {
+        lines.push(`${humanizeKey(key)}: ${value}`);
+      }
     }
-  }
-
-  if (
-    exportSummary?.details &&
-    typeof exportSummary.details === "string" &&
-    !lines.includes(exportSummary.details) &&
-    !Array.isArray(data.repositories) &&
-    !Array.isArray(data.starred) &&
-    !Array.isArray(data.orders) &&
-    !Array.isArray(data.playlists)
-  ) {
-    lines.push(exportSummary.details);
+  } else if (counted.size === 0) {
+    if (typeof details === "string" && details.trim()) {
+      lines.push(fixSingularCounts(details.trim()));
+    } else if (
+      typeof exportSummary?.count === "number" &&
+      typeof exportSummary.label === "string" &&
+      exportSummary.label.trim()
+    ) {
+      lines.push(
+        fixSingularCounts(
+          `${exportSummary.count} ${exportSummary.label.trim()}`,
+        ),
+      );
+    }
   }
 
   return lines.length > 0 ? { lines } : null;
+}
+
+const NAMED_PREVIEW_LABELS: Record<string, string> = {
+  repositories: "Latest repos",
+  playlists: "Playlist names",
+};
+
+function findProfileUsername(data: Record<string, unknown>): string | null {
+  const candidates = [
+    data.profile,
+    ...Object.entries(data)
+      .filter(([key]) => key.includes(".") && scopeLeaf(key) === "profile")
+      .map(([, value]) => value),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+    const record = candidate as Record<string, unknown>;
+    for (const field of ["username", "login", "handle"]) {
+      const value = record[field];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeCountKey(key: string): string {
+  return key.replace(/[\s_-]+/g, "").toLowerCase();
+}
+
+/** `saved_items` / `savedItems` -> `Saved items`. */
+function humanizeKey(key: string): string {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function singularize(word: string): string {
+  const lower = word.toLowerCase();
+  if (lower.endsWith("ies") && word.length > 3) {
+    return `${word.slice(0, -3)}y`;
+  }
+  if (/(ss|x|ch|sh)es$/i.test(word)) {
+    return word.slice(0, -2);
+  }
+  if (lower.endsWith("s") && !lower.endsWith("ss")) {
+    return word.slice(0, -1);
+  }
+  return word;
+}
+
+/** `1 playlists` -> `1 playlist`; other counts are left alone. */
+export function fixSingularCounts(text: string): string {
+  return text.replace(
+    /(^|[^\d.,])1 ([A-Za-z]+)/g,
+    (_match, prefix: string, word: string) => `${prefix}1 ${singularize(word)}`,
+  );
 }
 
 function summarizeNamedItems(
@@ -6190,13 +6260,14 @@ function summarizeNamedItems(
 ): string | null {
   const names = items
     .map((item) => {
-      if (
-        typeof item === "object" &&
-        item &&
-        "name" in item &&
-        typeof (item as { name?: unknown }).name === "string"
-      ) {
-        return (item as { name: string }).name;
+      if (typeof item !== "object" || !item) {
+        return null;
+      }
+      const record = item as Record<string, unknown>;
+      for (const field of ["name", "full_name", "title"]) {
+        if (typeof record[field] === "string" && record[field]) {
+          return record[field] as string;
+        }
       }
       return null;
     })
