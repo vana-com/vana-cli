@@ -37,6 +37,7 @@ const mockSearchSelect = vi.fn();
 const mockReaddir = vi.fn();
 // Never read or stop the real servers vana runs on this machine.
 const mockRunningCliServers = vi.fn((): unknown[] | undefined => undefined);
+const mockListServerDataDirs = vi.fn((): unknown[] | undefined => undefined);
 const mockStopLocalServer = vi.fn(async () => "stopped");
 const mockReadFile = vi.fn();
 const mockReadFileSync = vi.fn();
@@ -243,6 +244,8 @@ vi.mock("../../src/personal-server/local/data-dir.js", async () => {
     ...actual,
     runningCliServers: (network: "moksha" | "mainnet") =>
       mockRunningCliServers() ?? actual.runningCliServers(network),
+    listServerDataDirs: (network: "moksha" | "mainnet") =>
+      mockListServerDataDirs() ?? actual.listServerDataDirs(network),
   };
 });
 
@@ -403,6 +406,8 @@ describe("runCli", () => {
     mockReaddir.mockReset();
     mockRunningCliServers.mockReset();
     mockRunningCliServers.mockReturnValue(undefined);
+    mockListServerDataDirs.mockReset();
+    mockListServerDataDirs.mockReturnValue(undefined);
     mockStopLocalServer.mockReset();
     mockStopLocalServer.mockResolvedValue("stopped");
     mockReadFile.mockReset();
@@ -1948,17 +1953,21 @@ describe("runCli", () => {
     );
   });
 
-  it("labels a `vana server start` server by its data dir after an account switch", async () => {
-    // auth.json belongs to the account signed in now, with no started_by:
-    // the lock and key in the CLI's data dir still say vana runs this one.
+  it("never presents another account's server as this one's, after its own died", async () => {
+    // The 0.38.6 report: A's server on :8080, B signed in and B's own server
+    // down. Status must say B's is down and list A's only as someone else's.
     const owner = "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d";
+    const me = "0xaff7000000000000000000000000000000000001";
     const dataDir = `/home/.vana/cli/personal-server/mainnet/${owner.toLowerCase()}`;
+    const myDir = `/home/.vana/cli/personal-server/mainnet/${me}`;
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
       source: "scan",
       health: {
         status: "healthy",
+        version: "1.19.0",
+        uptime: 5,
         gatewayUrl: "https://dp-rpc.vana.org",
         owner,
         identity: "0x86f0c856718414ee5a52ab23f3ba1fd150563bb3",
@@ -1968,7 +1977,7 @@ describe("runCli", () => {
       if (String(filePath).endsWith("/auth.json")) {
         return JSON.stringify({
           account: {
-            address: "0xaff7000000000000000000000000000000000001",
+            address: me,
             session_token: "vana_account_session",
             expires_at: "2099-01-01T00:00:00.000Z",
           },
@@ -1977,52 +1986,99 @@ describe("runCli", () => {
       throw new Error("missing");
     });
     mockExistsSync.mockReturnValue(true);
-    mockRunningCliServers.mockReturnValue([
-      {
-        dir: dataDir,
-        owner,
-        identity: "0x86F0c856718414eE5A52AB23f3bA1fd150563BB3",
-        pid: 9188,
-      },
-      {
-        dir: "/home/.vana/cli/personal-server/mainnet/0xaff7",
-        owner: "0xaff7000000000000000000000000000000000001",
-        identity: "0x0000000000000000000000000000000000000002",
-        pid: 9200,
-      },
-    ]);
+    const theirs = {
+      dir: dataDir,
+      owner,
+      identity: "0x86F0c856718414eE5A52AB23f3bA1fd150563BB3",
+      pid: 9188,
+    };
+    const mine = {
+      dir: myDir,
+      owner: me,
+      identity: "0x0000000000000000000000000000000000000002",
+      pid: null,
+    };
+    mockRunningCliServers.mockReturnValue([theirs]);
+    mockListServerDataDirs.mockReturnValue([theirs, mine]);
 
     const { runCli } = await import("../../src/cli/index.js");
-    expect(await runCli(["node", "vana", "server", "status", "--json"])).toBe(
-      0,
-    );
+    expect(
+      await runCli([
+        "node",
+        "vana",
+        "--network",
+        "mainnet",
+        "server",
+        "status",
+        "--json",
+      ]),
+    ).toBe(0);
     const payload = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
-    expect(payload.runBy).toBe("cli");
-    expect(payload.dataDir).toBe(dataDir);
-    expect(payload.otherLocalServers).toEqual([
-      {
-        owner: "0xaff7000000000000000000000000000000000001",
-        pid: 9200,
-        dataDir: "/home/.vana/cli/personal-server/mainnet/0xaff7",
+    expect(payload).toMatchObject({
+      state: "unavailable",
+      url: null,
+      running: false,
+      owner: me,
+      dataDir: myDir,
+      runBy: "cli",
+      health: null,
+      notThisAccount: true,
+      otherServer: {
+        url: "http://localhost:8080",
+        owner,
+        pid: 9188,
       },
-    ]);
-
-    // Signed in as 0xaff7, looking at 0x99Bf's server: say so, as
-    // `vana status` does.
-    expect(payload.notThisAccount).toBe(true);
+    });
 
     stdout = "";
-    expect(await runCli(["node", "vana", "server", "status"])).toBe(0);
-    expect(stdout).toContain("(vana server start for 0x99Bf...88d)");
-    expect(stdout).not.toContain("Vana Desktop");
-    expect(stdout).toContain(`Owner:         ${owner} (not this account)`);
+    expect(
+      await runCli([
+        "node",
+        "vana",
+        "--network",
+        "mainnet",
+        "server",
+        "status",
+      ]),
+    ).toBe(0);
+    expect(stdout).toContain("Your Personal Server is not running.");
+    expect(stdout).toContain("vana server start");
     expect(stdout).toContain(
-      "Signed in as:  0xaff7000000000000000000000000000000000001",
+      "Also running:  http://localhost:8080 for 0x99Bf...88d (pid 9188), not this account",
     );
+    // None of A's server is handed out as this account's.
+    expect(stdout).not.toContain("(vana server start for 0x99Bf...88d)");
+    expect(stdout).not.toContain("Local URL:     http://localhost:8080");
+    expect(stdout).not.toContain("Uptime");
+    expect(stdout).not.toContain(dataDir.split("/").at(-1));
 
     stdout = "";
-    expect(await runCli(["node", "vana", "status"])).toBe(0);
+    expect(
+      await runCli(["node", "vana", "--network", "mainnet", "status"]),
+    ).toBe(0);
+    expect(stdout).toContain("not running");
     expect(stdout).toContain(`${owner} (not this account)`);
+    expect(stdout).toContain("Your Personal Server is not running.");
+    expect(stdout).not.toMatch(/Personal Server:\s+http:\/\/localhost:8080/);
+
+    stdout = "";
+    expect(
+      await runCli([
+        "node",
+        "vana",
+        "--network",
+        "mainnet",
+        "status",
+        "--json",
+      ]),
+    ).toBe(0);
+    expect(JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}")).toMatchObject({
+      personalServer: "unavailable",
+      personalServerUrl: null,
+      ownPersonalServer: { running: false, url: null, dataDir: myDir },
+      otherPersonalServer: { url: "http://localhost:8080", owner },
+      next: "vana server start",
+    });
   });
 
   it("server stop leaves another account's server running and says whose it is", async () => {
@@ -2472,6 +2528,147 @@ describe("runCli", () => {
     expect(stderr).toContain("but you are signed in as");
     mockLoadCredentials.mockReset();
     mockLoadCredentials.mockReturnValue(null);
+  });
+
+  describe("another account's server, with nobody to ask", () => {
+    const theirs = "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d";
+    const foreignTarget = {
+      state: "available",
+      url: "http://localhost:8080",
+      source: "scan",
+      health: {
+        status: "healthy",
+        version: "1.19.0",
+        uptime: 1,
+        owner: theirs,
+      },
+    };
+    const signedIn = {
+      account: {
+        address: "0xaff7000000000000000000000000000000000001",
+        session_token: "current",
+        expires_at: "2999-01-01T00:00:00.000Z",
+      },
+      personal_server: null,
+    };
+    beforeEach(() => {
+      mockListAvailableSources.mockResolvedValue([
+        { id: "github", name: "GitHub", authMode: "interactive" },
+      ]);
+      mockDetectPersonalServerTarget.mockResolvedValue(foreignTarget);
+      mockLoadCredentials.mockReturnValue(signedIn as never);
+    });
+    afterEach(() => {
+      mockLoadCredentials.mockReset();
+      mockLoadCredentials.mockReturnValue(null);
+    });
+
+    it.each([["--no-input"], ["--yes"], ["--ipc"]])(
+      "connect %s refuses to store data there",
+      async (flag) => {
+        const { runCli } = await import("../../src/cli/index.js");
+        const exitCode = await runCli([
+          "node",
+          "vana",
+          "connect",
+          "github",
+          flag,
+          "--json",
+        ]);
+
+        expect(exitCode).toBe(5);
+        expect(mockConfirm).not.toHaveBeenCalled();
+        expect(mockIngestResult).not.toHaveBeenCalled();
+        expect(managedFetchCalls).toBe(0);
+        const outcome = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
+        expect(outcome).toMatchObject({
+          type: "outcome",
+          status: "personal_server_unavailable",
+          reason: "personal_server_not_yours",
+          personalServerOwner: theirs,
+        });
+      },
+    );
+
+    it("a scheduled collect --all stores nothing there and says why", async () => {
+      mockReadCliState.mockResolvedValue({
+        version: 1,
+        sources: {
+          github: {
+            connectorInstalled: true,
+            exportFrequency: "daily",
+            lastCollectedAt: "2020-01-01T00:00:00.000Z",
+            lastResultPath: "/tmp/results/github.json",
+            dataState: "collected_local",
+          },
+        },
+      });
+      const previous = process.env.VANA_SCHEDULED_RUN;
+      process.env.VANA_SCHEDULED_RUN = "1";
+      try {
+        const { runCli } = await import("../../src/cli/index.js");
+        const exitCode = await runCli([
+          "node",
+          "vana",
+          "collect",
+          "--all",
+          "--quiet",
+          "--no-input",
+        ]);
+
+        expect(exitCode).toBe(5);
+        expect(mockIngestResult).not.toHaveBeenCalled();
+        expect(stderr).toContain(
+          "Not storing your data: the Personal Server at http://localhost:8080 belongs to 0x99Bf...88d, not to you.",
+        );
+        expect(stderr).toContain("Pending data not synced");
+      } finally {
+        if (previous === undefined) delete process.env.VANA_SCHEDULED_RUN;
+        else process.env.VANA_SCHEDULED_RUN = previous;
+      }
+    });
+
+    it("server sync --no-input refuses; interactively it asks first", async () => {
+      mockReadCliState.mockResolvedValue({
+        version: 1,
+        sources: {
+          github: {
+            connectorInstalled: true,
+            lastResultPath: "/tmp/results/github.json",
+            dataState: "collected_local",
+          },
+        },
+      });
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli([
+          "node",
+          "vana",
+          "server",
+          "sync",
+          "--no-input",
+          "--json",
+        ]),
+      ).toBe(5);
+      expect(JSON.parse(stdout.trim())).toMatchObject({
+        error: "personal_server_not_yours",
+        owner: theirs,
+      });
+      expect(mockIngestResult).not.toHaveBeenCalled();
+
+      stdout = "";
+      mockConfirm.mockResolvedValueOnce(false);
+      expect(await runCli(["node", "vana", "server", "sync"])).toBe(5);
+      expect(mockConfirm).toHaveBeenCalledTimes(1);
+      expect(mockIngestResult).not.toHaveBeenCalled();
+
+      mockConfirm.mockResolvedValueOnce(true);
+      mockIngestResult.mockResolvedValue([
+        { type: "ingest-complete", source: "github" },
+      ]);
+      expect(await runCli(["node", "vana", "server", "sync"])).toBe(0);
+      expect(mockIngestResult).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("guides recovery for runtime errors during connect", async () => {

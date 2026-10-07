@@ -104,6 +104,17 @@ pnpm cli -- <args>  # run the built CLI
   is registered to one owner, so two accounts never open one dir; an older
   server kept straight in `<network>/` moves into its owner's dir on the
   next start (`src/personal-server/local/data-dir.ts`).
+- **`vana server start` supervises its server.** A server that exits on its
+  own comes back with backoff (`RESTART_DELAYS_MS` in
+  `src/cli/server-start.ts`) and the supervisor gives up with a
+  `server-failed` / `restart-limit` event. It holds the data dir's lock
+  across restarts, so `vana server stop` (SIGTERM to the lock's pid) always
+  finds it and nothing restarts after a stop. It does not survive a reboot:
+  never add a LaunchAgent, endpoint security flags those.
+- **Another account's server is never this account's.** `status` and
+  `server status` list it under "Also running"; `connect`, `collect` and
+  `server sync` refuse to write into it under `--no-input`, `--yes`, `--ipc`
+  or a scheduled run (exit 5), and only a person at a prompt can say yes.
 - **Only `--public` registers, and only a tunnel URL.** Without a tunnel the
   server offers its localhost origin as the registration URL; registering
   that would leave a push-only entry no app can reach. A registered server
