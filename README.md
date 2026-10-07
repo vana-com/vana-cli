@@ -101,6 +101,18 @@ There is also an MCP server over stdio for clients that prefer tools:
 claude mcp add vana -- vana mcp
 ```
 
+When an agent connected to your Personal Server asks to read more of your
+data, it shows you a link to the request on Vana Web (app.vana.org), where
+you tick what to share, from any device. A server started with `--local` has
+no public URL for Vana Web to reach, so there you answer in the terminal,
+which works for any server:
+
+```bash
+vana mcp requests                                 # who wants what, and why
+vana mcp approve <connection-id> [--scopes a,b]   # share all or some of it
+vana mcp deny <connection-id>
+```
+
 ## The SDK
 
 The same package is also a JavaScript SDK for apps that ask their users for

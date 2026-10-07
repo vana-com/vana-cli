@@ -4,7 +4,8 @@
 // The first JSON line on stdin is its configuration, so the owner signature
 // never appears in the process list or environment:
 //   { rootPath, port, ownerSignature, ownerAddress, network: { gatewayUrl, chainId,
-//     contracts, storageApiUrl }, tunnel: { binaryPath, serverAddr, serverPort } | null }
+//     contracts, storageApiUrl, webOrigin }, tunnel: { binaryPath, serverAddr,
+//     serverPort } | null }
 // Later lines are commands from the CLI, which holds the Account session:
 //   { type: "prepare-registration" } -> registration-request
 //   { type: "submit-registration", signature } -> registration-submitted
@@ -20,6 +21,7 @@ import {
   loadConfig,
   startPersonalServer,
 } from "@opendatalabs/personal-server-ts/node";
+import { vanaWebMcpScopeRequestApprovalUrl } from "@opendatalabs/personal-server-ts-core/mcp";
 
 import { applyDerived, derivedConfig } from "./derived-config.mjs";
 import { startMcpApprovalPage } from "./mcp-approval.mjs";
@@ -187,6 +189,14 @@ async function main() {
     port,
     ownerSignature,
     mcpOAuthApprovalUrl: mcpApproval.url,
+    // The link `request_scope_access` hands the agent to show the owner: the
+    // request on Vana Web, which calls this server back at its tunnel URL, so
+    // it works from a phone. A server without a public https origin
+    // (`--local`, or before the tunnel is up) gets no link, and the owner
+    // answers with `vana mcp approve|deny`.
+    mcpScopeRequestApprovalUrl: vanaWebMcpScopeRequestApprovalUrl({
+      webOrigin: network.webOrigin,
+    }),
     configDefaults,
     onStatus: (status) => process.stderr.write(`[status] ${status}\n`),
   });
