@@ -165,7 +165,11 @@ function harness(overrides: Partial<ServerStartDeps> = {}) {
       },
     ),
     runningServerCharges: vi.fn(() => null),
-    waitForStop: vi.fn(async () => "stopped" as const),
+    // Ctrl+C right after the server is up, unless a test says otherwise.
+    stopRequested: vi.fn(async () => {}),
+    lockDataDir: vi.fn(async () => async () => {}),
+    sleep: vi.fn(async () => {}),
+    now: vi.fn(() => Date.now()),
     ...overrides,
   };
   const io = {
@@ -652,12 +656,143 @@ describe("runServerStart", () => {
     }
   });
 
-  it("reports a server that dies on its own", async () => {
-    const h = harness({ waitForStop: vi.fn(async () => "exited" as const) });
+  it("restarts a server that dies on its own, and stops it when asked", async () => {
+    // The 0.38.6 report: kill -9 of entry.mjs took the supervisor down too.
+    const first = crashingServer();
+    const second = crashingServer();
+    let stop: () => void = () => {};
+    const h = harness({
+      start: vi
+        .fn()
+        .mockResolvedValueOnce(first.handle)
+        .mockResolvedValueOnce(second.handle),
+      stopRequested: vi.fn(() => new Promise<void>((r) => (stop = r))),
+      resolveFrpc: vi.fn(async () => ({
+        kind: "unavailable" as const,
+        reason: "No tunnel.",
+      })),
+    });
+    const run = runServerStart({ network: "moksha" }, h.io, h.deps);
+    await vi.waitFor(() => expect(h.deps.start).toHaveBeenCalledTimes(1));
+    first.crash(137);
+    await vi.waitFor(() =>
+      expect(h.events.at(-1)).toMatchObject({ type: "server-restarted" }),
+    );
+    expect(h.events).toContainEqual(
+      expect.objectContaining({
+        type: "server-restarting",
+        attempt: 1,
+        delayMs: 1_000,
+        exitCode: 137,
+      }),
+    );
+    expect(h.deps.sleep).toHaveBeenCalledWith(1_000);
+    // The new server's token goes where `vana connect` looks for it.
+    expect(h.deps.saveCredentials).toHaveBeenCalledTimes(2);
+    stop();
+    expect(await run).toBe(0);
+    expect(second.handle.stop).toHaveBeenCalled();
+    expect(h.deps.start).toHaveBeenCalledTimes(2);
+    expect(h.events.at(-1)).toMatchObject({ type: "server-stopped" });
+  });
+
+  it("never restarts after a stop that came during the wait", async () => {
+    const first = crashingServer();
+    let stop: () => void = () => {};
+    const h = harness({
+      start: vi.fn().mockResolvedValueOnce(first.handle),
+      stopRequested: vi.fn(() => new Promise<void>((r) => (stop = r))),
+      sleep: vi.fn(() => new Promise<void>(() => {})),
+      resolveFrpc: vi.fn(async () => ({
+        kind: "unavailable" as const,
+        reason: "No tunnel.",
+      })),
+    });
+    const run = runServerStart({ network: "moksha" }, h.io, h.deps);
+    await vi.waitFor(() => expect(h.deps.start).toHaveBeenCalledTimes(1));
+    first.crash(1);
+    await vi.waitFor(() => expect(h.deps.sleep).toHaveBeenCalled());
+    stop();
+    expect(await run).toBe(0);
+    expect(h.deps.start).toHaveBeenCalledTimes(1);
+    expect(h.events.at(-1)).toMatchObject({ type: "server-stopped" });
+  });
+
+  it("backs off and gives up on a server that keeps crashing", async () => {
+    const h = harness({
+      start: vi
+        .fn()
+        .mockResolvedValueOnce(crashingServer({ crashAt: 1 }).handle)
+        .mockRejectedValue(
+          new Error("The Personal Server exited (code 1) before it was ready."),
+        ),
+      stopRequested: vi.fn(() => new Promise<void>(() => {})),
+      resolveFrpc: vi.fn(async () => ({
+        kind: "unavailable" as const,
+        reason: "No tunnel.",
+      })),
+    });
     expect(await runServerStart({ network: "moksha" }, h.io, h.deps)).toBe(1);
-    expect(h.events.at(-1)).toMatchObject({ type: "server-exited" });
+    expect(vi.mocked(h.deps.sleep).mock.calls.map(([ms]) => ms)).toEqual([
+      1_000, 2_000, 5_000, 10_000, 30_000,
+    ]);
+    expect(h.events.at(-1)).toMatchObject({
+      type: "server-failed",
+      reason: "restart-limit",
+      restarts: 5,
+    });
+    expect(h.said.at(-1)).toContain("gave up after 5 restarts");
+  });
+
+  it("starts the count over after a server that ran a while", async () => {
+    let clock = 0;
+    const servers = [1, 2, 3].map(() => crashingServer());
+    let stop: () => void = () => {};
+    const h = harness({
+      start: vi
+        .fn()
+        .mockResolvedValueOnce(servers[0].handle)
+        .mockResolvedValueOnce(servers[1].handle)
+        .mockResolvedValueOnce(servers[2].handle),
+      now: vi.fn(() => clock),
+      stopRequested: vi.fn(() => new Promise<void>((r) => (stop = r))),
+      resolveFrpc: vi.fn(async () => ({
+        kind: "unavailable" as const,
+        reason: "No tunnel.",
+      })),
+    });
+    const run = runServerStart({ network: "moksha" }, h.io, h.deps);
+    await vi.waitFor(() => expect(h.deps.start).toHaveBeenCalledTimes(1));
+    servers[0].crash(1);
+    await vi.waitFor(() => expect(h.deps.start).toHaveBeenCalledTimes(2));
+    clock += 10 * 60_000;
+    servers[1].crash(1);
+    await vi.waitFor(() => expect(h.deps.start).toHaveBeenCalledTimes(3));
+    stop();
+    expect(await run).toBe(0);
+    const attempts = h.events
+      .filter((event) => event.type === "server-restarting")
+      .map((event) => event.attempt);
+    expect(attempts).toEqual([1, 1]);
   });
 });
+
+/** A server whose process the test kills. */
+function crashingServer(options: { crashAt?: number } = {}) {
+  let crash: (code: number) => void = () => {};
+  const exited = new Promise<number | null>((resolve) => (crash = resolve));
+  if (options.crashAt !== undefined) {
+    const code = options.crashAt;
+    queueMicrotask(() => crash(code));
+  }
+  const { handle } = fakeServer();
+  const crashing: LocalServerHandle = {
+    ...handle,
+    exited,
+    stop: vi.fn(async () => {}),
+  };
+  return { handle: crashing, crash: (code: number) => crash(code) };
+}
 
 describe("acquireDataDirLock", () => {
   let dir: string;
@@ -723,4 +858,85 @@ describe("findRunningServers", () => {
       { url: "http://localhost:8082", owner: OTHER, identity: "0xserverB" },
     ]);
   });
+});
+
+describe("runServerStart supervising a real child process", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "vana-ps-supervise-"));
+  });
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it("restarts a kill -9'd server, keeps the lock between runs, and stops clean", async () => {
+    const { startLocalServer } =
+      await import("../../src/personal-server/local/server.js");
+    const runtimeDir = path.join(root, "runtime");
+    const dataDir = path.join(root, "data");
+    fs.mkdirSync(runtimeDir);
+    // Stands in for entry.mjs: says ready, records its pid, waits for SIGINT.
+    fs.writeFileSync(
+      path.join(runtimeDir, "entry.mjs"),
+      [
+        'import fs from "node:fs";',
+        'process.stdin.once("data", (chunk) => {',
+        "  const config = JSON.parse(String(chunk).split('\\n')[0]);",
+        '  fs.appendFileSync(config.rootPath + "/pids", process.pid + "\\n");',
+        '  process.stdout.write(JSON.stringify({ type: "ready", url: "http://localhost:" + config.port }) + "\\n");',
+        "});",
+        'process.on("SIGINT", () => process.exit(0));',
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+    fs.mkdirSync(dataDir);
+    const pids = () =>
+      fs.existsSync(path.join(dataDir, "pids"))
+        ? fs
+            .readFileSync(path.join(dataDir, "pids"), "utf8")
+            .trim()
+            .split("\n")
+            .map(Number)
+        : [];
+    let stop: () => void = () => {};
+    const h = harness({
+      findNode: vi.fn(async () => ({
+        path: process.execPath,
+        version: process.versions.node,
+      })),
+      ensureRuntime: vi.fn(async () => runtimeDir),
+      resolveDataDir: vi.fn(async () => ({
+        kind: "ready" as const,
+        dir: dataDir,
+      })),
+      choosePort: vi.fn(async () => 18_080),
+      start: startLocalServer,
+      lockDataDir: acquireDataDirLock,
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms / 1000)),
+      stopRequested: vi.fn(() => new Promise<void>((r) => (stop = r))),
+    });
+    const run = runServerStart(
+      { network: "moksha", local: true },
+      h.io,
+      h.deps,
+    );
+    await vi.waitFor(() => expect(pids()).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    const [firstPid] = pids();
+    process.kill(firstPid, "SIGKILL");
+    await vi.waitFor(
+      () => {
+        expect(pids()).toHaveLength(2);
+        expect(h.events.at(-1)).toMatchObject({ type: "server-restarted" });
+      },
+      { timeout: 10_000 },
+    );
+    // `vana server stop` still finds this process by the lock.
+    expect(serverPidIn(dataDir)).toBe(process.pid);
+    stop();
+    expect(await run).toBe(0);
+    const secondPid = pids()[1];
+    expect(() => process.kill(secondPid, 0)).toThrow();
+    expect(fs.existsSync(path.join(dataDir, ".vana-cli.lock"))).toBe(false);
+    expect(pids()).toHaveLength(2);
+  }, 30_000);
 });

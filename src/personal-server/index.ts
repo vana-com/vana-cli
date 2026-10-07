@@ -88,13 +88,18 @@ export async function detectPersonalServerTarget(): Promise<PersonalServerTarget
     }
   }
 
-  // 2. Auth credentials (from `vana login`)
+  // 2. Auth credentials (from `vana login`). The saved server can be another
+  // account's, kept across a login switch: then a server of this account
+  // found by the scan below wins over it.
+  const account = loadCredentials()?.account?.address ?? null;
   const savedSession = loadPersonalServerSession();
+  let savedForeign: PersonalServerTarget | null = null;
   if (savedSession?.url) {
     const target = await detectTargetAt(savedSession.url, "auth");
-    if (target) {
+    if (target && !personalServerOwnerMismatch(target.health?.owner, account)) {
       return target;
     }
+    savedForeign = target;
   }
 
   // 3. Environment variable
@@ -109,7 +114,6 @@ export async function detectPersonalServerTarget(): Promise<PersonalServerTarget
   // 4. Localhost port scan. One machine can host servers for several
   // identities, so the first port to answer is not necessarily ours; prefer
   // one the signed-in account owns and only fall back to a stranger's.
-  const account = loadCredentials()?.account?.address ?? null;
   let unowned: PersonalServerTarget | null = null;
   for (const port of DEFAULT_PORTS) {
     const url = `http://localhost:${port}`;
@@ -125,6 +129,9 @@ export async function detectPersonalServerTarget(): Promise<PersonalServerTarget
       return target;
     }
     unowned ??= target;
+  }
+  if (savedForeign) {
+    return savedForeign;
   }
   if (unowned) {
     return unowned;

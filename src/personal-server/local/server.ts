@@ -84,6 +84,26 @@ function processIsRunning(pid: number): boolean {
   }
 }
 
+/** Data dirs this process holds the lock of, and how many times. */
+const heldDataDirs = new Map<string, number>();
+
+function releaseHeld(key: string, lockPath?: string): () => Promise<void> {
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    const count = (heldDataDirs.get(key) ?? 1) - 1;
+    if (count > 0) {
+      heldDataDirs.set(key, count);
+      return;
+    }
+    heldDataDirs.delete(key);
+    await fsp.rm(lockPath ?? path.join(key, ".vana-cli.lock"), {
+      force: true,
+    });
+  };
+}
+
 /**
  * Claim a data dir for this process. A lock whose pid is gone is stale and is
  * taken over; a live one means a server is already running from that dir.
@@ -91,6 +111,15 @@ function processIsRunning(pid: number): boolean {
 export async function acquireDataDirLock(
   dir: string,
 ): Promise<() => Promise<void>> {
+  // The supervisor holds the lock across its server's restarts, so that
+  // `vana server stop` finds it between two runs; the server it starts
+  // takes the same lock again, in the same process.
+  const key = path.resolve(dir);
+  const held = heldDataDirs.get(key);
+  if (held) {
+    heldDataDirs.set(key, held + 1);
+    return releaseHeld(key);
+  }
   await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
   const lockPath = path.join(dir, ".vana-cli.lock");
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -100,9 +129,8 @@ export async function acquireDataDirLock(
         `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
       );
       await handle.close();
-      return async () => {
-        await fsp.rm(lockPath, { force: true });
-      };
+      heldDataDirs.set(key, 1);
+      return releaseHeld(key, lockPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       let pid = 0;
@@ -209,9 +237,12 @@ export async function startLocalServer(input: {
 
   const exited = new Promise<number | null>((resolve) => {
     child.once("exit", (code) => {
-      void release();
       log.end();
-      resolve(code);
+      // The lock names this process, not the child: a restart takes it again
+      // right away, so it has to be gone before anyone hears of the exit.
+      void release()
+        .catch(() => {})
+        .finally(() => resolve(code));
     });
   });
 

@@ -223,6 +223,51 @@ describe("detectPersonalServerTarget", () => {
     });
   });
 
+  it("passes over a saved server of another account for one of ours", async () => {
+    // Two accounts' servers on one machine: auth.json still names A's.
+    const mine = "0xaff7000000000000000000000000000000000001";
+    const theirs = "0x99bf14e94de7edb022e08528c5cdb627f73a988d";
+    mocks.loadCredentials.mockReturnValue({
+      account: {
+        address: mine,
+        session_token: "t",
+        expires_at: "2999-01-01T00:00:00.000Z",
+      },
+      personal_server: null,
+    });
+    mocks.loadPersonalServerSession.mockReturnValue({
+      url: "http://localhost:8080",
+      session_token: "vana_ps_token",
+      expires_at: "2999-01-01T00:00:00.000Z",
+    });
+    const owners: Record<string, string> = {
+      "http://localhost:8080/health": theirs,
+      "http://localhost:8082/health": mine,
+    };
+    fetchMock.mockImplementation(async (input) => {
+      const owner = owners[String(input)];
+      if (!owner) throw new Error("nothing there");
+      return new Response(
+        JSON.stringify({ status: "healthy", version: "1", uptime: 1, owner }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+
+    await expect(detectPersonalServerTarget()).resolves.toMatchObject({
+      url: "http://localhost:8082",
+      source: "scan",
+      health: { owner: mine },
+    });
+
+    // With ours down, the saved one is still reported, as someone else's.
+    delete owners["http://localhost:8082/health"];
+    await expect(detectPersonalServerTarget()).resolves.toMatchObject({
+      url: "http://localhost:8080",
+      source: "auth",
+      health: { owner: theirs },
+    });
+  });
+
   it("falls back to a server owned by someone else when nothing of ours answers", async () => {
     const theirs = "0x99bf14e94de7edb022e08528c5cdb627f73a988d";
     mocks.loadCredentials.mockReturnValue({

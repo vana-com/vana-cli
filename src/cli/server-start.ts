@@ -26,6 +26,7 @@ import {
   type OwnerSecretStore,
 } from "../personal-server/local/owner-secret.js";
 import {
+  acquireDataDirLock,
   choosePort,
   findRunningServers,
   nextMessage,
@@ -116,9 +117,27 @@ export interface ServerStartDeps {
     network: VanaNetworkName,
     identity: string | null,
   ) => boolean | null;
-  /** Resolves when the person asks the server to stop (Ctrl+C). */
-  waitForStop: (handle: LocalServerHandle) => Promise<"stopped" | "exited">;
+  /**
+   * Resolves when the person asks the server to stop: Ctrl+C, or the SIGTERM
+   * `vana server stop` sends. Called once per start, before the server runs.
+   */
+  stopRequested: () => Promise<void>;
+  /** Claim the data dir for the life of this process (acquireDataDirLock). */
+  lockDataDir: (dataDir: string) => Promise<() => Promise<void>>;
+  /** Waits between restarts of a server that exited on its own. */
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
 }
+
+/**
+ * Waits before each restart of a server that exited on its own. A server
+ * that crashes again within {@link STABLE_RUN_MS} of starting counts as one
+ * more rapid failure; once the waits run out the supervisor gives up.
+ */
+export const RESTART_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
+
+/** A server that ran this long before exiting starts the count over. */
+export const STABLE_RUN_MS = 60_000;
 
 export function defaultServerStartDeps(): ServerStartDeps {
   return {
@@ -143,15 +162,18 @@ export function defaultServerStartDeps(): ServerStartDeps {
     serverPidIn,
     startDetached: startDetachedServer,
     runningServerCharges,
-    waitForStop: (handle) =>
+    stopRequested: () =>
       new Promise((resolve) => {
         // Stay subscribed until the process ends: a second Ctrl+C while the
-        // server shuts down must not kill the CLI before it cleans up.
-        const onSignal = () => resolve("stopped");
+        // server shuts down, or restarts, must not kill the CLI before it
+        // cleans up.
+        const onSignal = () => resolve();
         process.on("SIGINT", onSignal);
         process.on("SIGTERM", onSignal);
-        void handle.exited.then(() => resolve("exited"));
       }),
+    lockDataDir: acquireDataDirLock,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now(),
   };
 }
 
@@ -438,59 +460,92 @@ export async function runServerStart(
     );
   }
 
-  const port = await deps.choosePort(options.port);
-  if (!port) {
-    io.say(
-      options.port
-        ? `Port ${options.port} or ${options.port + 1} is taken.`
-        : "Ports 8080 to 8085 are taken; pass --port.",
-    );
-    return CliExitCode.FAILURE;
-  }
-
-  let handle: LocalServerHandle;
+  // Hold the data dir for as long as this process supervises it, restarts
+  // included: `vana server stop` finds the server by this lock.
+  const ownDir = dataDir;
+  let releaseDataDir: () => Promise<void>;
   try {
-    handle = await deps.start({
-      network: options.network,
-      dataDir,
-      node,
-      runtimeDir,
-      binding,
-      port,
-      logPath,
-      frpcPath,
-    });
+    releaseDataDir = await deps.lockDataDir(ownDir);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // The server may have failed before it wrote a line: the log it points
-    // at must exist and say why.
-    await fs.promises
-      .appendFile(logPath, `[vana] ${message}\n`, { mode: 0o600 })
-      .catch(() => {});
     io.say(message);
-    io.event({ type: "server-failed", message, logPath });
+    io.event({
+      type: "server-failed",
+      reason: "already-running",
+      message,
+      dataDir: ownDir,
+    });
     return CliExitCode.FAILURE;
   }
+  const supervise = async (dataDir: string): Promise<number> => {
+    // Listen for a stop from here on: one that comes while the server is
+    // starting or restarting must still stop it, and never restart it.
+    let stopping = false;
+    const stopped = deps.stopRequested().then(() => {
+      stopping = true;
+      return "stopped" as const;
+    });
+    const appendLog = (line: string) =>
+      fs.promises
+        .appendFile(logPath, `[vana] ${line}\n`, { mode: 0o600 })
+        .catch(() => {});
 
-  // `vana connect` finds the server by port scan; this token lets it write.
-  const url = `http://localhost:${handle.port}`;
-  await deps.saveCredentials({
-    ...credentials,
-    personal_server: {
-      url,
-      session_token: handle.accessToken,
-      expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-      started_by: "vana-server-start",
-    },
-  });
+    const firstPort = await deps.choosePort(options.port);
+    if (!firstPort) {
+      io.say(
+        options.port
+          ? `Port ${options.port} or ${options.port + 1} is taken.`
+          : "Ports 8080 to 8085 are taken; pass --port.",
+      );
+      return CliExitCode.FAILURE;
+    }
 
-  io.say(`Personal Server running at ${url}`);
-  io.say(`Owner ${binding.signerAddress}, network ${options.network}.`);
+    const launch = (port: number) =>
+      deps.start({
+        network: options.network,
+        dataDir,
+        node,
+        runtimeDir,
+        binding,
+        port,
+        logPath,
+        frpcPath,
+      });
 
-  let registered = false;
-  let publicUrl: string | null = null;
-  if (frpcPath) {
-    const outcome = await goPublic(handle, {
+    let handle: LocalServerHandle | null;
+    try {
+      handle = await launch(firstPort);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // The server may have failed before it wrote a line: the log it points
+      // at must exist and say why.
+      await appendLog(message);
+      io.say(message);
+      io.event({ type: "server-failed", message, logPath });
+      return CliExitCode.FAILURE;
+    }
+
+    // `vana connect` finds the server by port scan; this token lets it write.
+    const handOver = async (running: LocalServerHandle) => {
+      await deps.saveCredentials({
+        ...credentials,
+        personal_server: {
+          url: `http://localhost:${running.port}`,
+          session_token: running.accessToken,
+          expires_at: new Date(
+            Date.now() + 30 * 24 * 60 * 60 * 1000,
+          ).toISOString(),
+          started_by: "vana-server-start",
+        },
+      });
+    };
+    await handOver(handle);
+    const url = `http://localhost:${handle.port}`;
+
+    io.say(`Personal Server running at ${url}`);
+    io.say(`Owner ${binding.signerAddress}, network ${options.network}.`);
+
+    const publicInput = {
       ...options,
       dataDir,
       accountUrl,
@@ -499,33 +554,134 @@ export async function runServerStart(
       binding,
       io,
       deps,
+    };
+    let registered = false;
+    let publicUrl: string | null = null;
+    if (frpcPath) {
+      const outcome = await goPublic(handle, publicInput);
+      registered = outcome.registered;
+      publicUrl = outcome.publicUrl;
+    } else {
+      io.say(
+        "Local only: not registered and not reachable from other devices.",
+      );
+    }
+    io.say(
+      "Collect into it with `vana connect <source>`. Press Ctrl+C to stop.",
+    );
+    io.event({
+      type: "server-ready",
+      url,
+      owner: binding.signerAddress,
+      network: options.network,
+      registered,
+      publicUrl,
+      logPath,
     });
-    registered = outcome.registered;
-    publicUrl = outcome.publicUrl;
-  } else {
-    io.say("Local only: not registered and not reachable from other devices.");
-  }
-  io.say("Collect into it with `vana connect <source>`. Press Ctrl+C to stop.");
-  io.event({
-    type: "server-ready",
-    url,
-    owner: binding.signerAddress,
-    network: options.network,
-    registered,
-    publicUrl,
-    logPath,
-  });
 
-  const reason = await deps.waitForStop(handle);
-  await handle.stop();
-  if (reason === "exited") {
-    io.say(`The Personal Server stopped unexpectedly. See ${logPath}.`);
-    io.event({ type: "server-exited", logPath });
-    return CliExitCode.FAILURE;
+    // Supervise: a server that exits on its own (a crash, a kill -9) comes
+    // back on the same port, after a wait that grows while it keeps failing.
+    let rapidFailures = 0;
+    let lastPort = handle.port;
+    let runStartedAt = deps.now();
+    let lastError: string | null = null;
+    for (;;) {
+      let exitCode: number | null = null;
+      if (handle) {
+        const running = handle;
+        const reason = await Promise.race([
+          stopped,
+          running.exited.then(() => "exited" as const),
+        ]);
+        if (reason === "stopped" || stopping) {
+          await running.stop();
+          io.say("Stopped.");
+          io.event({ type: "server-stopped" });
+          return CliExitCode.OK;
+        }
+        exitCode = await running.exited;
+        await running.stop();
+        if (deps.now() - runStartedAt >= STABLE_RUN_MS) rapidFailures = 0;
+        lastError =
+          exitCode === null ? "killed by a signal" : `exit code ${exitCode}`;
+      }
+      handle = null;
+      rapidFailures += 1;
+
+      if (rapidFailures > RESTART_DELAYS_MS.length) {
+        const message = `The Personal Server keeps stopping (${lastError}); gave up after ${rapidFailures - 1} restarts. See ${logPath}, then run \`vana server start\`.`;
+        await appendLog(message);
+        io.say(message);
+        io.event({
+          type: "server-failed",
+          reason: "restart-limit",
+          restarts: rapidFailures - 1,
+          message,
+          logPath,
+        });
+        return CliExitCode.FAILURE;
+      }
+      const delayMs = RESTART_DELAYS_MS[rapidFailures - 1];
+      const message = `The Personal Server stopped unexpectedly (${lastError}). Restarting in ${Math.round(delayMs / 1000)}s (attempt ${rapidFailures} of ${RESTART_DELAYS_MS.length}).`;
+      await appendLog(message);
+      io.say(message);
+      io.event({
+        type: "server-restarting",
+        attempt: rapidFailures,
+        maxAttempts: RESTART_DELAYS_MS.length,
+        delayMs,
+        exitCode,
+        logPath,
+      });
+      const waited = await Promise.race([
+        stopped,
+        deps.sleep(delayMs).then(() => "elapsed" as const),
+      ]);
+      if (waited === "stopped" || stopping) {
+        io.say("Stopped.");
+        io.event({ type: "server-stopped" });
+        return CliExitCode.OK;
+      }
+
+      const port =
+        (await deps.choosePort(lastPort)) ??
+        (await deps.choosePort(options.port));
+      if (!port) {
+        lastError = "no free port";
+        continue;
+      }
+      try {
+        handle = await launch(port);
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        await appendLog(lastError);
+        continue;
+      }
+      lastPort = handle.port;
+      runStartedAt = deps.now();
+      await handOver(handle);
+      const restartedUrl = `http://localhost:${handle.port}`;
+      // A restart never registers: only the first start asks for that.
+      const outcome = frpcPath
+        ? await goPublic(handle, { ...publicInput, register: false })
+        : { registered: false, publicUrl: null };
+      await appendLog(`Restarted at ${restartedUrl}.`);
+      io.say(`Restarted. Personal Server running at ${restartedUrl}`);
+      io.event({
+        type: "server-restarted",
+        url: restartedUrl,
+        attempt: rapidFailures,
+        registered: outcome.registered,
+        publicUrl: outcome.publicUrl,
+        logPath,
+      });
+    }
+  };
+  try {
+    return await supervise(ownDir);
+  } finally {
+    await releaseDataDir();
   }
-  io.say("Stopped.");
-  io.event({ type: "server-stopped" });
-  return CliExitCode.OK;
 }
 
 /**
@@ -545,6 +701,8 @@ async function goPublic(
     binding: OwnerBinding;
     io: ServerStartIo;
     deps: ServerStartDeps;
+    /** False on a restart: report the tunnel, never ask to register. */
+    register?: boolean;
   },
 ): Promise<{ registered: boolean; publicUrl: string | null }> {
   const { io, deps } = input;
@@ -588,6 +746,7 @@ async function goPublic(
     io.say("The server did not reserve a public URL, so it stays local only.");
     return { registered: false, publicUrl: null };
   }
+  if (input.register === false) return { registered: false, publicUrl: null };
 
   io.say(
     `Registering ${publicUrl} as your Personal Server. This is recorded on-chain and cannot be undone.`,
@@ -770,6 +929,14 @@ function sayDetachedEvent(
       break;
     case "server-failed":
       if (event.message) io.say(text("message"));
+      break;
+    case "server-restarting":
+      io.say(
+        `The Personal Server stopped unexpectedly; restarting (attempt ${text("attempt")}).`,
+      );
+      break;
+    case "server-restarted":
+      io.say(`Restarted. Personal Server running at ${text("url")}`);
       break;
     default:
       break;

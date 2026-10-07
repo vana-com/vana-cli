@@ -127,6 +127,7 @@ import { runServerStart, type ServerStartIo } from "./server-start.js";
 import { findRunningServers } from "../personal-server/local/server.js";
 import { stopLocalServer } from "../personal-server/local/detach.js";
 import {
+  listServerDataDirs,
   runningCliServers,
   serverToStop,
   type CliServerDir,
@@ -1666,6 +1667,25 @@ async function readLocalConnectorScopes(
   }
 }
 
+/**
+ * True when no person can confirm storing data in another account's server:
+ * --no-input, --yes (which must not say yes to that), --ipc (an agent drives
+ * the run), or a scheduled run.
+ */
+function cannotAskAboutForeignServer(options: GlobalOptions): boolean {
+  return Boolean(
+    options.noInput ||
+    options.yes ||
+    options.ipc ||
+    process.env[SCHEDULED_RUN_ENV] === "1",
+  );
+}
+
+/** Why data was not stored in the server answering here. */
+function foreignServerRefusal(url: string | null, owner: string): string {
+  return `Not storing your data: the Personal Server at ${url ?? "this machine"} belongs to ${formatAddress(owner)}, not to you. Start yours with \`vana server start\`, or run this without --no-input or --yes to choose.`;
+}
+
 async function runConnect(
   rawSource: string,
   options: GlobalOptions,
@@ -1714,8 +1734,24 @@ async function runConnect(
           ? `Your vana login has expired, so the CLI cannot check that the Personal Server at ${target.url} (owner ${formatAddress(mismatch.owner)}) is yours. Run \`vana login\` to check.`
           : `The Personal Server at ${target.url} belongs to ${formatAddress(mismatch.owner)}, but you are signed in as ${formatAddress(mismatch.account)}.`,
       );
-      if (options.noInput || options.yes) {
-        renderer?.detail("Continuing; your data will be stored there.");
+      if (cannotAskAboutForeignServer(options)) {
+        // Nobody is there to say yes: never store one account's data in
+        // another account's server on its own (the nightly schedule runs
+        // exactly like this).
+        const message = foreignServerRefusal(target.url, mismatch.owner);
+        renderer?.fail(message);
+        if (!renderer && !options.json) process.stderr.write(`${message}\n`);
+        emit.event({
+          type: "outcome",
+          status: CliOutcomeStatus.PERSONAL_SERVER_UNAVAILABLE,
+          source,
+          reason: "personal_server_not_yours",
+          personalServerUrl: target.url,
+          personalServerOwner: mismatch.owner,
+          account: mismatch.account,
+          message,
+        });
+        return CliExitCode.SERVER_UNAVAILABLE;
       } else {
         renderer?.cleanup();
         const useIt = await confirm({
@@ -2769,12 +2805,40 @@ async function runStatus(options: GlobalOptions): Promise<number> {
     }
   }
 
+  // The server answering here may be another account's, still running after
+  // a login switch: it is listed as such, never as this account's.
+  const authCreds = loadCredentials();
+  const other = foreignServer(
+    {
+      state: status.personalServer,
+      url: status.personalServerUrl ?? null,
+      owner: status.personalServerOwner ?? null,
+    },
+    authCreds,
+  );
+  const ownRunning = status.personalServer === "available" && !other;
+  const ownDir =
+    authCreds && !isExpired(authCreds)
+      ? ownCliServerDir(
+          resolveNetwork(options.network).name,
+          authCreds.account.address,
+        )
+      : null;
+
   if (options.json) {
-    const jsonAuthCreds = loadCredentials();
+    const jsonAuthCreds = authCreds;
     const compactJson = {
       runtime: status.runtime,
-      personalServer: status.personalServer,
-      personalServerUrl: status.personalServerUrl,
+      personalServer: ownRunning ? status.personalServer : "unavailable",
+      personalServerUrl: ownRunning ? status.personalServerUrl : null,
+      ownPersonalServer: {
+        running: ownRunning,
+        url: ownRunning ? (status.personalServerUrl ?? null) : null,
+        dataDir: ownDir?.dir ?? null,
+      },
+      otherPersonalServer: other
+        ? { url: other.url, owner: other.owner, notThisAccount: true }
+        : null,
       pendingSyncCount: status.pendingSyncCount ?? 0,
       auth: jsonAuthCreds
         ? {
@@ -2789,7 +2853,7 @@ async function runStatus(options: GlobalOptions): Promise<number> {
       },
       sourceHealth: sourceHealthMap,
       lastScheduledRun: state.lastScheduledRun ?? null,
-      next: nextSteps[0] ?? null,
+      next: other ? "vana server start" : (nextSteps[0] ?? null),
     };
     process.stdout.write(`${JSON.stringify(compactJson)}\n`);
     return 0;
@@ -2801,18 +2865,19 @@ async function runStatus(options: GlobalOptions): Promise<number> {
   emit.title("Vana Connect");
   emit.blank();
   emit.keyValue("Runtime", status.runtime, toneForRuntime(status.runtime));
-  if (status.personalServer === "available") {
+  if (ownRunning) {
     emit.keyValue(
       "Personal Server",
       status.personalServerUrl ?? "connected",
       "success",
     );
+  } else if (other || ownDir) {
+    emit.keyValue("Personal Server", "not running", "warning");
   } else {
     emit.keyValue("Personal Server", "not connected", "warning");
   }
 
   // Auth state
-  const authCreds = loadCredentials();
   if (authCreds && !isExpired(authCreds)) {
     emit.keyValue("Account", authCreds.account.address, "success");
     emit.keyValue(
@@ -2825,19 +2890,15 @@ async function runStatus(options: GlobalOptions): Promise<number> {
     emit.keyValue("Auth", "Run `vana login` to authenticate", "muted");
   }
 
-  const statusMismatch =
-    authCreds && !isExpired(authCreds)
-      ? personalServerOwnerMismatch(
-          status.personalServerOwner,
-          authCreds.account.address,
-        )
-      : null;
-  if (statusMismatch) {
+  if (other) {
     emit.keyValue(
-      "Server owner",
-      `${statusMismatch.owner} (not this account)`,
-      "warning",
+      "Also running",
+      `${other.url} for ${other.owner} (not this account)`,
+      "muted",
     );
+  }
+  if (!ownRunning && (other || ownDir)) {
+    emit.detail(ownServerDownLine(Boolean(ownDir)));
   }
 
   const trackedSources = status.sources.filter(shouldDisplaySourceInStatus);
@@ -3263,6 +3324,47 @@ function networkOfGateway(gatewayUrl: unknown): VanaNetworkName | null {
 }
 
 /**
+ * The server answering here when it belongs to another account than the one
+ * signed in now: it is never presented as this account's server.
+ */
+function foreignServer(
+  server: { state: string; url: string | null; owner: string | null },
+  credentials: VanaCredentials | null,
+): { url: string; owner: string; account: string } | null {
+  if (server.state !== "available" || !server.url) return null;
+  if (!credentials || isExpired(credentials)) return null;
+  const mismatch = personalServerOwnerMismatch(
+    server.owner,
+    credentials.account.address,
+  );
+  return mismatch ? { url: server.url, ...mismatch } : null;
+}
+
+/** This account's own `vana server start` data dir, running or not. */
+function ownCliServerDir(
+  network: VanaNetworkName,
+  account: string | null | undefined,
+): CliServerDir | null {
+  if (!account || account === "env") return null;
+  try {
+    return (
+      listServerDataDirs(network).find((server) =>
+        sameAccountAddress(server.owner, account),
+      ) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** What to say when this account's own server is not the one running. */
+function ownServerDownLine(hasOwnServer: boolean): string {
+  return hasOwnServer
+    ? "Your Personal Server is not running. Start it with `vana server start`."
+    : "No Personal Server of yours is running. Start one with `vana server start`.";
+}
+
+/**
  * Where the running server keeps its data on this machine, when known: a
  * server vana started is the one whose data dir holds a live lock and the
  * key the server answers with, whoever is signed in now.
@@ -3310,20 +3412,28 @@ async function runServerStatus(
   const target = await detectPersonalServerTarget();
   const credentials = loadCredentials();
   const account = credentials?.account.address;
-  const owner =
-    target.health?.owner ?? (account && account !== "env" ? account : null);
   // The same check `vana status` makes: the server answering here may be
-  // another account's, still running after a login switch.
-  const ownerMismatch =
-    credentials && !isExpired(credentials)
-      ? personalServerOwnerMismatch(target.health?.owner, account)
-      : null;
+  // another account's, still running after a login switch. Then nothing
+  // below is about it: its URLs are not this account's to hand out.
+  const other = foreignServer(
+    {
+      state: target.state,
+      url: target.url,
+      owner: target.health?.owner ?? null,
+    },
+    credentials,
+  );
+  const own: PersonalServerTarget = other
+    ? { state: "unavailable", url: null, source: null, health: null }
+    : target;
+  const owner =
+    own.health?.owner ?? (account && account !== "env" ? account : null);
   // Every registration this owner has, checked from outside: the live one is
   // where apps actually reach the data; the rest are old server identities.
   const registrations = owner
     ? await checkRegisteredServers(await lookupRegisteredServers(owner), owner)
     : [];
-  const localIdentity = target.health?.identity?.toLowerCase();
+  const localIdentity = own.health?.identity?.toLowerCase();
   const live =
     registrations.find(
       (server) =>
@@ -3334,13 +3444,32 @@ async function runServerStatus(
     null;
   const stale = registrations.filter((server) => !server.reachable);
   const network =
-    networkOfGateway(target.health?.gatewayUrl) ?? live?.network ?? null;
+    networkOfGateway(target.health?.gatewayUrl) ??
+    live?.network ??
+    (own.url ? null : resolveNetwork(options.network).name);
   const cliServers = network ? runningCliServers(network) : [];
-  const dataDir = localDataDir(target, network, cliServers);
+  // This account's own data dir, also while its server is down.
+  const ownDir =
+    !own.url && network && credentials && !isExpired(credentials)
+      ? ownCliServerDir(network, account)
+      : null;
+  const dataDir =
+    localDataDir(own, network, cliServers) ??
+    (ownDir
+      ? { path: ownDir.dir, runBy: "cli" as const, owner: ownDir.owner }
+      : null);
   // Servers vana runs here for other accounts, which this status is not about.
   const otherCliServers = cliServers.filter(
     (server) => server.dir !== dataDir?.path,
   );
+  const otherIdentity = other ? (target.health?.identity ?? null) : null;
+  const isOtherServer = (server: CliServerDir) =>
+    Boolean(
+      other &&
+      (otherIdentity
+        ? sameAccountAddress(server.identity, otherIdentity)
+        : sameAccountAddress(server.owner, other.owner)),
+    );
   const state = await readCliState();
 
   // Count scopes from state
@@ -3356,23 +3485,34 @@ async function runServerStatus(
   if (options.json) {
     process.stdout.write(
       `${JSON.stringify({
-        state: target.state,
-        url: target.url,
-        source: target.source,
+        state: own.state,
+        url: own.url,
+        source: own.source,
         owner,
+        running: own.state === "available",
         publicUrl: live?.url ?? null,
         publicNetwork: live?.network ?? null,
         dataDir: dataDir?.path ?? null,
         runBy: dataDir?.runBy ?? null,
+        otherServer: other
+          ? {
+              url: other.url,
+              owner: other.owner,
+              source: target.source,
+              identity: otherIdentity,
+              pid: cliServers.find(isOtherServer)?.pid ?? null,
+              health: target.health,
+            }
+          : null,
         otherLocalServers: otherCliServers.map((server) => ({
           owner: server.owner,
           pid: server.pid,
           dataDir: server.dir,
         })),
         registeredServers: registrations,
-        health: target.health,
+        health: own.health,
         scopeCount: totalScopeCount,
-        notThisAccount: ownerMismatch !== null,
+        notThisAccount: other !== null,
       })}\n`,
     );
     return 0;
@@ -3387,7 +3527,7 @@ async function runServerStatus(
       `${live.url} (${live.network}, reachable)`,
       "success",
     );
-  } else if (target.state === "available") {
+  } else if (own.state === "available") {
     emit.keyValue("Public URL", "none: apps cannot reach your data", "warning");
   } else {
     emit.keyValue(
@@ -3403,28 +3543,43 @@ async function runServerStatus(
     emit.keyValue("MCP URL", `${live.url.replace(/\/+$/, "")}/mcp`, "muted");
   }
 
-  if (target.url) {
+  if (own.url) {
     const runBy =
       dataDir?.runBy === "cli"
         ? `vana server start${dataDir.owner ? ` for ${formatAddress(dataDir.owner)}` : ""}`
         : dataDir?.runBy === "desktop"
           ? "Vana Desktop"
-          : target.source === "scan"
+          : own.source === "scan"
             ? "found running"
-            : target.source === "env"
+            : own.source === "env"
               ? "from VANA_PERSONAL_SERVER_URL"
               : "saved";
-    emit.keyValue("Local URL", `${target.url} (${runBy})`, "muted");
+    emit.keyValue("Local URL", `${own.url} (${runBy})`, "muted");
   } else {
-    emit.keyValue("Local URL", "no server running on this machine", "muted");
+    emit.keyValue(
+      "Local URL",
+      other
+        ? "your server is not running on this machine"
+        : "no server running on this machine",
+      other ? "warning" : "muted",
+    );
   }
   if (dataDir) {
     emit.keyValue("Data on disk", formatDisplayPath(dataDir.path), "muted");
   }
-  for (const other of otherCliServers) {
+  if (other) {
+    const pid = cliServers.find(isOtherServer)?.pid;
     emit.keyValue(
       "Also running",
-      `vana server start for ${other.owner ? formatAddress(other.owner) : "another account"} (pid ${other.pid})`,
+      `${other.url} for ${formatAddress(other.owner)}${pid ? ` (pid ${pid})` : ""}, not this account`,
+      "muted",
+    );
+  }
+  for (const server of otherCliServers) {
+    if (isOtherServer(server)) continue;
+    emit.keyValue(
+      "Also running",
+      `vana server start for ${server.owner ? formatAddress(server.owner) : "another account"} (pid ${server.pid})`,
       "muted",
     );
   }
@@ -3436,15 +3591,12 @@ async function runServerStatus(
     );
   }
 
-  if (target.health) {
-    emit.keyValue("Version", target.health.version, "muted");
-    emit.keyValue("Uptime", formatUptime(target.health.uptime), "muted");
+  if (own.health) {
+    emit.keyValue("Version", own.health.version, "muted");
+    emit.keyValue("Uptime", formatUptime(own.health.uptime), "muted");
   }
-  if (ownerMismatch) {
-    emit.keyValue("Owner", `${owner} (not this account)`, "warning");
-    emit.keyValue("Signed in as", ownerMismatch.account, "muted");
-  } else if (owner) {
-    emit.keyValue("Owner", owner, "muted");
+  if (owner) {
+    emit.keyValue(other ? "Signed in as" : "Owner", owner, "muted");
   }
   if (totalScopeCount > 0) {
     emit.keyValue("Scopes", `${totalScopeCount} stored`, "muted");
@@ -3462,8 +3614,9 @@ async function runServerStatus(
     }
   }
 
-  if (target.state !== "available") {
+  if (own.state !== "available") {
     emit.blank();
+    if (other || ownDir) emit.detail(ownServerDownLine(Boolean(ownDir)));
     emit.next("vana server start");
   }
 
@@ -4417,7 +4570,18 @@ async function runCollectAll(options: GlobalOptions): Promise<number> {
 
   let syncedPendingCount = 0;
   const target = await detectPersonalServerTarget();
-  if (target.state === "available") {
+  // Pending data waits for this account's own server; the one answering here
+  // may be another account's.
+  const foreign = personalServerOwnerMismatch(
+    target.health?.owner,
+    loadCredentials()?.account?.address,
+  );
+  if (target.state === "available" && foreign && !options.json) {
+    process.stderr.write(
+      `Pending data not synced: the Personal Server at ${target.url} belongs to ${formatAddress(foreign.owner)}, not to you. Start yours with \`vana server start\`.\n`,
+    );
+  }
+  if (target.state === "available" && !foreign) {
     const synced = await syncPendingSources(target, "automatic");
     syncedPendingCount = synced.syncedCount;
     for (const entry of synced.sourceResults) {
@@ -4508,6 +4672,41 @@ async function runServerSync(options: GlobalOptions): Promise<number> {
       );
     }
     return 1;
+  }
+
+  const mismatch = personalServerOwnerMismatch(
+    target.health?.owner,
+    loadCredentials()?.account?.address,
+  );
+  if (mismatch) {
+    let useIt = false;
+    if (!cannotAskAboutForeignServer(options) && !options.json) {
+      useIt = await confirm({
+        message: `The Personal Server at ${target.url} belongs to ${formatAddress(mismatch.owner)}. Sync your pending data into it?`,
+        default: false,
+        ...vanaPromptTheme,
+      });
+    }
+    if (!useIt) {
+      const message = foreignServerRefusal(target.url, mismatch.owner);
+      trackActiveTelemetryEvent("server_sync_failed", {
+        errorClass: "personal_server_not_yours",
+      });
+      if (options.json) {
+        process.stdout.write(
+          `${JSON.stringify({
+            error: "personal_server_not_yours",
+            message,
+            url: target.url,
+            owner: mismatch.owner,
+            account: mismatch.account,
+          })}\n`,
+        );
+      } else {
+        emit.info(message);
+      }
+      return CliExitCode.SERVER_UNAVAILABLE;
+    }
   }
 
   const syncResult = await syncPendingSources(target, "manual");
