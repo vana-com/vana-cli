@@ -101,6 +101,16 @@ There is also an MCP server over stdio for clients that prefer tools:
 claude mcp add vana -- vana mcp
 ```
 
+When an agent connected to your Personal Server asks to read more of your
+data, it shows you a link to a page on your own machine where you tick what
+to share. The same answer works from the terminal:
+
+```bash
+vana mcp requests                                 # who wants what, and why
+vana mcp approve <connection-id> [--scopes a,b]   # share all or some of it
+vana mcp deny <connection-id>
+```
+
 ## The SDK
 
 The same package is also a JavaScript SDK for apps that ask their users for

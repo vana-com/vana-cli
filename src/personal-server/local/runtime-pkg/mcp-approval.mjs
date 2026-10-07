@@ -1,11 +1,16 @@
-// The page where the owner approves an MCP client (Claude on claude.ai, any
-// remote MCP app) that asked the Personal Server for access over OAuth.
+// The pages where the owner answers an MCP client (Claude on claude.ai, any
+// remote MCP app, Claude Code on this machine).
 //
-// The server's /mcp/oauth/authorize redirects the owner's browser here with
-// ?mcp_authorization=<id>. This page shows who is asking, lets the owner pick
-// which data it may read, and approves through the server's owner-only API
-// with the owner token only this process holds. Loopback only: the approval
-// happens on the machine that runs the server.
+// /mcp: the server's /mcp/oauth/authorize redirects the owner's browser here
+// with ?mcp_authorization=<id>. This page shows who is asking, lets the owner
+// pick which data it may read, and approves through the server's owner-only
+// API with the owner token only this process holds.
+//
+// /scope-request: a connected client called `request_scope_access`, and the
+// server handed it this page's link (?connection=<id>) to show the owner. The
+// owner ticks which of the requested scopes to add, or declines.
+//
+// Loopback only: the approval happens on the machine that runs the server.
 
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
@@ -13,6 +18,7 @@ import http from "node:http";
 import path from "node:path";
 
 const APPROVAL_PATH = "/mcp";
+const SCOPE_REQUEST_PATH = "/scope-request";
 
 const escapeHtml = (value) =>
   String(value).replace(
@@ -122,18 +128,93 @@ main{width:100%;max-width:480px;background:var(--panel);border-radius:14px;outli
 .logo{color:var(--accent);margin-bottom:12px}h1{font-size:30px;font-weight:500;line-height:1.05;letter-spacing:-.01em;margin:0 0 12px}h1 .kicker{color:var(--accent);display:block}
 p{color:var(--dim);margin:0 0 16px}ul{list-style:none;padding:0;margin:0 0 20px;max-height:280px;overflow:auto}li{padding:6px 0}label{display:flex;gap:10px;align-items:center;font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:14px}
 button{width:100%;min-height:44px;border:0;border-radius:999px;font:inherit;cursor:pointer;margin-top:8px}.primary{background:var(--text);color:var(--panel)}.secondary{background:transparent;color:var(--dim);outline:1px solid color-mix(in srgb,var(--line) 60%,transparent)}
-.error{color:var(--error)}code{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:13px}
+.error{color:var(--error)}.label{color:var(--text);font-weight:500;margin:0 0 6px}blockquote{margin:0 0 16px;padding:0 0 0 12px;border-left:2px solid var(--line);color:var(--dim)}
+.shared li{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:14px;color:var(--dim)}a.button{display:flex;align-items:center;justify-content:center;text-decoration:none;min-height:44px;border-radius:999px;margin-top:8px}code{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:13px}
 @media (max-width:480px){main{padding:20px}h1{font-size:27px}}`;
 
 function page(title, body) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${STYLE}</style></head><body><main><div class="logo">${LOGO}</div>${body}</main></body></html>`;
 }
 
-function messagePage(heading, text, isError = false) {
+function messagePage(heading, text, isError = false, extraHtml = "") {
   return page(
     heading,
-    `<h1><span class="kicker">Personal Server</span>${escapeHtml(heading)}</h1><p${isError ? ' class="error"' : ""}>${escapeHtml(text)}</p>`,
+    `<h1><span class="kicker">Personal Server</span>${escapeHtml(heading)}</h1><p${isError ? ' class="error"' : ""}>${escapeHtml(text)}</p>${extraHtml}`,
   );
+}
+
+const scopeList = (scopes) =>
+  `<ul class="shared">${scopes.map((scope) => `<li>${escapeHtml(scope)}</li>`).join("")}</ul>`;
+
+/** A server without the scope-request answer endpoints (personal-server-ts before PR 372). */
+export const SERVER_TOO_OLD_MESSAGE =
+  "Your Personal Server is too old to answer this here. Update vana, then restart it with `vana server stop && vana server start`.";
+
+/**
+ * Plain words for the server's scope-request errors
+ * (POST /v1/mcp/connections/:id/scope-request/{approve,deny}).
+ */
+export function describeScopeRequestError(status, body) {
+  const code = body?.error?.errorCode ?? body?.errorCode ?? null;
+  const detail = body?.error?.message ?? body?.message ?? `HTTP ${status}`;
+  switch (code) {
+    case "NO_PENDING_REQUEST":
+      return {
+        heading: "Already answered",
+        text: "This request was already answered, here or in the terminal. Nothing changed.",
+        retry: false,
+      };
+    case "INVALID_STATE":
+      return {
+        heading: "Connection not active",
+        text: "This app's connection to your Personal Server was removed or is not approved, so there is nothing to add to.",
+        retry: false,
+      };
+    case "NOT_FOUND":
+      return {
+        heading: "Request not found",
+        text: "This app's connection no longer exists on your Personal Server.",
+        retry: false,
+      };
+    case "CONCURRENT_UPDATE":
+      return {
+        heading: "Try again",
+        text: "The connection changed while you were approving. Nothing was added. Try again.",
+        retry: true,
+      };
+    case "SCOPES_REQUIRED":
+    case "SCOPE_NOT_REQUESTED":
+    case "INVALID_SCOPE":
+      return {
+        heading: "Try again",
+        text: "That selection does not match what the app asked for. Reload and try again.",
+        retry: true,
+      };
+    case "GATEWAY_UNAVAILABLE":
+      return {
+        heading: "Vana network unavailable",
+        text: "Your Personal Server could not reach the Vana network to record this. Nothing changed. Try again in a moment.",
+        retry: true,
+      };
+    case "GRANT_CREATION_FAILED":
+      return status >= 500
+        ? {
+            heading: "Vana network unavailable",
+            text: "Your Personal Server could not reach the Vana network to record this. Nothing changed. Try again in a moment.",
+            retry: true,
+          }
+        : {
+            heading: "Not recorded",
+            text: `The Vana network did not accept this approval: ${detail}. Nothing changed.`,
+            retry: true,
+          };
+    default:
+      return {
+        heading: "Something went wrong",
+        text: `Your Personal Server could not do this: ${detail}. Nothing changed.`,
+        retry: true,
+      };
+  }
 }
 
 /**
@@ -181,6 +262,239 @@ export async function startMcpApprovalPage(input) {
     `localhost:${listenerPort}`,
   ];
 
+  // A form may only be sent from this page's own origin (a browser always
+  // names it on a POST; a missing header is a non-browser client, which
+  // still needs the one-time token).
+  const originAllowed = (req) => {
+    const origin = req.headers.origin;
+    return (
+      !origin ||
+      allowedHosts()
+        .map((h) => `http://${h}`)
+        .includes(origin)
+    );
+  };
+
+  /** The posted form, or null when it is too large. */
+  async function readForm(req) {
+    let raw = "";
+    for await (const chunk of req) {
+      raw += chunk;
+      if (raw.length > 100_000) return null;
+    }
+    return new URLSearchParams(raw);
+  }
+
+  /** Spend a one-time form token: true only for the one this page issued. */
+  function takeToken(tokens, key, token) {
+    const expected = tokens.get(key);
+    if (
+      !expected ||
+      token.length !== expected.length ||
+      !crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected))
+    ) {
+      return false;
+    }
+    tokens.delete(key);
+    return true;
+  }
+
+  const scopeTokens = new Map(); // connection id -> one-time form token
+
+  /**
+   * The connection as the owner API lists it, or why it cannot be shown.
+   * `grantedScopes` arrived with the scope-request answer endpoints, so a
+   * view without it is a server that cannot take the answer.
+   */
+  async function findConnection(id) {
+    const response = await ownerFetch("/v1/mcp/connections");
+    if (!response.ok) return { error: `HTTP ${response.status}` };
+    const body = await response.json().catch(() => ({}));
+    const list = Array.isArray(body.connections) ? body.connections : [];
+    const connection = list.find((item) => item?.id === id) ?? null;
+    return {
+      connection,
+      supported: Boolean(connection && Array.isArray(connection.grantedScopes)),
+    };
+  }
+
+  const scopeRequestHref = (id) =>
+    `${SCOPE_REQUEST_PATH}?connection=${encodeURIComponent(id)}`;
+  const retryLink = (id) =>
+    `<a class="button secondary" href="${escapeHtml(scopeRequestHref(id))}">Try again</a>`;
+
+  async function scopeRequestPage(url, send) {
+    const id = url.searchParams.get("connection") ?? "";
+    const found = id ? await findConnection(id) : { connection: null };
+    if (found.error) {
+      return send(
+        502,
+        messagePage(
+          "Personal Server did not answer",
+          `Could not read your app connections (${found.error}). Try again in a moment.`,
+          true,
+          retryLink(id),
+        ),
+      );
+    }
+    const connection = found.connection;
+    if (!connection) {
+      return send(
+        404,
+        messagePage(
+          "Request not found",
+          "This app's connection no longer exists on your Personal Server. Ask the app to connect again.",
+          true,
+        ),
+      );
+    }
+    const who = String(connection.displayName || "An app");
+    if (connection.status !== "approved") {
+      return send(
+        409,
+        messagePage(
+          "Connection not active",
+          `${who}'s connection to your Personal Server was removed or is not approved, so there is nothing to add to.`,
+          true,
+        ),
+      );
+    }
+    const pending = connection.scopeAccessRequest;
+    const requested = Array.isArray(pending?.scopes)
+      ? pending.scopes.filter((scope) => typeof scope === "string")
+      : [];
+    if (requested.length === 0) {
+      const decision = connection.scopeAccessDecision;
+      const text =
+        decision?.decision === "approved"
+          ? `You already answered: ${who} can now read ${(decision.approvedScopes ?? []).join(", ")}. Go back to ${who}.`
+          : decision?.decision === "denied"
+            ? `You already declined this request. Go back to ${who}.`
+            : `Nothing is waiting for your answer. Go back to ${who}.`;
+      return send(200, messagePage("Already answered", text));
+    }
+    if (!found.supported) {
+      return send(
+        501,
+        messagePage("Update needed", SERVER_TOO_OLD_MESSAGE, true),
+      );
+    }
+    const granted = connection.grantedScopes.filter(
+      (scope) => typeof scope === "string",
+    );
+    const token = crypto.randomBytes(24).toString("base64url");
+    scopeTokens.set(id, token);
+    const reason =
+      typeof pending.reason === "string" && pending.reason.trim()
+        ? `<p class="label">Their reason</p><blockquote>${escapeHtml(pending.reason.trim())}</blockquote>`
+        : "";
+    return send(
+      200,
+      page(
+        `${who} asks for more`,
+        `<h1><span class="kicker">Personal Server</span>${escapeHtml(who)} asks for more of your data</h1>
+<p>${escapeHtml(who)} is connected to your Personal Server and asks to read more. It gets only what you tick, and you can revoke it any time.</p>
+${reason}
+<p class="label">Already shared</p>
+${granted.length ? scopeList(granted) : "<p>Nothing yet.</p>"}
+<form method="post" action="${SCOPE_REQUEST_PATH}">
+<input type="hidden" name="connection" value="${escapeHtml(id)}"><input type="hidden" name="token" value="${escapeHtml(token)}">
+<p class="label">Asking for</p>
+<ul>${requested
+          .map(
+            (scope) =>
+              `<li><label><input type="checkbox" name="scope" value="${escapeHtml(scope)}" checked> ${escapeHtml(scope)}</label></li>`,
+          )
+          .join("")}</ul>
+<button class="primary" name="action" value="approve">Approve</button>
+<button class="secondary" name="action" value="deny">Decline</button>
+</form>`,
+      ),
+    );
+  }
+
+  async function answerScopeRequest(req, send) {
+    const form = await readForm(req);
+    if (!form)
+      return send(413, messagePage("Too large", "Request too large.", true));
+    const id = form.get("connection") ?? "";
+    if (!takeToken(scopeTokens, id, form.get("token") ?? "")) {
+      return send(
+        403,
+        messagePage(
+          "Request expired",
+          "Open the link from your app again and answer there.",
+          true,
+          id ? retryLink(id) : "",
+        ),
+      );
+    }
+    const deny = form.get("action") === "deny";
+    const scopes = form.getAll("scope").filter(Boolean);
+    if (!deny && scopes.length === 0) {
+      return send(
+        400,
+        messagePage(
+          "Nothing selected",
+          "Tick at least one kind of data, or decline.",
+          true,
+          retryLink(id),
+        ),
+      );
+    }
+    const response = await ownerFetch(
+      `/v1/mcp/connections/${encodeURIComponent(id)}/scope-request/${deny ? "deny" : "approve"}`,
+      {
+        method: "POST",
+        body: JSON.stringify(deny ? {} : { scopes }),
+      },
+    );
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.connection) {
+      // The endpoint itself is missing on a server older than this page.
+      if (response.status === 404 && !body?.error?.errorCode) {
+        return send(
+          501,
+          messagePage("Update needed", SERVER_TOO_OLD_MESSAGE, true),
+        );
+      }
+      const problem = describeScopeRequestError(response.status, body);
+      return send(
+        response.status >= 400 && response.status < 600 ? response.status : 502,
+        messagePage(
+          problem.heading,
+          problem.text,
+          true,
+          problem.retry ? retryLink(id) : "",
+        ),
+      );
+    }
+    const who = String(body.connection.displayName || "your app");
+    if (deny) {
+      return send(
+        200,
+        messagePage(
+          `Declined. Go back to ${who}`,
+          `Nothing new was shared. ${who} keeps only what it could read before.`,
+        ),
+      );
+    }
+    const approved = Array.isArray(body.approvedScopes)
+      ? body.approvedScopes
+      : scopes;
+    const left = Array.isArray(body.deniedScopes) ? body.deniedScopes : [];
+    return send(
+      200,
+      page(
+        `Done. Go back to ${who}`,
+        `<h1><span class="kicker">Personal Server</span>Done. Go back to ${escapeHtml(who)}</h1>
+<p>${escapeHtml(who)} can now also read:</p>${scopeList(approved)}${
+          left.length ? `<p>Not shared:</p>${scopeList(left)}` : ""
+        }<p>Tell ${escapeHtml(who)} you are done. You can revoke this any time.</p>`,
+      ),
+    );
+  }
+
   const server = http.createServer(async (req, res) => {
     const send = (status, html, headers = {}) => {
       res.writeHead(status, {
@@ -206,6 +520,26 @@ export async function startMcpApprovalPage(input) {
         );
       }
       const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+      if (url.pathname === SCOPE_REQUEST_PATH) {
+        if (req.method === "GET") return await scopeRequestPage(url, send);
+        if (req.method === "POST") {
+          if (!originAllowed(req)) {
+            return send(
+              403,
+              messagePage(
+                "Not allowed",
+                "This form can only be sent from its own page.",
+                true,
+              ),
+            );
+          }
+          return await answerScopeRequest(req, send);
+        }
+        return send(
+          405,
+          messagePage("Not allowed", "Method not allowed.", true),
+        );
+      }
       if (url.pathname !== APPROVAL_PATH)
         return send(404, messagePage("Not found", "Nothing here.", true));
 
@@ -266,13 +600,7 @@ ${list}
       }
 
       if (req.method === "POST") {
-        const origin = req.headers.origin;
-        if (
-          origin &&
-          !allowedHosts()
-            .map((h) => `http://${h}`)
-            .includes(origin)
-        ) {
+        if (!originAllowed(req)) {
           return send(
             403,
             messagePage(
@@ -282,24 +610,14 @@ ${list}
             ),
           );
         }
-        let raw = "";
-        for await (const chunk of req) {
-          raw += chunk;
-          if (raw.length > 100_000)
-            return send(
-              413,
-              messagePage("Too large", "Request too large.", true),
-            );
-        }
-        const form = new URLSearchParams(raw);
+        const form = await readForm(req);
+        if (!form)
+          return send(
+            413,
+            messagePage("Too large", "Request too large.", true),
+          );
         const id = form.get("id") ?? "";
-        const token = form.get("token") ?? "";
-        const expected = pending.get(id);
-        if (
-          !expected ||
-          token.length !== expected.length ||
-          !crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected))
-        ) {
+        if (!takeToken(pending, id, form.get("token") ?? "")) {
           return send(
             403,
             messagePage(
@@ -309,7 +627,6 @@ ${list}
             ),
           );
         }
-        pending.delete(id);
 
         const details = await ownerFetch(
           `/v1/mcp/oauth/authorizations/${encodeURIComponent(id)}`,
@@ -389,8 +706,12 @@ ${list}
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   listenerPort = server.address().port;
+  const origin = `http://127.0.0.1:${listenerPort}`;
   return {
-    url: `http://127.0.0.1:${listenerPort}${APPROVAL_PATH}`,
+    url: `${origin}${APPROVAL_PATH}`,
+    origin,
+    /** Where the owner answers connection `id`'s `request_scope_access`. */
+    scopeRequestUrl: (id) => `${origin}${scopeRequestHref(id)}`,
     close: () => server.close(),
   };
 }

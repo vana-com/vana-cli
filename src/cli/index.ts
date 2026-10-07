@@ -124,6 +124,16 @@ import {
 } from "../runtime/index.js";
 import { getPdppProfileRoot } from "../pdpp/host.js";
 import { runServerStart, type ServerStartIo } from "./server-start.js";
+import {
+  listPendingScopeRequests,
+  pendingRequestsStatusLine,
+  readApprovalOrigin,
+  runMcpAnswer,
+  runMcpRequests,
+  type McpOwnerServer,
+  type McpOwnerServerProblem,
+  type PendingScopeRequest,
+} from "./mcp-requests.js";
 import { findRunningServers } from "../personal-server/local/server.js";
 import { stopLocalServer } from "../personal-server/local/detach.js";
 import {
@@ -1043,9 +1053,13 @@ Examples:
       process.exitCode = await runTelemetryDisable(parsedOptions);
     });
 
-  program
+  // `vana mcp` alone is the stdio MCP server `claude mcp add` registers: the
+  // subcommands must never change what it does with no arguments.
+  const mcp = program
     .command("mcp")
-    .description("Start MCP server for agent integration")
+    .description(
+      "Start MCP server for agent integration, or answer agents' access requests",
+    )
     .action(async () => {
       process.exitCode = await runLongRunningCommandWithTelemetry(
         { ...telemetryBaseContext, command: "mcp" },
@@ -1053,6 +1067,70 @@ Examples:
           const { startMcpServer } = await import("./mcp-server.js");
           await startMcpServer();
         },
+      );
+    });
+  mcp.addHelpText(
+    "after",
+    `
+Examples:
+  vana mcp                               Run the MCP server on stdio (for claude mcp add)
+  vana mcp requests                      Agents waiting for more of your data
+  vana mcp approve <connection-id>       Give an agent everything it asked for
+  vana mcp approve <id> --scopes a,b     Give it only some of it
+  vana mcp deny <connection-id>          Decline
+`,
+  );
+
+  mcp
+    .command("requests")
+    .description("List MCP agents waiting for access to more of your data")
+    .action(async () => {
+      process.exitCode = await runCommandWithTelemetry(
+        { ...telemetryBaseContext, command: "mcp", subcommand: "requests" },
+        async () =>
+          runMcpRequests(parsedOptions, {
+            resolveServer: () => resolveMcpOwnerServer(parsedOptions),
+          }),
+      );
+    });
+
+  mcp
+    .command("approve <connection-id>")
+    .description("Approve an MCP agent's access request")
+    .option(
+      "--scopes <scopes>",
+      "Approve only these of the requested scopes, comma separated",
+    )
+    .action(
+      async (connectionId: string, approveOptions: { scopes?: string }) => {
+        process.exitCode = await runCommandWithTelemetry(
+          { ...telemetryBaseContext, command: "mcp", subcommand: "approve" },
+          async () =>
+            runMcpAnswer(
+              parsedOptions,
+              {
+                connectionId,
+                decision: "approve",
+                scopes: approveOptions.scopes,
+              },
+              { resolveServer: () => resolveMcpOwnerServer(parsedOptions) },
+            ),
+        );
+      },
+    );
+
+  mcp
+    .command("deny <connection-id>")
+    .description("Decline an MCP agent's access request")
+    .action(async (connectionId: string) => {
+      process.exitCode = await runCommandWithTelemetry(
+        { ...telemetryBaseContext, command: "mcp", subcommand: "deny" },
+        async () =>
+          runMcpAnswer(
+            parsedOptions,
+            { connectionId, decision: "deny" },
+            { resolveServer: () => resolveMcpOwnerServer(parsedOptions) },
+          ),
       );
     });
 
@@ -2825,6 +2903,11 @@ async function runStatus(options: GlobalOptions): Promise<number> {
         )
       : null;
 
+  const accessRequests =
+    ownRunning && status.personalServerUrl
+      ? await pendingScopeRequestsForStatus(status.personalServerUrl)
+      : [];
+
   if (options.json) {
     const jsonAuthCreds = authCreds;
     const compactJson = {
@@ -2853,6 +2936,11 @@ async function runStatus(options: GlobalOptions): Promise<number> {
       },
       sourceHealth: sourceHealthMap,
       lastScheduledRun: state.lastScheduledRun ?? null,
+      accessRequests: accessRequests.map((request) => ({
+        connectionId: request.connectionId,
+        displayName: request.displayName,
+        scopes: request.scopes,
+      })),
       next: other ? "vana server start" : (nextSteps[0] ?? null),
     };
     process.stdout.write(`${JSON.stringify(compactJson)}\n`);
@@ -2899,6 +2987,10 @@ async function runStatus(options: GlobalOptions): Promise<number> {
   }
   if (!ownRunning && (other || ownDir)) {
     emit.detail(ownServerDownLine(Boolean(ownDir)));
+  }
+  const accessRequestLine = pendingRequestsStatusLine(accessRequests);
+  if (accessRequestLine) {
+    emit.keyValue("Agents", accessRequestLine, "warning");
   }
 
   const trackedSources = status.sources.filter(shouldDisplaySourceInStatus);
@@ -3338,6 +3430,71 @@ function foreignServer(
     credentials.account.address,
   );
   return mismatch ? { url: server.url, ...mismatch } : null;
+}
+
+/**
+ * The running server `vana mcp requests|approve|deny` answer on: this
+ * account's, with the owner token the CLI holds for it, and its approval page
+ * when vana runs it.
+ */
+async function resolveMcpOwnerServer(
+  options: GlobalOptions,
+): Promise<McpOwnerServer | McpOwnerServerProblem> {
+  const target = await detectPersonalServerTarget();
+  if (target.state !== "available" || !target.url) {
+    return {
+      code: "server_unavailable",
+      message:
+        "No Personal Server is running. Start yours with `vana server start`.",
+      remedy: "vana server start",
+    };
+  }
+  const other = foreignServer(
+    {
+      state: target.state,
+      url: target.url,
+      owner: target.health?.owner ?? null,
+    },
+    loadCredentials(),
+  );
+  if (other) {
+    return {
+      code: "server_unavailable",
+      message: `The Personal Server at ${other.url} belongs to ${formatAddress(other.owner)}, not to you. Start yours with \`vana server start\`.`,
+      remedy: "vana server start",
+    };
+  }
+  const auth = resolvePersonalServerAuthConfig(target.url);
+  const network =
+    networkOfGateway(target.health?.gatewayUrl) ??
+    resolveNetwork(options.network).name;
+  const dir = localDataDir(target, network);
+  return {
+    url: target.url.replace(/\/+$/, ""),
+    token: auth?.type === "bearerToken" ? auth.token : null,
+    approvalOrigin: dir?.runBy === "cli" ? readApprovalOrigin(dir.path) : null,
+  };
+}
+
+/**
+ * Requests agents left waiting on this account's running server, for
+ * `vana status`. Best effort: any failure is no line at all.
+ */
+async function pendingScopeRequestsForStatus(
+  url: string,
+): Promise<PendingScopeRequest[]> {
+  try {
+    const auth = resolvePersonalServerAuthConfig(url);
+    if (auth?.type !== "bearerToken") return [];
+    const { requests } = await listPendingScopeRequests(
+      { url: url.replace(/\/+$/, ""), token: auth.token, approvalOrigin: null },
+      fetch,
+      2_000,
+    );
+    return requests;
+  } catch {
+    return [];
+  }
 }
 
 /** This account's own `vana server start` data dir, running or not. */

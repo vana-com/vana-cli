@@ -12,6 +12,7 @@
 // registration-request, registration-submitted, command-failed, error,
 // stopped. Logs go to stderr.
 
+import { rmSync } from "node:fs";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import readline from "node:readline";
@@ -40,6 +41,12 @@ async function readInput() {
 
 let ps = null;
 let mcpApproval = null;
+let approvalFile = null;
+
+// Where `vana mcp requests` finds the approval page: it listens on a free
+// port, so the CLI cannot guess it. Read together with the pid, so a file a
+// crashed server left behind is never trusted.
+const APPROVAL_FILE = ".vana-cli-approval.json";
 
 // Only a tunnel URL may be registered: without one the server offers its
 // localhost origin, which no app could ever reach.
@@ -181,12 +188,23 @@ async function main() {
     accessToken: process.env.PS_ACCESS_TOKEN ?? "",
   });
 
+  approvalFile = join(rootPath, APPROVAL_FILE);
+  await writeFile(
+    approvalFile,
+    `${JSON.stringify({ origin: mcpApproval.origin, pid: process.pid })}\n`,
+    { mode: 0o600 },
+  );
+
   ps = await startPersonalServer({
     configPath,
     rootPath,
     port,
     ownerSignature,
     mcpOAuthApprovalUrl: mcpApproval.url,
+    // The link `request_scope_access` hands the agent to show the owner. A
+    // server older than personal-server-ts PR 372 ignores it.
+    mcpScopeRequestApprovalUrl: (connectionId) =>
+      mcpApproval.scopeRequestUrl(connectionId),
     configDefaults,
     onStatus: (status) => process.stderr.write(`[status] ${status}\n`),
   });
@@ -208,6 +226,7 @@ async function main() {
 async function shutdown(signal) {
   process.stderr.write(`[entry] ${signal}, stopping\n`);
   mcpApproval?.close();
+  if (approvalFile) rmSync(approvalFile, { force: true });
   try {
     await ps?.stop();
   } finally {
