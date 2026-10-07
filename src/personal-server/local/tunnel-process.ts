@@ -30,7 +30,8 @@ async function listProcesses(): Promise<ProcessEntry[]> {
     const { stdout } = await execFileAsync(
       "ps",
       ["-axww", "-o", "pid=,command="],
-      { maxBuffer: 16 * 1024 * 1024 },
+      // A restart waits on this: never let a stuck ps hold it.
+      { maxBuffer: 16 * 1024 * 1024, timeout: 5_000 },
     );
     const entries: ProcessEntry[] = [];
     for (const line of stdout.split("\n")) {

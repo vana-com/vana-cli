@@ -944,9 +944,19 @@ describe("runServerStart supervising a real child process", () => {
       h.io,
       h.deps,
     );
-    await vi.waitFor(() => expect(pids()).toHaveLength(1), {
-      timeout: 10_000,
-    });
+    // Kill it only once the supervisor has seen it ready: a server that dies
+    // before it is ready is a failed start, which is not restarted. Its pid
+    // file alone appears before the ready line, and on a busy CI runner the
+    // kill used to land in between.
+    await vi.waitFor(
+      () => {
+        expect(pids()).toHaveLength(1);
+        expect(h.events).toContainEqual(
+          expect.objectContaining({ type: "server-ready" }),
+        );
+      },
+      { timeout: 10_000 },
+    );
     const [firstPid] = pids();
     process.kill(firstPid, "SIGKILL");
     await vi.waitFor(
@@ -1038,9 +1048,16 @@ describe("runServerStart supervising a real child process", () => {
       h.deps,
     );
     try {
-      await vi.waitFor(() => expect(read("frpc-pids")).toHaveLength(1), {
-        timeout: 10_000,
-      });
+      // Ready first: a server killed before it is ready is not restarted.
+      await vi.waitFor(
+        () => {
+          expect(read("frpc-pids")).toHaveLength(1);
+          expect(h.events).toContainEqual(
+            expect.objectContaining({ type: "server-ready" }),
+          );
+        },
+        { timeout: 10_000 },
+      );
       const [firstServer] = read("pids");
       const [firstFrpc] = read("frpc-pids");
       process.kill(firstServer, "SIGKILL");
