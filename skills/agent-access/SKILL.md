@@ -251,7 +251,9 @@ vana app requests show <request-id> --json
 `<request-id>` is `data.requestId` from the request. `requests show`
 exits 0 either way: until the owner approves, `data.status` is `pending`
 and `data.grantId` is null. Once approved, `data.grantId` is the grant to
-read with.
+read with. If the owner later revokes it, or a newer approval for the same
+app replaces its scopes, `data.live` turns false, `data.grant.state` says
+`revoked` or `replaced`, and `next` is a fresh `vana app request`.
 
 Keep requests to sources the Vana web app lists. A request that includes
 a source it doesn't list cannot be approved on the web, and data from

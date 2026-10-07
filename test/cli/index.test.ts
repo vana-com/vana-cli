@@ -37,8 +37,17 @@ const mockSearchSelect = vi.fn();
 const mockReaddir = vi.fn();
 // Never read or stop the real servers vana runs on this machine.
 const mockRunningCliServers = vi.fn((): unknown[] | undefined => undefined);
-const mockListServerDataDirs = vi.fn((): unknown[] | undefined => undefined);
+const mockListServerDataDirs = vi.fn<
+  (network?: string) => unknown[] | undefined
+>(() => undefined);
 const mockStopLocalServer = vi.fn(async () => "stopped");
+// Never ask the real gateway for an owner's registrations.
+const mockLookupRegisteredServers = vi.fn<
+  (owner: string) => Promise<unknown[]>
+>(async () => []);
+const mockStopTunnelClients = vi.fn<(dir: string) => Promise<number[]>>(
+  async () => [],
+);
 const mockReadFile = vi.fn();
 const mockReadFileSync = vi.fn();
 const mockExistsSync = vi.fn();
@@ -245,7 +254,7 @@ vi.mock("../../src/personal-server/local/data-dir.js", async () => {
     runningCliServers: (network: "moksha" | "mainnet") =>
       mockRunningCliServers() ?? actual.runningCliServers(network),
     listServerDataDirs: (network: "moksha" | "mainnet") =>
-      mockListServerDataDirs() ?? actual.listServerDataDirs(network),
+      mockListServerDataDirs(network) ?? actual.listServerDataDirs(network),
   };
 });
 
@@ -254,6 +263,19 @@ vi.mock("../../src/personal-server/local/detach.js", async () => ({
     "../../src/personal-server/local/detach.js",
   )),
   stopLocalServer: mockStopLocalServer,
+}));
+
+vi.mock("../../src/personal-server/registered.js", async () => ({
+  ...(await vi.importActual<object>("../../src/personal-server/registered.js")),
+  lookupRegisteredServers: mockLookupRegisteredServers,
+}));
+
+vi.mock("../../src/personal-server/local/tunnel-process.js", async () => ({
+  ...(await vi.importActual<object>(
+    "../../src/personal-server/local/tunnel-process.js",
+  )),
+  // Never look for, or stop, a real frpc from a test.
+  stopTunnelClients: mockStopTunnelClients,
 }));
 
 vi.mock("../../src/cli/search-select.js", () => ({
@@ -410,6 +432,10 @@ describe("runCli", () => {
     mockListServerDataDirs.mockReturnValue(undefined);
     mockStopLocalServer.mockReset();
     mockStopLocalServer.mockResolvedValue("stopped");
+    mockStopTunnelClients.mockReset();
+    mockLookupRegisteredServers.mockReset();
+    mockLookupRegisteredServers.mockResolvedValue([]);
+    mockStopTunnelClients.mockResolvedValue([]);
     mockReadFile.mockReset();
     mockReadFileSync.mockReset();
     mockExistsSync.mockReset();
@@ -778,6 +804,67 @@ describe("runCli", () => {
     });
     expect(stderr).toContain("No Personal Server found for this account yet.");
     expect(stderr).toContain("vana server set-url");
+  });
+
+  describe("after a fresh login, with this account's server not running", () => {
+    const OWNER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+    beforeEach(() => {
+      mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+        const creds = {
+          account: {
+            address: OWNER,
+            session_token: "vana_account_session",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+          personal_server: null,
+        };
+        await callbacks.onAuthorized(creds);
+        return creds;
+      });
+    });
+
+    it("says it is not running when its data dir is here", async () => {
+      mockListServerDataDirs.mockImplementation(
+        (network?: string) =>
+          (network === "mainnet"
+            ? [
+                {
+                  dir: `/ps/mainnet/${OWNER}`,
+                  owner: OWNER.toLowerCase(),
+                  identity: "0x1111111111111111111111111111111111111111",
+                  pid: null,
+                },
+              ]
+            : []) as unknown[],
+      );
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(await runCli(["node", "vana", "login"])).toBe(0);
+      expect(stderr).toContain("Your Personal Server is not running.");
+      expect(stderr).toContain("vana server start");
+      expect(stderr).not.toContain("No Personal Server found");
+      expect(stderr).not.toContain("vana server set-url");
+      expect(mockLookupRegisteredServers).not.toHaveBeenCalled();
+    });
+
+    it("says it is not running when the gateway lists its registration", async () => {
+      mockLookupRegisteredServers.mockResolvedValue([
+        {
+          network: "mainnet",
+          url: "https://abc.server.vana.org",
+          serverAddress: "0x1111111111111111111111111111111111111111",
+          status: "active",
+        },
+      ]);
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli(["node", "vana", "--network", "moksha", "login"]),
+      ).toBe(0);
+      expect(mockLookupRegisteredServers).toHaveBeenCalledWith(OWNER);
+      expect(stderr).toContain("Your Personal Server is not running.");
+      // It is registered on mainnet, and this login is on moksha.
+      expect(stderr).toContain("vana server start --network mainnet");
+      expect(stderr).not.toContain("No Personal Server found");
+    });
   });
 
   describe("after a fresh login, with this account's server running", () => {
@@ -2117,7 +2204,47 @@ describe("runCli", () => {
       result: "not-running",
       network: "mainnet",
       owner: null,
+      stoppedTunnelClients: [],
       stillRunning: [{ owner, pid: 9188 }],
+    });
+  });
+
+  it("server stop stops a tunnel client a dead server left behind", async () => {
+    const owner = "0xaff7000000000000000000000000000000000001";
+    mockReadFileSync.mockImplementation((filePath: string) => {
+      if (String(filePath).endsWith("/auth.json")) {
+        return JSON.stringify({
+          account: {
+            address: owner,
+            session_token: "s",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+        });
+      }
+      throw new Error("missing");
+    });
+    mockRunningCliServers.mockReturnValue([]);
+    mockListServerDataDirs.mockReturnValue([
+      { dir: `/ps/mainnet/${owner}`, owner, identity: null, pid: null },
+      {
+        dir: "/ps/mainnet/0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d",
+        owner: "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d",
+        identity: null,
+        pid: null,
+      },
+    ]);
+    mockStopTunnelClients.mockResolvedValue([4242]);
+
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(await runCli(["node", "vana", "server", "stop", "--json"])).toBe(0);
+    expect(mockStopLocalServer).not.toHaveBeenCalled();
+    // Only this account's dir: another account's tunnel is never touched.
+    expect(mockStopTunnelClients.mock.calls).toEqual([
+      [`/ps/mainnet/${owner}`],
+    ]);
+    expect(JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}")).toMatchObject({
+      result: "not-running",
+      stoppedTunnelClients: [4242],
     });
   });
 
@@ -2148,6 +2275,7 @@ describe("runCli", () => {
     const { runCli } = await import("../../src/cli/index.js");
     expect(await runCli(["node", "vana", "server", "stop", "--json"])).toBe(0);
     expect(mockStopLocalServer).toHaveBeenCalledWith(`/ps/mainnet/${owner}`);
+    expect(mockStopTunnelClients).toHaveBeenCalledWith(`/ps/mainnet/${owner}`);
     expect(JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}")).toMatchObject({
       result: "stopped",
       owner,

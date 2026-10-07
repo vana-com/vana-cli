@@ -78,7 +78,10 @@ vana app requests show dcr_... --json    # did they approve yet?
 ```
 
 `show` refreshes from the service and writes the result down, so once it
-reports a `grantId` that id stays available offline.
+reports a `grantId` that id stays available offline. Both commands check
+each grant at the gateway: `data.grant.state` is `revoked` or `replaced`
+(one grant per owner and app, so a later approval replaces its scopes) when
+it no longer holds, and `unverified` when the gateway did not answer.
 
 ## Asking a question instead of reading raw data
 
