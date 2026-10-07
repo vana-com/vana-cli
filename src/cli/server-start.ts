@@ -15,6 +15,7 @@ import {
 import {
   isRuntimeInstalled,
   ensureRuntime,
+  NpmMissingError,
 } from "../personal-server/local/runtime.js";
 import {
   runOwnerBindingExchange,
@@ -441,7 +442,23 @@ export async function runServerStart(
     }
   }
   if (!runtimeReady) io.say("Installing the Personal Server (one time)...");
-  const runtimeDir = await deps.ensureRuntime(node, logPath);
+  let runtimeDir: string;
+  try {
+    runtimeDir = await deps.ensureRuntime(node, logPath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const npmMissing = error instanceof NpmMissingError;
+    io.say(message);
+    io.event({
+      type: "server-failed",
+      reason: npmMissing ? "npm-missing" : "runtime-install-failed",
+      message,
+      logPath,
+    });
+    // A missing npm is this machine's setup, which a person fixes; anything
+    // else is the install failing.
+    return npmMissing ? CliExitCode.NOT_READY : CliExitCode.FAILURE;
+  }
   let frpcPath: string | null = frpc?.kind === "ready" ? frpc.path : null;
   if (frpcNeeded) {
     io.say("Installing the tunnel client (one time)...");

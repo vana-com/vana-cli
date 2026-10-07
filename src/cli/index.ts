@@ -126,6 +126,7 @@ import { getPdppProfileRoot } from "../pdpp/host.js";
 import { runServerStart, type ServerStartIo } from "./server-start.js";
 import { findRunningServers } from "../personal-server/local/server.js";
 import { stopLocalServer } from "../personal-server/local/detach.js";
+import { stopTunnelClients } from "../personal-server/local/tunnel-process.js";
 import {
   listServerDataDirs,
   runningCliServers,
@@ -935,6 +936,28 @@ Examples:
           const result = target
             ? await stopLocalServer(target.dir)
             : "not-running";
+          // A server that died hard (kill -9) leaves its frpc running, and a
+          // clean stop never reaches it. Stop every frpc on the stopped
+          // server's tunnel config, or, with nothing running, on this
+          // account's own data dirs.
+          const tunnelDirs =
+            result === "timeout"
+              ? []
+              : target
+                ? [target.dir]
+                : account && account !== "env"
+                  ? listServerDataDirs(network)
+                      .filter(
+                        (entry) =>
+                          !entry.pid &&
+                          entry.owner?.toLowerCase() === account.toLowerCase(),
+                      )
+                      .map((entry) => entry.dir)
+                  : [];
+          const stoppedTunnels: number[] = [];
+          for (const dir of tunnelDirs) {
+            stoppedTunnels.push(...(await stopTunnelClients(dir)));
+          }
           if (parsedOptions.json) {
             process.stdout.write(
               `${JSON.stringify({
@@ -942,6 +965,7 @@ Examples:
                 result,
                 network,
                 owner: target?.owner ?? null,
+                stoppedTunnelClients: stoppedTunnels,
                 stillRunning: others.map((other) => ({
                   owner: other.owner,
                   pid: other.pid,
@@ -955,6 +979,11 @@ Examples:
                 : result === "not-running"
                   ? `No Personal Server ${account && account !== "env" ? `of ${account} ` : ""}started by vana is running (${network}).`
                   : "The server did not stop in time.",
+              ...(stoppedTunnels.length
+                ? [
+                    `Stopped a tunnel client left running by an earlier server (pid ${stoppedTunnels.join(", ")}).`,
+                  ]
+                : []),
               ...others.map(
                 (other) =>
                   `vana still runs the Personal Server of ${other.owner ?? "another account"} (pid ${other.pid}); sign in as that account to stop it.`,
@@ -8026,6 +8055,8 @@ async function runLogin(
   renderer.title("Vana");
   // Set once authorized: a running server that belongs to another account.
   let foreignServer: { url: string; owner: string } | null = null;
+  // Set once authorized: this account's server, known here but not running.
+  let knownServer: KnownAccountServer | null = null;
 
   const creds = await runDeviceCodeFlow(
     {
@@ -8076,11 +8107,22 @@ async function runLogin(
             "To run a separate Personal Server for this account instead: vana server start",
           );
         } else {
-          renderer.detail("No Personal Server found for this account yet.");
-          renderer.next("vana server start");
-          renderer.detail(
-            "Or point at one you already run: vana server set-url <url>",
-          );
+          const current = resolveNetwork(options.network).name;
+          knownServer = await findKnownAccountServer(address, current);
+          if (knownServer) {
+            renderer.detail("Your Personal Server is not running.");
+            renderer.next(
+              knownServer.network === current
+                ? "vana server start"
+                : `vana server start --network ${knownServer.network}`,
+            );
+          } else {
+            renderer.detail("No Personal Server found for this account yet.");
+            renderer.next("vana server start");
+            renderer.detail(
+              "Or point at one you already run: vana server set-url <url>",
+            );
+          }
         }
         renderer.detail("Credentials saved to ~/.vana/auth.json");
       },
@@ -8106,7 +8148,54 @@ async function runLogin(
   // Never offer to start a second server next to another account's without
   // the user reading why: the lines above already said what to do.
   if (foreignServer) return 0;
-  return (await finishServerSetup(creds.account.address, options)) ?? 0;
+  return (
+    (await finishServerSetup(
+      creds.account.address,
+      options,
+      (knownServer as KnownAccountServer | null)?.network,
+    )) ?? 0
+  );
+}
+
+/** This account's Personal Server, known on this machine or at the gateway. */
+interface KnownAccountServer {
+  network: VanaNetworkName;
+  via: "data-dir" | "registration";
+}
+
+/**
+ * Whether this account already has a Personal Server that is not running: a
+ * data dir `vana server start` ran it from, or a registration the gateway
+ * lists for the owner. The current network first. Null for a new account,
+ * and when the gateway cannot be asked.
+ */
+async function findKnownAccountServer(
+  address: string,
+  current: VanaNetworkName,
+): Promise<KnownAccountServer | null> {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return null;
+  const networks = [
+    current,
+    ...VANA_NETWORKS.filter((network) => network !== current),
+  ];
+  for (const network of networks) {
+    let dirs: CliServerDir[] = [];
+    try {
+      dirs = listServerDataDirs(network);
+    } catch {
+      dirs = [];
+    }
+    if (dirs.some((dir) => sameAccountAddress(dir.owner, address))) {
+      return { network, via: "data-dir" };
+    }
+  }
+  const registered = await lookupRegisteredServers(address).catch(() => []);
+  for (const network of networks) {
+    if (registered.some((server) => server.network === network)) {
+      return { network, via: "registration" };
+    }
+  }
+  return null;
 }
 
 interface AccountSwitch {
@@ -8243,6 +8332,8 @@ async function findOwnRunningServer(address: string): Promise<string | null> {
 async function finishServerSetup(
   address: string,
   options: GlobalOptions,
+  /** The network this account's server is known on, when not the current. */
+  network?: VanaNetworkName,
 ): Promise<number | null> {
   if (
     options.json ||
@@ -8264,7 +8355,7 @@ async function finishServerSetup(
     );
     return loginToPersonalServer(running, options);
   }
-  await offerServerStart(address, options);
+  await offerServerStart(address, options, network);
   return null;
 }
 
@@ -8276,6 +8367,7 @@ async function finishServerSetup(
 async function offerServerStart(
   address: string,
   options: GlobalOptions,
+  network: VanaNetworkName = resolveNetwork(options.network).name,
 ): Promise<void> {
   if (
     options.json ||
@@ -8304,7 +8396,7 @@ async function offerServerStart(
   }
   await runServerStart(
     {
-      network: resolveNetwork(options.network).name,
+      network,
       detach: true,
       yes: options.yes,
     },

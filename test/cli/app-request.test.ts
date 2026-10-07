@@ -66,6 +66,22 @@ function controller(statuses: Array<Record<string, unknown>>) {
     }) as never;
 }
 
+/** Gateway stub answering getGrant for GRANT. */
+function gateway(grant: Record<string, unknown> | null | Error) {
+  const getGrant = vi.fn(async () => {
+    if (grant instanceof Error) throw grant;
+    return grant as never;
+  });
+  return { createClient: () => ({ getGrant }), getGrant };
+}
+
+const activeGrant = (scopes: string[]) => ({
+  id: GRANT,
+  scopes,
+  revokedAt: null,
+  expired: false,
+});
+
 describe("vana app request", () => {
   it("requires scopes with exit 2", async () => {
     const exitCode = await runAppRequest(
@@ -394,6 +410,8 @@ describe("vana app requests", () => {
             scopes: ["github.repositories"],
           },
         ]),
+        createClient: gateway(activeGrant(["github.repositories"]))
+          .createClient,
       },
     );
     expect(exitCode).toBe(0);
@@ -402,6 +420,7 @@ describe("vana app requests", () => {
       status: "approved",
       grantId: GRANT,
       live: true,
+      grant: { state: "active" },
     });
     // The refresh is written back, so a later offline show still knows.
     expect(requests.get(REQUEST_ID)?.grantId).toBe(GRANT);
@@ -438,12 +457,146 @@ describe("vana app requests", () => {
         createController: () => {
           throw new Error("offline");
         },
+        createClient: gateway(
+          activeGrant(["github.repositories", "myapp.languages"]),
+        ).createClient,
       },
     );
     expect(exitCode).toBe(0);
     expect(appOutcomeSchema.parse(JSON.parse(stdout)).remedy).toBe(
       `vana app read myapp.languages --grant ${GRANT}`,
     );
+  });
+
+  describe("an approved request whose grant changed since", () => {
+    function approved() {
+      const requests = store();
+      requests.save({
+        requestId: REQUEST_ID,
+        appAddress: account.address,
+        network: "mainnet",
+        gatewayUrl: "https://gateway.example",
+        scopes: ["github.repositories"],
+        approvedScopes: ["github.repositories"],
+        approvalUrl: "https://app.vana.org/approve/abc",
+        createdAt: "2026-10-06T00:00:00Z",
+        updatedAt: "2026-10-06T00:00:00Z",
+        status: "approved",
+        grantId: GRANT,
+      });
+      return requests;
+    }
+    // The service still says approved: the DCR record never changes.
+    const service = controller([
+      { status: "approved", grantId: GRANT, scopes: ["github.repositories"] },
+    ]);
+
+    it("says the owner revoked it", async () => {
+      const gw = gateway({
+        ...activeGrant(["github.repositories"]),
+        revokedAt: "2026-10-07T10:00:00Z",
+      });
+      const exitCode = await runAppRequestsShow(
+        REQUEST_ID,
+        { json: true },
+        {
+          resolveKey: () => appKey,
+          requests: approved(),
+          createController: service,
+          createClient: gw.createClient,
+        },
+      );
+      expect(exitCode).toBe(0);
+      expect(gw.getGrant).toHaveBeenCalledWith(GRANT);
+      const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+      expect(outcome.data).toMatchObject({
+        status: "approved",
+        live: false,
+        grant: { state: "revoked", revokedAt: "2026-10-07T10:00:00Z" },
+      });
+      expect(outcome.message).toContain("revoked by the owner");
+      expect(outcome.remedy).toBe(
+        "vana app request --scopes github.repositories",
+      );
+    });
+
+    it("says a later approval replaced its scopes", async () => {
+      const requests = approved();
+      const exitCode = await runAppRequestsShow(
+        REQUEST_ID,
+        { json: true },
+        {
+          resolveKey: () => appKey,
+          requests,
+          // The status route may report the grant's scopes as they are now.
+          createController: controller([
+            { status: "approved", grantId: GRANT, scopes: ["spotify.history"] },
+          ]),
+          createClient: gateway(activeGrant(["spotify.history"])).createClient,
+        },
+      );
+      expect(exitCode).toBe(0);
+      const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+      expect(outcome.data).toMatchObject({
+        live: false,
+        grant: { state: "replaced", grantScopes: ["spotify.history"] },
+      });
+      expect(outcome.message).toContain("replaced by a later approval");
+      expect(outcome.remedy).toBe(
+        "vana app request --scopes github.repositories",
+      );
+      // What was approved stays on record.
+      expect(requests.get(REQUEST_ID)?.approvedScopes).toEqual([
+        "github.repositories",
+      ]);
+    });
+
+    it("keeps the stored status but says so when the gateway is down", async () => {
+      const exitCode = await runAppRequestsShow(
+        REQUEST_ID,
+        { json: true },
+        {
+          resolveKey: () => appKey,
+          requests: approved(),
+          createController: service,
+          createClient: gateway(new Error("fetch failed")).createClient,
+        },
+      );
+      expect(exitCode).toBe(0);
+      const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+      expect(outcome.data).toMatchObject({
+        status: "approved",
+        grant: { state: "unverified" },
+      });
+      expect(outcome.message).toContain("grant not verified");
+      expect(outcome.remedy).toBe(
+        `vana app read github.repositories --grant ${GRANT}`,
+      );
+    });
+
+    it("flags it in the list too", async () => {
+      const exitCode = await runAppRequestsList(
+        { json: true },
+        {
+          resolveKey: () => appKey,
+          requests: approved(),
+          createClient: gateway({
+            ...activeGrant(["github.repositories"]),
+            revokedAt: "2026-10-07T10:00:00Z",
+          }).createClient,
+        },
+      );
+      expect(exitCode).toBe(0);
+      const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+      expect(outcome.message).toContain("no longer in force");
+      expect(outcome.data?.requests).toEqual([
+        expect.objectContaining({
+          requestId: REQUEST_ID,
+          live: false,
+          grant: expect.objectContaining({ state: "revoked" }),
+        }),
+      ]);
+    });
   });
 
   it("falls back to the local record when the service is unreachable", async () => {

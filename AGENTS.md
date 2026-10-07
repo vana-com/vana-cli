@@ -110,7 +110,11 @@ pnpm cli -- <args>  # run the built CLI
   `server-failed` / `restart-limit` event. It holds the data dir's lock
   across restarts, so `vana server stop` (SIGTERM to the lock's pid) always
   finds it and nothing restarts after a stop. It does not survive a reboot:
-  never add a LaunchAgent, endpoint security flags those.
+  never add a LaunchAgent, endpoint security flags those. A server killed
+  hard leaves its frpc running (reparented to init); the CLI owns that
+  frpc's lifetime, matched by `-c <dataDir>/tunnel/frpc.toml`, and stops it
+  when the server exits, before every (re)start and on `vana server stop`
+  (`src/personal-server/local/tunnel-process.ts`).
 - **Another account's server is never this account's.** `status` and
   `server status` list it under "Also running"; `connect`, `collect` and
   `server sync` refuse to write into it under `--no-input`, `--yes`, `--ipc`
