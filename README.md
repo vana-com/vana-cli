@@ -102,8 +102,10 @@ claude mcp add vana -- vana mcp
 ```
 
 When an agent connected to your Personal Server asks to read more of your
-data, it shows you a link to a page on your own machine where you tick what
-to share. The same answer works from the terminal:
+data, it shows you a link to the request on Vana Web (app.vana.org), where
+you tick what to share, from any device. A server started with `--local` has
+no public URL for Vana Web to reach, so there you answer in the terminal,
+which works for any server:
 
 ```bash
 vana mcp requests                                 # who wants what, and why

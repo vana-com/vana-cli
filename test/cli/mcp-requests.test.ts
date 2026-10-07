@@ -1,27 +1,28 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   SERVER_TOO_OLD_MESSAGE,
   answerScopeRequest,
+  approvalUrlFor,
   formatAge,
   listPendingScopeRequests,
   pendingRequestsStatusLine,
-  readApprovalOrigin,
   runMcpAnswer,
   runMcpRequests,
   type McpOwnerServer,
 } from "../../src/cli/mcp-requests.js";
 import { CliExitCode } from "../../src/core/exit-codes.js";
+import { localServerNetwork } from "../../src/personal-server/local/config.js";
 
 const SERVER: McpOwnerServer = {
   url: "http://localhost:8080",
   token: "owner-token",
-  approvalOrigin: "http://127.0.0.1:51234",
+  publicOrigin: "https://abc123.server.vana.org",
+  webOrigin: "https://app.vana.org",
 };
+
+const LINK =
+  "https://app.vana.org/mcp/requests/conn_1?ps_origin=https%3A%2F%2Fabc123.server.vana.org";
 
 interface Call {
   method: string;
@@ -134,7 +135,7 @@ describe("listing waiting requests", () => {
         reason: "To suggest music",
         requestedAt: "2026-10-07T10:00:00.000Z",
         grantedScopes: ["github.profile"],
-        approvalUrl: "http://127.0.0.1:51234/scope-request?connection=conn_1",
+        approvalUrl: LINK,
       },
     ]);
     expect(api.calls[0].auth).toBe("Bearer owner-token");
@@ -168,10 +169,29 @@ describe("listing waiting requests", () => {
     expect(text).toContain("wants:   spotify.top_artists, youtube.history");
     expect(text).toContain('reason:  "To suggest music"');
     expect(text).toContain("has:     github.profile");
-    expect(text).toContain(
-      "open:    http://127.0.0.1:51234/scope-request?connection=conn_1",
-    );
+    expect(text).toContain(`open:    ${LINK}`);
     expect(text).toContain("approve: vana mcp approve conn_1");
+    expect(text).not.toContain("no public URL");
+  });
+
+  it("sends a server without a public URL to the terminal answer", async () => {
+    const lines: string[] = [];
+    const code = await runMcpRequests(
+      {},
+      {
+        resolveServer: async () => ({
+          ...SERVER,
+          publicOrigin: "http://localhost:8080",
+        }),
+        fetch: fakeOwnerApi().fetch,
+      },
+      { stdout: (text) => lines.push(text) },
+    );
+    const text = lines.join("");
+    expect(code).toBe(CliExitCode.OK);
+    expect(text).not.toContain("open:");
+    expect(text).toContain("approve: vana mcp approve conn_1");
+    expect(text).toContain("no public URL");
   });
 
   it("emits one JSON outcome", async () => {
@@ -324,6 +344,8 @@ describe("answering a request", () => {
       ],
       [400, "GRANT_CREATION_FAILED", "grant_creation_failed", 1],
       [409, "INVALID_STATE", "invalid_state", CliExitCode.FAILURE],
+      // Removed between listing and answering.
+      [404, "MCP_CONNECTION_NOT_FOUND", "not_found", CliExitCode.FAILURE],
     ];
     for (const [status, errorCode, code, exit] of cases) {
       stdout = [];
@@ -415,31 +437,41 @@ describe("status line", () => {
   });
 });
 
-describe("finding the approval page", () => {
-  let dir: string;
-  beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "vana-approval-"));
-  });
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-  const write = (value: unknown) =>
-    fs.writeFileSync(
-      path.join(dir, ".vana-cli-approval.json"),
-      JSON.stringify(value),
+describe("the Vana Web link", () => {
+  it("is on the Vana Web of the server's network", () => {
+    expect(localServerNetwork("mainnet").webOrigin).toBe(
+      "https://app.vana.org",
     );
-
-  it("reads the origin a running server wrote", () => {
-    write({ origin: "http://127.0.0.1:51234", pid: process.pid });
-    expect(readApprovalOrigin(dir)).toBe("http://127.0.0.1:51234");
+    // Moksha runs on the dev deployment (gateway, storage, relay).
+    expect(localServerNetwork("moksha").webOrigin).toBe(
+      "https://app-dev.vana.org",
+    );
   });
 
-  it("ignores a dead server's file, a non-loopback origin, and no file", () => {
-    expect(readApprovalOrigin(dir)).toBeNull();
-    expect(readApprovalOrigin(null)).toBeNull();
-    write({ origin: "http://127.0.0.1:51234", pid: 2 ** 22 + 12345 });
-    expect(readApprovalOrigin(dir)).toBeNull();
-    write({ origin: "http://evil.example:51234", pid: process.pid });
-    expect(readApprovalOrigin(dir)).toBeNull();
+  it("names the connection and the server's public origin", () => {
+    expect(approvalUrlFor(SERVER, "conn_1")).toBe(LINK);
+    expect(
+      approvalUrlFor(
+        {
+          publicOrigin: "https://abc123.server.vana.org/some/path",
+          webOrigin: "https://app-dev.vana.org/",
+        },
+        "conn/2",
+      ),
+    ).toBe(
+      "https://app-dev.vana.org/mcp/requests/conn%2F2?ps_origin=https%3A%2F%2Fabc123.server.vana.org",
+    );
+  });
+
+  it("is absent for a server Vana Web cannot reach", () => {
+    for (const publicOrigin of [
+      null,
+      "http://localhost:8080",
+      "http://127.0.0.1:8080",
+      "not a url",
+    ]) {
+      expect(approvalUrlFor({ ...SERVER, publicOrigin }, "conn_1")).toBeNull();
+    }
+    expect(approvalUrlFor({ ...SERVER, webOrigin: null }, "conn_1")).toBeNull();
   });
 });

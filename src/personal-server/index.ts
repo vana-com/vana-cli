@@ -26,6 +26,11 @@ export interface PersonalServerHealth {
   identity?: string | null;
   /** The gateway it serves, which says its network. */
   gatewayUrl?: string | null;
+  /**
+   * Where the server answers right now: its tunnel URL once that is up,
+   * otherwise its configured (local) origin.
+   */
+  apiOrigin?: string | null;
 }
 
 export interface PersonalServerTarget {
@@ -280,6 +285,9 @@ async function fetchHealth(
         : {}),
       ...(typeof body.gatewayUrl === "string"
         ? { gatewayUrl: body.gatewayUrl }
+        : {}),
+      ...(typeof body.apiOrigin === "string"
+        ? { apiOrigin: body.apiOrigin }
         : {}),
     };
   } catch {

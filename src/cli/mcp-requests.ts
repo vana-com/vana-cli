@@ -4,21 +4,19 @@
  *
  * A connected agent (Claude, Claude Code, Cursor) that needs data it cannot
  * read calls the server's `request_scope_access` tool. The server records the
- * request on the connection and, when vana runs it, hands the agent a link to
- * the approval page on 127.0.0.1. These commands are the same answer from the
- * terminal, through the owner-only API with the PS session token the CLI
- * already holds:
+ * request on the connection and, when it has a public https origin, hands the
+ * agent a Vana Web link (`<web>/mcp/requests/<id>?ps_origin=<origin>`), where
+ * the owner answers from any device. These commands are the same answer from
+ * the terminal, through the owner-only API with the PS session token the CLI
+ * already holds, and the only one for a server without a public URL:
  *
  *   GET  /v1/mcp/connections
  *   POST /v1/mcp/connections/:id/scope-request/approve  { scopes }
  *   POST /v1/mcp/connections/:id/scope-request/deny
  *
- * The answer endpoints arrived in personal-server-ts PR 372; an older server
+ * The answer endpoints arrived in personal-server-ts 1.30.0; an older server
  * lists the requests but cannot take the answer.
  */
-
-import fs from "node:fs";
-import path from "node:path";
 
 import { emitAppOutcome, type AppCommandOptions } from "./app/outcome.js";
 import { CliExitCode } from "../core/exit-codes.js";
@@ -31,7 +29,7 @@ export interface PendingScopeRequest {
   reason: string | null;
   requestedAt: string | null;
   grantedScopes: string[];
-  /** The loopback page to answer it on, when vana runs the server. */
+  /** The Vana Web page to answer it on, when the server has a public origin. */
   approvalUrl: string | null;
 }
 
@@ -40,8 +38,13 @@ export interface McpOwnerServer {
   url: string;
   /** The owner's PS session token; null when the CLI holds none for it. */
   token: string | null;
-  /** The approval page's origin, when vana runs this server. */
-  approvalOrigin: string | null;
+  /**
+   * The server's public https origin (its tunnel URL), which Vana Web calls
+   * back; null for a `--local` server or before the tunnel is up.
+   */
+  publicOrigin: string | null;
+  /** Vana Web for the server's network (app.vana.org, app-dev on moksha). */
+  webOrigin: string | null;
 }
 
 /** Why there is no server to talk to. */
@@ -61,48 +64,30 @@ export const SERVER_TOO_OLD_MESSAGE =
   "Your Personal Server is too old to answer access requests. Update vana, then run `vana server stop && vana server start`.";
 const SERVER_TOO_OLD_REMEDY = "vana server stop && vana server start";
 
-const APPROVAL_FILE = ".vana-cli-approval.json";
-
-function processIsRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 /**
- * The approval page origin the server in `dataDir` wrote at start, when that
- * server is still running. Only a loopback http origin is trusted.
+ * The Vana Web page for one connection's request, built the way the server's
+ * `vanaWebMcpScopeRequestApprovalUrl` hook builds the link it hands the agent:
+ * `<web>/mcp/requests/<id>?ps_origin=<server origin>`. Null unless the server
+ * has a public https origin, since a page on the web cannot reach any other.
  */
-export function readApprovalOrigin(
-  dataDir: string | null | undefined,
+export function approvalUrlFor(
+  server: Pick<McpOwnerServer, "publicOrigin" | "webOrigin">,
+  connectionId: string,
 ): string | null {
-  if (!dataDir) return null;
+  if (!server.webOrigin || !server.publicOrigin || !connectionId) return null;
   try {
-    const value = JSON.parse(
-      fs.readFileSync(path.join(dataDir, APPROVAL_FILE), "utf8"),
-    ) as { origin?: unknown; pid?: unknown };
-    const pid = Number(value.pid);
-    if (!(pid > 0) || !processIsRunning(pid)) return null;
-    if (typeof value.origin !== "string") return null;
-    const origin = new URL(value.origin);
-    if (origin.protocol !== "http:" || origin.hostname !== "127.0.0.1")
-      return null;
-    return origin.origin;
+    const web = new URL(server.webOrigin);
+    const origin = new URL(server.publicOrigin);
+    if (origin.protocol !== "https:") return null;
+    const url = new URL(
+      `/mcp/requests/${encodeURIComponent(connectionId)}`,
+      web.origin,
+    );
+    url.searchParams.set("ps_origin", origin.origin);
+    return url.toString();
   } catch {
     return null;
   }
-}
-
-export function approvalUrlFor(
-  origin: string | null,
-  connectionId: string,
-): string | null {
-  return origin
-    ? `${origin}/scope-request?connection=${encodeURIComponent(connectionId)}`
-    : null;
 }
 
 interface ConnectionView {
@@ -139,7 +124,7 @@ function grantedScopesOf(view: ConnectionView): string[] {
 /** The pending request on one connection view, or null. */
 export function pendingRequestOf(
   view: ConnectionView,
-  approvalOrigin: string | null,
+  server: Pick<McpOwnerServer, "publicOrigin" | "webOrigin"> | null,
 ): PendingScopeRequest | null {
   if (typeof view.id !== "string" || view.status !== "approved") return null;
   const scopes = strings(view.scopeAccessRequest?.scopes);
@@ -156,7 +141,7 @@ export function pendingRequestOf(
     reason: typeof reason === "string" && reason.trim() ? reason.trim() : null,
     requestedAt: typeof requestedAt === "string" ? requestedAt : null,
     grantedScopes: grantedScopesOf(view),
-    approvalUrl: approvalUrlFor(approvalOrigin, view.id),
+    approvalUrl: server ? approvalUrlFor(server, view.id) : null,
   };
 }
 
@@ -253,9 +238,7 @@ export async function listPendingScopeRequests(
     timeoutMs,
   );
   const requests = views
-    .map((view) =>
-      pendingRequestOf(view, supportsAnswers ? server.approvalOrigin : null),
-    )
+    .map((view) => pendingRequestOf(view, supportsAnswers ? server : null))
     .filter((item): item is PendingScopeRequest => item !== null)
     .sort((a, b) =>
       String(a.requestedAt ?? "").localeCompare(String(b.requestedAt ?? "")),
@@ -276,6 +259,7 @@ export function scopeRequestError(
     typeof error?.message === "string" ? error.message : `HTTP ${status}`;
   switch (code) {
     case "NOT_FOUND":
+    case "MCP_CONNECTION_NOT_FOUND":
       return new McpOwnerApiError(
         "not_found",
         `No MCP connection ${connectionId} on your Personal Server.`,
@@ -580,6 +564,12 @@ export async function runMcpRequests(
   }
   if (!supportsAnswers) {
     out.stdout(`\n${SERVER_TOO_OLD_MESSAGE}\n`);
+  } else if (!server.publicOrigin?.startsWith("https://")) {
+    // A `--local` server: Vana Web cannot reach it, so the terminal is the
+    // only place to answer.
+    out.stdout(
+      "\nYour Personal Server has no public URL, so there is no Vana Web link. Approve with `vana mcp approve <id>` or decline with `vana mcp deny <id>`.\n",
+    );
   }
   return CliExitCode.OK;
 }

@@ -127,7 +127,6 @@ import { runServerStart, type ServerStartIo } from "./server-start.js";
 import {
   listPendingScopeRequests,
   pendingRequestsStatusLine,
-  readApprovalOrigin,
   runMcpAnswer,
   runMcpRequests,
   type McpOwnerServer,
@@ -136,6 +135,7 @@ import {
 } from "./mcp-requests.js";
 import { findRunningServers } from "../personal-server/local/server.js";
 import { stopLocalServer } from "../personal-server/local/detach.js";
+import { localServerNetwork } from "../personal-server/local/config.js";
 import {
   listServerDataDirs,
   runningCliServers,
@@ -3434,8 +3434,8 @@ function foreignServer(
 
 /**
  * The running server `vana mcp requests|approve|deny` answer on: this
- * account's, with the owner token the CLI holds for it, and its approval page
- * when vana runs it.
+ * account's, with the owner token the CLI holds for it, and where Vana Web
+ * can reach it to answer from a browser.
  */
 async function resolveMcpOwnerServer(
   options: GlobalOptions,
@@ -3468,11 +3468,11 @@ async function resolveMcpOwnerServer(
   const network =
     networkOfGateway(target.health?.gatewayUrl) ??
     resolveNetwork(options.network).name;
-  const dir = localDataDir(target, network);
   return {
     url: target.url.replace(/\/+$/, ""),
     token: auth?.type === "bearerToken" ? auth.token : null,
-    approvalOrigin: dir?.runBy === "cli" ? readApprovalOrigin(dir.path) : null,
+    publicOrigin: target.health?.apiOrigin ?? null,
+    webOrigin: localServerNetwork(network).webOrigin,
   };
 }
 
@@ -3487,7 +3487,12 @@ async function pendingScopeRequestsForStatus(
     const auth = resolvePersonalServerAuthConfig(url);
     if (auth?.type !== "bearerToken") return [];
     const { requests } = await listPendingScopeRequests(
-      { url: url.replace(/\/+$/, ""), token: auth.token, approvalOrigin: null },
+      {
+        url: url.replace(/\/+$/, ""),
+        token: auth.token,
+        publicOrigin: null,
+        webOrigin: null,
+      },
       fetch,
       2_000,
     );

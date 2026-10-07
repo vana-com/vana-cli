@@ -4,7 +4,8 @@
 // The first JSON line on stdin is its configuration, so the owner signature
 // never appears in the process list or environment:
 //   { rootPath, port, ownerSignature, ownerAddress, network: { gatewayUrl, chainId,
-//     contracts, storageApiUrl }, tunnel: { binaryPath, serverAddr, serverPort } | null }
+//     contracts, storageApiUrl, webOrigin }, tunnel: { binaryPath, serverAddr,
+//     serverPort } | null }
 // Later lines are commands from the CLI, which holds the Account session:
 //   { type: "prepare-registration" } -> registration-request
 //   { type: "submit-registration", signature } -> registration-submitted
@@ -12,7 +13,6 @@
 // registration-request, registration-submitted, command-failed, error,
 // stopped. Logs go to stderr.
 
-import { rmSync } from "node:fs";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import readline from "node:readline";
@@ -21,6 +21,7 @@ import {
   loadConfig,
   startPersonalServer,
 } from "@opendatalabs/personal-server-ts/node";
+import { vanaWebMcpScopeRequestApprovalUrl } from "@opendatalabs/personal-server-ts-core/mcp";
 
 import { applyDerived, derivedConfig } from "./derived-config.mjs";
 import { startMcpApprovalPage } from "./mcp-approval.mjs";
@@ -41,12 +42,6 @@ async function readInput() {
 
 let ps = null;
 let mcpApproval = null;
-let approvalFile = null;
-
-// Where `vana mcp requests` finds the approval page: it listens on a free
-// port, so the CLI cannot guess it. Read together with the pid, so a file a
-// crashed server left behind is never trusted.
-const APPROVAL_FILE = ".vana-cli-approval.json";
 
 // Only a tunnel URL may be registered: without one the server offers its
 // localhost origin, which no app could ever reach.
@@ -188,23 +183,20 @@ async function main() {
     accessToken: process.env.PS_ACCESS_TOKEN ?? "",
   });
 
-  approvalFile = join(rootPath, APPROVAL_FILE);
-  await writeFile(
-    approvalFile,
-    `${JSON.stringify({ origin: mcpApproval.origin, pid: process.pid })}\n`,
-    { mode: 0o600 },
-  );
-
   ps = await startPersonalServer({
     configPath,
     rootPath,
     port,
     ownerSignature,
     mcpOAuthApprovalUrl: mcpApproval.url,
-    // The link `request_scope_access` hands the agent to show the owner. A
-    // server older than personal-server-ts PR 372 ignores it.
-    mcpScopeRequestApprovalUrl: (connectionId) =>
-      mcpApproval.scopeRequestUrl(connectionId),
+    // The link `request_scope_access` hands the agent to show the owner: the
+    // request on Vana Web, which calls this server back at its tunnel URL, so
+    // it works from a phone. A server without a public https origin
+    // (`--local`, or before the tunnel is up) gets no link, and the owner
+    // answers with `vana mcp approve|deny`.
+    mcpScopeRequestApprovalUrl: vanaWebMcpScopeRequestApprovalUrl({
+      webOrigin: network.webOrigin,
+    }),
     configDefaults,
     onStatus: (status) => process.stderr.write(`[status] ${status}\n`),
   });
@@ -226,7 +218,6 @@ async function main() {
 async function shutdown(signal) {
   process.stderr.write(`[entry] ${signal}, stopping\n`);
   mcpApproval?.close();
-  if (approvalFile) rmSync(approvalFile, { force: true });
   try {
     await ps?.stop();
   } finally {

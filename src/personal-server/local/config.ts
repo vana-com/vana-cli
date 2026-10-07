@@ -12,6 +12,12 @@ export interface LocalServerNetwork {
   contracts: Record<string, string>;
   /** The relay frpc dials to give the server its public URL. */
   tunnel: { serverAddr: string; serverPort: number };
+  /**
+   * Vana Web for this network, where the owner answers an MCP agent's
+   * `request_scope_access`. Moksha is served by the dev deployment (its
+   * gateway, storage and relay are dev's), so its page is app-dev.
+   */
+  webOrigin: string;
 }
 
 // Same deployment on both chains. Mirrors the `contracts` and tunnel entries
@@ -34,6 +40,7 @@ const NETWORKS: Record<VanaNetworkName, LocalServerNetwork> = {
     storageApiUrl: "https://storage-dev.vana.org",
     contracts: CONTRACTS,
     tunnel: { serverAddr: "frpc.server-dev.vana.org", serverPort: 7000 },
+    webOrigin: "https://app-dev.vana.org",
   },
   mainnet: {
     name: "mainnet",
@@ -42,6 +49,7 @@ const NETWORKS: Record<VanaNetworkName, LocalServerNetwork> = {
     storageApiUrl: "https://storage.vana.org",
     contracts: CONTRACTS,
     tunnel: { serverAddr: "frpc.server.vana.org", serverPort: 7000 },
+    webOrigin: "https://app.vana.org",
   },
 };
 
@@ -50,7 +58,7 @@ export function localServerNetwork(name: VanaNetworkName): LocalServerNetwork {
 }
 
 /** The pinned server release, matching runtime-pkg/package.json. */
-export const PERSONAL_SERVER_VERSION = "1.29.2";
+export const PERSONAL_SERVER_VERSION = "1.30.0";
 
 export function localServerHome(): string {
   return path.join(getVanaHome(), "cli", "personal-server");
