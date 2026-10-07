@@ -9,6 +9,11 @@ import type { VanaNetworkName } from "../../core/network.js";
 import type { ResolvedNode } from "../../pdpp/host.js";
 import { LOCAL_SERVER_PORTS, localServerNetwork } from "./config.js";
 import type { OwnerBinding } from "./owner-binding.js";
+import {
+  defaultTunnelProcessDeps,
+  stopTunnelClients,
+  type TunnelProcessDeps,
+} from "./tunnel-process.js";
 
 /** A server already answering on a local port, and who owns it. */
 export interface RunningServer {
@@ -212,11 +217,30 @@ export async function startLocalServer(input: {
   /** A tunnel client to run; absent = local only. */
   frpcPath?: string | null;
   readyTimeoutMs?: number;
+  /** Finding and stopping a tunnel client; real processes by default. */
+  tunnelProcesses?: TunnelProcessDeps;
 }): Promise<LocalServerHandle> {
   const dataDir = input.dataDir;
   const release = await acquireDataDirLock(dataDir);
   const accessToken = crypto.randomBytes(32).toString("hex");
   const log = fs.createWriteStream(input.logPath, { flags: "a" });
+  const tunnelProcesses = input.tunnelProcesses ?? defaultTunnelProcessDeps();
+  // With the lock held nothing else runs from this dir, so an frpc on its
+  // tunnel config was left behind by a server that died hard. It would hold
+  // the relay subdomain the new server's frpc is about to claim.
+  const stopOrphanedTunnel = async (when: string) => {
+    try {
+      const pids = await stopTunnelClients(dataDir, tunnelProcesses);
+      if (pids.length) {
+        log.write(
+          `[vana] Stopped a tunnel client left running ${when} (pid ${pids.join(", ")}).\n`,
+        );
+      }
+    } catch {
+      // Best effort: the server still starts.
+    }
+  };
+  await stopOrphanedTunnel("by an earlier server");
 
   // Only what the server needs: no PDPP_*, no tokens from the caller's shell.
   const env: NodeJS.ProcessEnv = {
@@ -237,10 +261,12 @@ export async function startLocalServer(input: {
 
   const exited = new Promise<number | null>((resolve) => {
     child.once("exit", (code) => {
-      log.end();
       // The lock names this process, not the child: a restart takes it again
-      // right away, so it has to be gone before anyone hears of the exit.
-      void release()
+      // right away, so it has to be gone before anyone hears of the exit. A
+      // server that died hard left its frpc running; stop it first.
+      void stopOrphanedTunnel("after the server exited")
+        .finally(() => log.end())
+        .then(() => release())
         .catch(() => {})
         .finally(() => resolve(code));
     });

@@ -190,6 +190,32 @@ describe("runServerStart", () => {
     else process.env.VANA_ACCOUNT_URL = originalAccountUrl;
   });
 
+  it("explains a missing npm and exits not-ready, without starting anything", async () => {
+    const { NpmMissingError } =
+      await import("../../src/personal-server/local/runtime.js");
+    const h = harness({
+      runtimeInstalled: vi.fn(() => false),
+      ensureRuntime: vi.fn(async () => {
+        throw new NpmMissingError(
+          { path: "/nvm/v24.15.0/bin/node", version: "24.15.0" },
+          "darwin",
+        );
+      }),
+    });
+    expect(
+      await runServerStart({ network: "moksha", yes: true }, h.io, h.deps),
+    ).toBe(6);
+    expect(h.deps.start).not.toHaveBeenCalled();
+    expect(h.deps.startDetached).not.toHaveBeenCalled();
+    expect(h.said.at(-1)).toContain(
+      "npm is missing next to the Node at /nvm/v24.15.0/bin/node",
+    );
+    expect(h.events.at(-1)).toMatchObject({
+      type: "server-failed",
+      reason: "npm-missing",
+    });
+  });
+
   it("uses the server already running for this owner and starts nothing", async () => {
     const h = harness({
       findRunningServers: vi.fn(async () => [
@@ -938,5 +964,107 @@ describe("runServerStart supervising a real child process", () => {
     expect(() => process.kill(secondPid, 0)).toThrow();
     expect(fs.existsSync(path.join(dataDir, ".vana-cli.lock"))).toBe(false);
     expect(pids()).toHaveLength(2);
+  }, 30_000);
+
+  it("stops the frpc a kill -9'd server left behind, and its own on stop", async () => {
+    // The 0.38.8 report: the frpc of a kill -9'd server kept running,
+    // reparented to init, through the restart and `vana server stop`.
+    const { startLocalServer } =
+      await import("../../src/personal-server/local/server.js");
+    const runtimeDir = path.join(root, "runtime");
+    const dataDir = path.join(root, "data");
+    fs.mkdirSync(runtimeDir);
+    // Stands in for frpc: named frpc, runs until signalled.
+    fs.writeFileSync(
+      path.join(runtimeDir, "frpc"),
+      "setInterval(() => {}, 1000);\n",
+    );
+    // Stands in for entry.mjs: starts its frpc as the server does, records
+    // both pids, and on SIGINT exits without stopping it (the worst case).
+    fs.writeFileSync(
+      path.join(runtimeDir, "entry.mjs"),
+      [
+        'import fs from "node:fs";',
+        'import { spawn } from "node:child_process";',
+        'process.stdin.once("data", (chunk) => {',
+        "  const config = JSON.parse(String(chunk).split('\\n')[0]);",
+        '  const frpc = spawn(process.execPath, [new URL("./frpc", import.meta.url).pathname, "-c", config.rootPath + "/tunnel/frpc.toml"], { stdio: "ignore", detached: true });',
+        "  frpc.unref();",
+        '  fs.appendFileSync(config.rootPath + "/frpc-pids", frpc.pid + "\\n");',
+        '  fs.appendFileSync(config.rootPath + "/pids", process.pid + "\\n");',
+        '  process.stdout.write(JSON.stringify({ type: "ready", url: "http://localhost:" + config.port }) + "\\n");',
+        "});",
+        'process.on("SIGINT", () => process.exit(0));',
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+    fs.mkdirSync(dataDir);
+    const read = (name: string) =>
+      fs.existsSync(path.join(dataDir, name))
+        ? fs
+            .readFileSync(path.join(dataDir, name), "utf8")
+            .trim()
+            .split("\n")
+            .map(Number)
+        : [];
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    let stop: () => void = () => {};
+    const h = harness({
+      findNode: vi.fn(async () => ({
+        path: process.execPath,
+        version: process.versions.node,
+      })),
+      ensureRuntime: vi.fn(async () => runtimeDir),
+      resolveDataDir: vi.fn(async () => ({
+        kind: "ready" as const,
+        dir: dataDir,
+      })),
+      choosePort: vi.fn(async () => 18_090),
+      start: startLocalServer,
+      lockDataDir: acquireDataDirLock,
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms / 1000)),
+      stopRequested: vi.fn(() => new Promise<void>((r) => (stop = r))),
+    });
+    const run = runServerStart(
+      { network: "moksha", local: true },
+      h.io,
+      h.deps,
+    );
+    try {
+      await vi.waitFor(() => expect(read("frpc-pids")).toHaveLength(1), {
+        timeout: 10_000,
+      });
+      const [firstServer] = read("pids");
+      const [firstFrpc] = read("frpc-pids");
+      process.kill(firstServer, "SIGKILL");
+      await vi.waitFor(
+        () => {
+          expect(read("frpc-pids")).toHaveLength(2);
+          expect(h.events.at(-1)).toMatchObject({ type: "server-restarted" });
+        },
+        { timeout: 10_000 },
+      );
+      await vi.waitFor(() => expect(alive(firstFrpc)).toBe(false), {
+        timeout: 10_000,
+      });
+      const secondFrpc = read("frpc-pids")[1];
+      expect(alive(secondFrpc)).toBe(true);
+      stop();
+      expect(await run).toBe(0);
+      await vi.waitFor(() => expect(alive(secondFrpc)).toBe(false), {
+        timeout: 10_000,
+      });
+    } finally {
+      for (const pid of [...read("frpc-pids"), ...read("pids")]) {
+        if (alive(pid)) process.kill(pid, "SIGKILL");
+      }
+    }
   }, 30_000);
 });

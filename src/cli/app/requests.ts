@@ -2,12 +2,21 @@
  * `vana app requests list|show <id>` - what this machine asked for, and
  * what came back.
  *
- * `list` reads the local index alone, so it works offline and is the way an
+ * `list` reads the local index, so it works offline and is the way an
  * agent recovers a request id it did not keep. `show` merges the local
  * entry with the live status and writes back what changed, which is how a
  * `--no-input` request eventually learns its grant id.
+ *
+ * An approval is not forever: the owner can revoke the grant, and a later
+ * approval for the same app replaces its scopes (one grant per owner and
+ * app). Both commands check every grant id against the gateway, and say
+ * when it no longer holds, or that it could not be checked.
  */
 
+import {
+  createGatewayClient,
+  type GatewayClient,
+} from "@opendatalabs/vana-sdk";
 import { createDirectDataController } from "@opendatalabs/vana-sdk/server";
 import {
   AppKeyMissingError,
@@ -31,6 +40,87 @@ export interface RequestsDeps {
   resolveKey?: typeof resolveAppKey;
   createController?: typeof createDirectDataController;
   requests?: RequestsStore;
+  createClient?: (gatewayUrl: string) => Pick<GatewayClient, "getGrant">;
+}
+
+/** Whether a request's grant still gives the app what it asked for. */
+export type GrantCheck =
+  | { state: "active" }
+  | {
+      state: "revoked" | "replaced" | "expired" | "missing";
+      reason: string;
+      revokedAt?: string;
+      grantScopes?: string[];
+    }
+  | { state: "unverified"; reason: string };
+
+const GRANT_LOOKUP_TIMEOUT_MS = 5_000;
+
+const bareScope = (scope: string) => scope.replace(/^write:/, "");
+
+/**
+ * Ask the gateway (public, no key needed) whether `grantId` still covers
+ * `scopes`. Never throws: a gateway that cannot be reached is "unverified".
+ */
+export async function checkGrant(
+  client: Pick<GatewayClient, "getGrant">,
+  grantId: string,
+  scopes: string[],
+): Promise<GrantCheck> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const grant = await Promise.race([
+      client.getGrant(grantId),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("timed out")),
+          GRANT_LOOKUP_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    if (!grant) {
+      return {
+        state: "missing",
+        reason: `the gateway has no grant ${grantId}`,
+      };
+    }
+    if (grant.revokedAt) {
+      return {
+        state: "revoked",
+        reason: `revoked by the owner at ${grant.revokedAt}`,
+        revokedAt: grant.revokedAt,
+      };
+    }
+    const granted = new Set(grant.scopes.map(bareScope));
+    const lost = scopes.filter((scope) => !granted.has(bareScope(scope)));
+    if (lost.length) {
+      return {
+        state: "replaced",
+        reason: `replaced by a later approval: the grant now covers ${grant.scopes.join(", ") || "nothing"}, not ${lost.join(", ")}`,
+        grantScopes: grant.scopes,
+      };
+    }
+    if (grant.expired) {
+      return { state: "expired", reason: "the grant expired" };
+    }
+    return { state: "active" };
+  } catch (error) {
+    return {
+      state: "unverified",
+      reason: `the gateway was not reached (${error instanceof Error ? error.message : String(error)})`,
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** False once the grant is known to be gone; unverified keeps the record's word. */
+function grantHolds(check: GrantCheck | null): boolean {
+  return !check || check.state === "active" || check.state === "unverified";
+}
+
+function newRequestRemedy(scopes: string[]): string {
+  return `vana app request --scopes ${scopes.join(",")}`;
 }
 
 function resolveNetworkOrFail(
@@ -78,6 +168,24 @@ export async function runAppRequestsList(
     appAddress,
     network: network.name,
   });
+  const withGrant = entries.filter((entry) => entry.grantId);
+  const client = withGrant.length
+    ? (deps.createClient ?? createGatewayClient)(network.gatewayUrl)
+    : null;
+  const checks = new Map<string, GrantCheck>();
+  await Promise.all(
+    withGrant.map(async (entry) => {
+      checks.set(
+        entry.requestId,
+        await checkGrant(
+          client!,
+          entry.grantId!,
+          entry.approvedScopes ?? entry.scopes,
+        ),
+      );
+    }),
+  );
+  const gone = [...checks.values()].filter((check) => !grantHolds(check));
 
   return emitAppOutcome(options, {
     status: "done",
@@ -85,19 +193,32 @@ export async function runAppRequestsList(
     message:
       entries.length === 0
         ? "No access requests from this machine yet."
-        : `${entries.length} access request${entries.length === 1 ? "" : "s"}.`,
+        : `${entries.length} access request${entries.length === 1 ? "" : "s"}${gone.length ? `; ${gone.length} grant${gone.length === 1 ? " is" : "s are"} no longer in force` : ""}.`,
     remedy:
-      entries.length === 0 ? "vana app request --scopes <scope>" : undefined,
+      entries.length === 0
+        ? "vana app request --scopes <scope>"
+        : gone.length
+          ? "vana app requests show <id>"
+          : undefined,
     network: network.name,
     data: {
       count: entries.length,
-      requests: entries.map((entry) => ({
-        requestId: entry.requestId,
-        status: entry.status,
-        scopes: entry.scopes,
-        grantId: entry.grantId ?? null,
-        createdAt: entry.createdAt,
-      })),
+      requests: entries.map((entry) => {
+        const check = checks.get(entry.requestId) ?? null;
+        return {
+          requestId: entry.requestId,
+          status: entry.status,
+          scopes: entry.scopes,
+          grantId: entry.grantId ?? null,
+          createdAt: entry.createdAt,
+          ...(check
+            ? {
+                live: grantHolds(check),
+                grant: check,
+              }
+            : {}),
+        };
+      }),
     },
   });
 }
@@ -169,7 +290,11 @@ export async function runAppRequestsShow(
     requests.update(requestId, {
       status: live.status as StoredRequestStatus,
       ...(live.grantId ? { grantId: live.grantId } : {}),
-      ...(live.scopes ? { approvedScopes: live.scopes } : {}),
+      // What was approved is fixed at approval; never let a later read of
+      // the status overwrite it, or a replaced grant would look covered.
+      ...(live.scopes && !stored.approvedScopes
+        ? { approvedScopes: live.scopes }
+        : {}),
       ...(live.delivery ? { delivery: live.delivery } : {}),
       ...(live.personalServerUrl
         ? { personalServerUrl: live.personalServerUrl }
@@ -186,20 +311,42 @@ export async function runAppRequestsShow(
       ?.map((question) => question.derivedScope)
       .find((scope) => scopes.includes(scope)) ?? scopes[0];
 
+  const grant = grantId
+    ? await checkGrant(
+        (deps.createClient ?? createGatewayClient)(network.gatewayUrl),
+        grantId,
+        stored.approvedScopes ?? scopes,
+      )
+    : null;
+  const holds = grantHolds(grant);
+  const note = !live
+    ? " (local record, service not reached)"
+    : grant?.state === "unverified"
+      ? ` (grant not verified: ${grant.reason})`
+      : "";
+
   return emitAppOutcome(options, {
     status: "done",
     code: "ok",
-    message: `${requestId}: ${status}${live ? "" : " (local record, service not reached)"}.`,
-    remedy: grantId
-      ? `vana app read ${nextScope} --grant ${grantId}`
-      : status === "pending"
-        ? `still waiting; approve at ${stored.approvalUrl}`
-        : undefined,
+    message:
+      grant && grant.state !== "active" && !holds
+        ? `${requestId}: ${status}, but the grant is no longer in force: ${grant.reason}.`
+        : `${requestId}: ${status}${note}.`,
+    remedy: !holds
+      ? newRequestRemedy(stored.scopes)
+      : grantId
+        ? `vana app read ${nextScope} --grant ${grantId}`
+        : status === "pending"
+          ? `still waiting; approve at ${stored.approvalUrl}`
+          : undefined,
     network: network.name,
     data: {
       requestId,
       status,
-      live: Boolean(live),
+      // The service answered, and the grant, when there is one, has not
+      // been revoked or replaced. An unverified grant keeps the record's word.
+      live: Boolean(live) && holds,
+      ...(grant ? { grant } : {}),
       scopes,
       requestedScopes: stored.scopes,
       grantId,
