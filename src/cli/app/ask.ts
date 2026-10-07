@@ -86,7 +86,7 @@ export async function runAppAsk(
       status: "failed",
       code: "bad_usage",
       message: "ask needs a question, --sources and --derived.",
-      remedy: `vana app ask "..." --sources spotify.history --derived myapp.summary`,
+      remedy: `vana app ask "Which languages do my repos use most?" --sources github.repositories --derived myapp.languages`,
       network: network.name,
     });
   }
@@ -106,11 +106,14 @@ export async function runAppAsk(
     });
   }
 
-  // 1. Ask the person. The derived scope must also be granted as a plain
-  //    read so the answer can be read back; request validates that.
+  // 1. Ask the person. The grant covers the derived scope alone: the sources
+  //    travel as the question's inputs, which the person's server reads as
+  //    the owner, so the app never holds a read on them. Adding a source to
+  //    `scopes` would grant exactly that raw read while the approval page
+  //    tells the person the app will not see it.
   const requestOptions: RequestCommandOptions = {
     ...options,
-    scopes: [...sources, options.derived].join(","),
+    scopes: options.derived,
     question,
     derived: options.derived,
     sources: options.sources,

@@ -46,12 +46,15 @@ export function registerAppCommands(
   app
     .command("request")
     .description("Ask a person for access and wait for the grant")
-    .option("--scopes <list>", "Comma-separated scopes to request")
+    .option(
+      "--scopes <list>",
+      "Comma-separated scopes to request (with --question, defaults to --derived)",
+    )
     .option("--question <text>", "Derivative question to carry on the request")
     .option("--derived <scope>", "Scope the answer is written to")
     .option(
       "--sources <list>",
-      "Comma-separated scopes the answer is computed from",
+      "Comma-separated scopes the answer is computed from, never granted to the app",
     )
     .option("--return-url <url>", "Where approval returns the person")
     .option(
@@ -155,11 +158,14 @@ export function registerAppCommands(
   app
     .command("ask <question>")
     .description("Ask a question about a person's data, through consent")
-    .option(
+    .requiredOption(
       "--sources <list>",
-      "Comma-separated scopes the answer is computed from",
+      "Required. Comma-separated scopes the answer is computed from, never granted to the app",
     )
-    .option("--derived <scope>", "Scope the answer is written to")
+    .requiredOption(
+      "--derived <scope>",
+      "Required. Scope the answer is written to and the only one granted, in your own namespace (e.g. myapp.languages)",
+    )
     .option("--pay", "Settle the derived-scope read from escrow")
     .option("--max-fee <amount>", "Refuse fees above this, in the fee's asset")
     .option("--timeout <seconds>", "How long to wait for approval")

@@ -180,13 +180,18 @@ export async function runAppRequestsShow(
   const status = live?.status ?? stored.status;
   const grantId = live?.grantId ?? stored.grantId ?? null;
   const scopes = live?.scopes ?? stored.approvedScopes ?? stored.scopes;
+  // A question's answer is what the app came for; point at it when granted.
+  const nextScope =
+    stored.questions
+      ?.map((question) => question.derivedScope)
+      .find((scope) => scopes.includes(scope)) ?? scopes[0];
 
   return emitAppOutcome(options, {
     status: "done",
     code: "ok",
     message: `${requestId}: ${status}${live ? "" : " (local record, service not reached)"}.`,
     remedy: grantId
-      ? `vana app read ${scopes[0]} --grant ${grantId}`
+      ? `vana app read ${nextScope} --grant ${grantId}`
       : status === "pending"
         ? `still waiting; approve at ${stored.approvalUrl}`
         : undefined,

@@ -19,9 +19,9 @@ exit code, read `code` for the reason and `remedy` for the next command.
 ## The loop
 
 ```bash
-vana app register --app-name "<your name>"         # once per machine
-vana app request --scopes spotify.history          # ask a person
-vana app read spotify.history --grant <id> --pay   # read and pay
+vana app register --app-name "<your name>"             # once per machine
+vana app request --scopes spotify.savedTracks          # ask a person
+vana app read spotify.savedTracks --grant <id> --pay   # read and pay
 ```
 
 Register with the name the person should see on the approval page, such as
@@ -31,8 +31,8 @@ request shows as "Vana CLI".
 Or ask a question instead of reading raw data, in one command:
 
 ```bash
-vana app ask "Which genres did they listen to most this month?" \
-  --sources spotify.history --derived myapp.genres --pay
+vana app ask "Which genres fill their saved tracks?" \
+  --sources spotify.savedTracks --derived myapp.genres --pay
 ```
 
 `request` prints an approval URL and waits. The person opens it, approves,
@@ -57,7 +57,7 @@ Branch on these instead of parsing text.
 ## Asking for access
 
 ```bash
-vana app request --scopes spotify.history,spotify.playlists --json
+vana app request --scopes spotify.savedTracks,spotify.playlists --json
 ```
 
 Waits up to ten minutes by default (`--timeout <seconds>`). On approval the
@@ -66,7 +66,7 @@ outcome carries `grantId` and the exact read command in `remedy`.
 When no human is watching the terminal, do not block:
 
 ```bash
-vana app request --scopes spotify.history --no-input --json
+vana app request --scopes spotify.savedTracks --no-input --json
 ```
 
 That exits **7** immediately with `approvalUrl` in the payload. Hand the URL
@@ -87,8 +87,8 @@ computed on the person's own server over sources **your app never reads**;
 you end up holding a grant on the answer only.
 
 ```bash
-vana app ask "Which genres did they listen to most this month?" \
-  --sources spotify.history \
+vana app ask "Which genres fill their saved tracks?" \
+  --sources spotify.savedTracks \
   --derived myapp.genres \
   --pay --json
 ```
@@ -96,7 +96,10 @@ vana app ask "Which genres did they listen to most this month?" \
 `ask` runs the whole path for you: it asks the person (same approval URL
 and `--no-input` behavior as `request`), waits for the answer to settle,
 then reads it. The derived scope must be in your own namespace, never
-sharing a first segment with a source.
+sharing a first segment with a source. Both `--sources` and `--derived` are
+required. The request grants the derived scope only; the sources go to the
+person's server as the question's inputs, so `app request` refuses a
+question whose source is also listed in `--scopes`.
 
 Two commands let you drive the same path by hand:
 
@@ -126,7 +129,7 @@ Two separate costs, reported separately:
 ## Reading
 
 ```bash
-vana app read spotify.history --grant 0x... --json
+vana app read spotify.savedTracks --grant 0x... --json
 ```
 
 Without `--pay` a priced read stops at exit **4** and tells you the cost, so
@@ -144,7 +147,7 @@ above a limit. **The limit is in the fee's own asset**, which is not always
 VANA: on mainnet a data-access fee is quoted in USDC.e.
 
 ```bash
-vana app read spotify.history --grant 0x... --pay --max-fee 0.05 --json
+vana app read spotify.savedTracks --grant 0x... --pay --max-fee 0.05 --json
 ```
 
 Two things worth knowing:
@@ -197,7 +200,7 @@ their Vana Account and opens its Fund page.
 
 ```bash
 vana app whoami --json                                   # who am I, registered?
-vana app onchain spotify.history --owner 0x... --json    # version, hashes, deletion
+vana app onchain spotify.savedTracks --owner 0x... --json    # version, hashes, deletion
 ```
 
 ## Networks

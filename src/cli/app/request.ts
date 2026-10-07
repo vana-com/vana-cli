@@ -115,7 +115,16 @@ export async function runAppRequest(
     throw error;
   }
 
-  const scopes = splitList(options.scopes);
+  const sourceScopes = splitList(options.sources);
+  const hasQuestion = Boolean(
+    options.question || options.derived || sourceScopes.length > 0,
+  );
+  // With a question, the derived scope is the only read the app needs, so
+  // it is the default grant.
+  const scopes =
+    hasQuestion && !options.scopes && options.derived
+      ? [options.derived]
+      : splitList(options.scopes);
   if (scopes.length === 0) {
     return emitAppOutcome(options, {
       status: "failed",
@@ -128,8 +137,7 @@ export async function runAppRequest(
 
   // A question needs its derived scope granted as a plain read too, which
   // the SDK validates eagerly; check it here so the error names the fix.
-  const sourceScopes = splitList(options.sources);
-  if (options.question || options.derived || sourceScopes.length > 0) {
+  if (hasQuestion) {
     if (!options.question || !options.derived || sourceScopes.length === 0) {
       return emitAppOutcome(options, {
         status: "failed",
@@ -145,6 +153,21 @@ export async function runAppRequest(
         code: "bad_usage",
         message: `The derived scope ${options.derived} must also appear in --scopes as a plain read.`,
         remedy: `vana app request --scopes ${[...scopes, options.derived].join(",")} ...`,
+        network: network.name,
+      });
+    }
+    // The approval page tells the person the app will not see a question's
+    // sources. Granting one as a plain read in the same request would make
+    // that untrue, so refuse rather than let the copy lie.
+    const rawSources = sourceScopes.filter((scope) => scopes.includes(scope));
+    if (rawSources.length > 0) {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "bad_usage",
+        message: `${rawSources.join(", ")} would be granted as a raw read, but the person is told the app will not see a question's sources. Request raw reads separately.`,
+        remedy: `vana app request --scopes ${scopes
+          .filter((scope) => !rawSources.includes(scope))
+          .join(",")} ...`,
         network: network.name,
       });
     }
@@ -289,12 +312,16 @@ export async function runAppRequest(
       }
 
       const approvedScopes = status.scopes ?? scopes;
+      const nextScope =
+        options.derived && approvedScopes.includes(options.derived)
+          ? options.derived
+          : approvedScopes[0];
       return emitAppOutcome(options, {
         status: "done",
         code: "ok",
         message: `Approved. Grant ${status.grantId ?? "(pending id)"}.`,
         remedy: status.grantId
-          ? `vana app read ${approvedScopes[0]} --grant ${status.grantId}`
+          ? `vana app read ${nextScope} --grant ${status.grantId}`
           : undefined,
         network: network.name,
         data: {
