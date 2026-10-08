@@ -4,8 +4,8 @@
   "type": "module",
   "description": "The Personal Server vana-cli runs on its own. Installed with npm ci from this lockfile so every install is the same.",
   "dependencies": {
-    "@opendatalabs/personal-server-ts": "1.30.0",
-    "@opendatalabs/personal-server-ts-core": "1.30.0"
+    "@opendatalabs/personal-server-ts": "1.31.0",
+    "@opendatalabs/personal-server-ts-core": "1.31.0"
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true,
