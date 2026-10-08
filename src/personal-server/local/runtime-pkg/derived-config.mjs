@@ -2,6 +2,13 @@
 // the tunnel client, and how it lands on a persisted server.json. Kept apart
 // from entry.mjs so it can be tested without starting a server.
 
+// Lifetime of the grants the server signs itself for MCP connections (an
+// agent connecting over OAuth, or a scope request approved with no live
+// grant to inherit an expiry from): one year from signing. Needs
+// personal-server-ts with `mcpGrantTtlSeconds`; an older server ignores the
+// option and keeps signing perpetual grants.
+export const MCP_GRANT_TTL_SECONDS = 365 * 24 * 3600;
+
 function isPlainObject(value) {
   return (
     typeof value === "object" &&
