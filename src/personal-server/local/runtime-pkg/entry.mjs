@@ -23,7 +23,11 @@ import {
 } from "@opendatalabs/personal-server-ts/node";
 import { vanaWebMcpScopeRequestApprovalUrl } from "@opendatalabs/personal-server-ts-core/mcp";
 
-import { applyDerived, derivedConfig } from "./derived-config.mjs";
+import {
+  applyDerived,
+  derivedConfig,
+  MCP_GRANT_TTL_SECONDS,
+} from "./derived-config.mjs";
 import { startMcpApprovalPage } from "./mcp-approval.mjs";
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -197,6 +201,9 @@ async function main() {
     mcpScopeRequestApprovalUrl: vanaWebMcpScopeRequestApprovalUrl({
       webOrigin: network.webOrigin,
     }),
+    // MCP connection grants this server signs expire after a year instead
+    // of never. A live grant's expiry is always kept on a scope request.
+    mcpGrantTtlSeconds: MCP_GRANT_TTL_SECONDS,
     configDefaults,
     onStatus: (status) => process.stderr.write(`[status] ${status}\n`),
   });

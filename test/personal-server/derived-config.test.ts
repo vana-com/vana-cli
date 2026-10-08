@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   applyDerived,
   derivedConfig,
+  MCP_GRANT_TTL_SECONDS,
   // @ts-expect-error - plain ESM module shipped to the server process
 } from "../../src/personal-server/local/runtime-pkg/derived-config.mjs";
 import { ensureRuntime } from "../../src/personal-server/local/runtime.js";
@@ -77,5 +78,21 @@ describe("ensureRuntime", () => {
         fs.readFileSync(path.join(assets, file), "utf8"),
       );
     }
+  });
+});
+
+describe("MCP grant lifetime", () => {
+  it("is one year, and entry.mjs hands it to the server", () => {
+    expect(MCP_GRANT_TTL_SECONDS).toBe(365 * 24 * 3600);
+    const entry = fs.readFileSync(
+      fileURLToPath(
+        new URL(
+          "../../src/personal-server/local/runtime-pkg/entry.mjs",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    );
+    expect(entry).toMatch(/mcpGrantTtlSeconds: MCP_GRANT_TTL_SECONDS/);
   });
 });
