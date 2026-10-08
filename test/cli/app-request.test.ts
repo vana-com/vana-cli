@@ -3,7 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import { resolveSourceKey, runAppRequest } from "../../src/cli/app/request.js";
+import {
+  GRANT_LOOKUP_ATTEMPTS,
+  GRANT_LOOKUP_TIMEOUT_MS,
+  planGrantUnion,
+  resolveSourceKey,
+  runAppRequest,
+} from "../../src/cli/app/request.js";
 import {
   runAppRequestsList,
   runAppRequestsShow,
@@ -957,5 +963,205 @@ describe("vana app request - extending the live grant", () => {
       { resolveKey: () => appKey, requests: store() },
     );
     expect(exitCode).toBe(2);
+  });
+
+  it("sends --remove-scopes even when the live grant read times out", async () => {
+    // Every read hangs past the timeout: the approval page still has to see
+    // the removals, since it re-reads the live grant and honors them.
+    const hanging = {
+      getGrant: vi.fn(),
+      listGrantsByUser: vi.fn(),
+      getBuilder: vi.fn(() => {
+        throw new Error("timed out");
+      }),
+    };
+    const { seen, createController } = recordingController();
+    let stderr = "";
+    vi.mocked(process.stderr.write).mockImplementation((chunk) => {
+      stderr += String(chunk);
+      return true;
+    });
+    const requests = store();
+    const exitCode = await runAppRequest(
+      {
+        noInput: true,
+        scopes: "github.starred",
+        removeScopes: "github.profile",
+        owner: OWNER,
+      },
+      {
+        resolveKey: () => appKey,
+        requests,
+        createClient: () => hanging as never,
+        createController,
+      },
+    );
+    expect(exitCode).toBe(7);
+    // One retry before giving up.
+    expect(hanging.getBuilder).toHaveBeenCalledTimes(2);
+    expect(seen.scopes).toEqual(["github.starred"]);
+    expect(seen.input).toMatchObject({ removeScopes: ["github.profile"] });
+    expect(requests.get(REQUEST_ID)).toMatchObject({
+      removeScopes: ["github.profile"],
+    });
+    expect(stderr).toContain(
+      "Live grant  not read: the gateway was not reached",
+    );
+    expect(stderr).toContain("Removing (if shared) github.profile");
+    expect(stderr).not.toContain("Removing    nothing");
+  });
+
+  it("reports the removals it sent when the live grant read fails", async () => {
+    const failing = {
+      getGrant: vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+      listGrantsByUser: vi.fn(),
+      getBuilder: vi.fn(),
+    };
+    const { seen, createController } = recordingController();
+    await runAppRequest(
+      {
+        json: true,
+        noInput: true,
+        scopes: "whoop.recovery",
+        removeScopes: "oura.sleep",
+      },
+      {
+        resolveKey: () => appKey,
+        requests: storeWithApproval(),
+        createClient: () => failing as never,
+        createController,
+      },
+    );
+    expect(seen.input).toMatchObject({ removeScopes: ["oura.sleep"] });
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.data).toMatchObject({
+      removed: [],
+      removeScopes: ["oura.sleep"],
+      grantUnion: { status: "unavailable" },
+    });
+  });
+
+  it("sends --remove-scopes when no earlier approval names the owner", async () => {
+    const gw = liveGateway(["oura.sleep"]);
+    const { seen, createController } = recordingController();
+    let stderr = "";
+    vi.mocked(process.stderr.write).mockImplementation((chunk) => {
+      stderr += String(chunk);
+      return true;
+    });
+    await runAppRequest(
+      {
+        noInput: true,
+        scopes: "whoop.recovery",
+        removeScopes: "github.profile",
+      },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        createClient: gw.createClient,
+        createController,
+      },
+    );
+    expect(gw.createClient).not.toHaveBeenCalled();
+    expect(seen.input).toMatchObject({ removeScopes: ["github.profile"] });
+    expect(stderr).toContain("Removing (if shared) github.profile");
+  });
+
+  it("sends --remove-scopes with --no-merge-grant", async () => {
+    const { seen, createController } = recordingController();
+    await runAppRequest(
+      {
+        json: true,
+        noInput: true,
+        scopes: "whoop.recovery",
+        removeScopes: "github.profile",
+        mergeGrant: false,
+      },
+      {
+        resolveKey: () => appKey,
+        requests: storeWithApproval(),
+        createController,
+      },
+    );
+    expect(seen.input).toMatchObject({ removeScopes: ["github.profile"] });
+  });
+});
+
+describe("planGrantUnion - live grant read retries", () => {
+  const OWNER = "0x00000000000000000000000000000000000000aa";
+  const BUILDER = `0x${"ab".repeat(32)}`;
+  const base = {
+    scopes: ["whoop.recovery"],
+    removeScopes: ["github.profile"],
+    owner: OWNER,
+    merge: true,
+    appAddress: account.address,
+    network: "mainnet",
+    gatewayUrl: "https://dp-rpc.vana.org",
+    timeoutMs: 20,
+  };
+
+  it("retries once after a timed-out read and merges the second answer", async () => {
+    let calls = 0;
+    const client = {
+      getGrant: vi.fn(),
+      getBuilder: vi.fn(async () => ({ id: BUILDER }) as never),
+      listGrantsByUser: vi.fn(() => {
+        calls += 1;
+        if (calls === 1) return new Promise<never>(() => {});
+        return Promise.resolve([
+          {
+            id: GRANT,
+            grantorAddress: OWNER,
+            granteeId: BUILDER,
+            scopes: ["oura.sleep", "github.profile"],
+            revokedAt: null,
+            expired: false,
+            grantVersion: "1",
+          },
+        ] as never);
+      }),
+    };
+    const plan = await planGrantUnion({
+      ...base,
+      requests: store(),
+      createClient: () => client as never,
+    });
+    expect(client.listGrantsByUser).toHaveBeenCalledTimes(2);
+    expect(plan).toMatchObject({
+      status: "merged",
+      scopes: ["oura.sleep", "whoop.recovery"],
+      removed: ["github.profile"],
+      removeScopes: ["github.profile"],
+    });
+  });
+
+  it("gives up after two timed-out reads but keeps the removals", async () => {
+    const client = {
+      getGrant: vi.fn(),
+      getBuilder: vi.fn(() => new Promise<never>(() => {})),
+      listGrantsByUser: vi.fn(),
+    };
+    const plan = await planGrantUnion({
+      ...base,
+      requests: store(),
+      createClient: () => client as never,
+    });
+    expect(client.getBuilder).toHaveBeenCalledTimes(2);
+    expect(plan).toMatchObject({
+      status: "unavailable",
+      reason: "the gateway was not reached (timed out)",
+      owner: OWNER,
+      scopes: ["whoop.recovery"],
+      removed: [],
+      removeScopes: ["github.profile"],
+    });
+  });
+
+  it("defaults to a 10s timeout with one retry", () => {
+    expect(GRANT_LOOKUP_TIMEOUT_MS).toBe(10_000);
+    expect(GRANT_LOOKUP_ATTEMPTS).toBe(2);
   });
 });

@@ -97,9 +97,18 @@ export type GrantUnionPlan = GrantUnion & {
   owner?: string;
   grantId?: string;
   reason?: string;
+  /**
+   * The explicit `--remove-scopes` list. The request always carries it,
+   * whatever the live grant read found: the approval page re-reads the live
+   * grant and leaves these entries out of the union it signs.
+   */
+  removeScopes: string[];
 };
 
-const GRANT_LOOKUP_TIMEOUT_MS = 5_000;
+/** How long one live grant read may take before it counts as failed. */
+export const GRANT_LOOKUP_TIMEOUT_MS = 10_000;
+/** Live grant reads are retried once on a timeout or network error. */
+export const GRANT_LOOKUP_ATTEMPTS = 2;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -122,8 +131,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * other for data they never granted: that case is left to the approval
  * page, which signs the union for whoever actually approves.
  *
- * Never throws for the network: an unreachable gateway sends the request
- * with --scopes only.
+ * Never throws for the network: a gateway that does not answer within the
+ * timeout (tried twice) sends the request with --scopes only. The explicit
+ * --remove-scopes list is kept on every outcome, so the request still
+ * carries it to the approval page.
  */
 export async function planGrantUnion(input: {
   scopes: string[];
@@ -135,9 +146,17 @@ export async function planGrantUnion(input: {
   gatewayUrl: string;
   requests: RequestsStore;
   createClient: (gatewayUrl: string) => GrantUnionClient;
+  /** Per-attempt timeout; defaults to {@link GRANT_LOOKUP_TIMEOUT_MS}. */
+  timeoutMs?: number;
+  /** Total attempts; defaults to {@link GRANT_LOOKUP_ATTEMPTS}. */
+  attempts?: number;
 }): Promise<GrantUnionPlan> {
   assertNoGrantUnionConflict(input.scopes, input.removeScopes);
-  const requestedOnly = unionGrantScopes([], input.scopes, input.removeScopes);
+  const removeScopes = [...new Set(input.removeScopes)];
+  const requestedOnly = {
+    ...unionGrantScopes([], input.scopes, input.removeScopes),
+    removeScopes,
+  };
   if (!input.merge) {
     return { status: "disabled", ...requestedOnly };
   }
@@ -170,19 +189,35 @@ export async function planGrantUnion(input: {
     }
   }
 
-  try {
+  const timeoutMs = input.timeoutMs ?? GRANT_LOOKUP_TIMEOUT_MS;
+  const attempts = Math.max(1, input.attempts ?? GRANT_LOOKUP_ATTEMPTS);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await readAndMerge(grantIds[0]);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  return {
+    status: "unavailable",
+    reason: `the gateway was not reached (${lastError instanceof Error ? lastError.message : String(lastError)})`,
+    ...(input.owner ? { owner: input.owner } : {}),
+    ...requestedOnly,
+  };
+
+  async function readAndMerge(
+    grantId: string | undefined,
+  ): Promise<GrantUnionPlan> {
     const client = input.createClient(input.gatewayUrl);
     let owner = input.owner;
     let granteeId: string | undefined;
     if (!owner) {
-      const previous = await withTimeout(
-        client.getGrant(grantIds[0]!),
-        GRANT_LOOKUP_TIMEOUT_MS,
-      );
+      const previous = await withTimeout(client.getGrant(grantId!), timeoutMs);
       if (!previous) {
         return {
           status: "owner_unknown",
-          reason: `the gateway has no grant ${grantIds[0]}`,
+          reason: `the gateway has no grant ${grantId}`,
           ...requestedOnly,
         };
       }
@@ -197,16 +232,9 @@ export async function planGrantUnion(input: {
         scopes: input.scopes,
         removeScopes: input.removeScopes,
       }),
-      GRANT_LOOKUP_TIMEOUT_MS,
+      timeoutMs,
     );
-    return { ...merged, owner };
-  } catch (error) {
-    return {
-      status: "unavailable",
-      reason: `the gateway was not reached (${error instanceof Error ? error.message : String(error)})`,
-      ...(input.owner ? { owner: input.owner } : {}),
-      ...requestedOnly,
-    };
+    return { ...merged, owner, removeScopes };
   }
 }
 
@@ -216,6 +244,9 @@ function grantUnionData(plan: GrantUnionPlan): Record<string, unknown> {
     kept: plan.kept,
     added: plan.added,
     removed: plan.removed,
+    // Sent on the request whatever the live grant read found; the approval
+    // page removes them from the live grant if it holds them.
+    removeScopes: plan.removeScopes,
     grantUnion: {
       status: plan.status,
       owner: plan.owner ?? null,
@@ -240,7 +271,13 @@ function describePlan(plan: GrantUnionPlan): string {
   }
   lines.push(`  Keeping     ${list(plan.kept)}`);
   lines.push(`  Adding      ${list(plan.added)}`);
-  if (plan.removed.length > 0 || plan.status !== "merged") {
+  const liveGrantRead =
+    plan.status === "merged" || plan.status === "no_live_grant";
+  if (!liveGrantRead && plan.removeScopes.length > 0) {
+    // The live grant is unknown here, but the request carries these and the
+    // approval page drops them from the live grant if it holds them.
+    lines.push(`  Removing (if shared) ${plan.removeScopes.join(", ")}`);
+  } else if (plan.removed.length > 0 || plan.status !== "merged") {
     lines.push(`  Removing    ${list(plan.removed)}`);
   }
   if (plan.notCarried.length > 0) {
