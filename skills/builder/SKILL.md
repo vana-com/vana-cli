@@ -70,10 +70,12 @@ prints what it keeps, adds and removes before creating the request. Give up
 a scope with `--remove-scopes a,b`; pick whose grant to extend with
 `--owner <address>` when more than one person approved; send `--scopes`
 verbatim with `--no-merge-grant`. `--json` carries `kept`, `added`,
-`removed` and `grantUnion.status` (`merged`, `no_live_grant`,
+`removed`, `removeScopes` and `grantUnion.status` (`merged`, `no_live_grant`,
 `owner_unknown`, `owner_ambiguous`, `disabled`, `unavailable`). With no
 earlier approval the person is unknown until they approve, and the approval
-page keeps what they already granted.
+page keeps what they already granted. `--remove-scopes` is always sent, even
+when the live grant could not be read; then it prints as "Removing (if
+shared)" and the approval page drops those entries if the grant holds them.
 
 When no human is watching the terminal, do not block:
 
