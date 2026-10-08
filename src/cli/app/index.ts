@@ -50,6 +50,18 @@ export function registerAppCommands(
       "--scopes <list>",
       "Comma-separated scopes to request (with --question, defaults to --derived)",
     )
+    .option(
+      "--remove-scopes <list>",
+      "Comma-separated scopes the app's live grant should drop",
+    )
+    .option(
+      "--owner <address>",
+      "Whose live grant to extend, when more than one person approved this app",
+    )
+    .option(
+      "--no-merge-grant",
+      "Send --scopes verbatim instead of keeping what the live grant covers",
+    )
     .option("--question <text>", "Derivative question to carry on the request")
     .option("--derived <scope>", "Scope the answer is written to")
     .option(
@@ -64,12 +76,14 @@ export function registerAppCommands(
     .option("--app-id <id>", "App id shown during approval")
     .option("--app-name <name>", "App name shown during approval")
     .option("--app-url <url>", "App homepage shown during approval")
-    .action(async (commandOptions: Record<string, string | undefined>) => {
-      process.exitCode = await runAppRequest({
-        ...getOptions(),
-        ...commandOptions,
-      });
-    });
+    .action(
+      async (commandOptions: Record<string, string | boolean | undefined>) => {
+        process.exitCode = await runAppRequest({
+          ...getOptions(),
+          ...commandOptions,
+        });
+      },
+    );
 
   const requests = app
     .command("requests")

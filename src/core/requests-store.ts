@@ -31,8 +31,13 @@ export interface StoredRequest {
   appAddress: string;
   network: string;
   gatewayUrl: string;
-  /** Scopes asked for, verbatim (may carry `write:` prefixes). */
+  /**
+   * Scopes asked for, verbatim (may carry `write:` prefixes), after the
+   * app's live grant was merged in.
+   */
   scopes: string[];
+  /** Live grant entries the request gave up (`--remove-scopes`). */
+  removeScopes?: string[];
   approvalUrl: string;
   createdAt: string;
   status: StoredRequestStatus;

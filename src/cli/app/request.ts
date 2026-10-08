@@ -11,6 +11,10 @@
  * so a `--no-input` run is findable afterwards.
  */
 
+import {
+  createGatewayClient,
+  type GatewayClient,
+} from "@opendatalabs/vana-sdk";
 import { createDirectDataController } from "@opendatalabs/vana-sdk/server";
 import {
   AppKeyMissingError,
@@ -29,10 +33,22 @@ import {
   type StoredRequestStatus,
 } from "../../core/requests-store.js";
 import { readAppProfile } from "../../core/app-profile.js";
+import {
+  GrantUnionConflictError,
+  mergeWithLiveGrant,
+  unionGrantScopes,
+  type GrantUnion,
+} from "../../core/grant-union.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
 
 export interface RequestCommandOptions extends AppCommandOptions {
   scopes?: string;
+  /** Live grant entries to give up instead of carrying them over. */
+  removeScopes?: string;
+  /** Whose live grant to extend, when this machine cannot tell. */
+  owner?: string;
+  /** `false` (`--no-merge-grant`) sends --scopes verbatim. */
+  mergeGrant?: boolean;
   /** Derivative question text, requires --derived and --sources. */
   question?: string;
   derived?: string;
@@ -53,6 +69,181 @@ export interface RequestDeps {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   readProfile?: typeof readAppProfile;
+  createClient?: (gatewayUrl: string) => GrantUnionClient;
+}
+
+type GrantUnionClient = Pick<
+  GatewayClient,
+  "getGrant" | "listGrantsByUser" | "getBuilder"
+>;
+
+/**
+ * What a new request does to the app's live grant: the gateway keeps one
+ * grant per owner and app, and an approval replaces its scopes, so the
+ * request carries what the grant already covers.
+ */
+export type GrantUnionPlan = GrantUnion & {
+  status:
+    | "merged"
+    | "no_live_grant"
+    | "owner_unknown"
+    | "owner_ambiguous"
+    | "disabled"
+    | "unavailable";
+  owner?: string;
+  grantId?: string;
+  reason?: string;
+};
+
+const GRANT_LOOKUP_TIMEOUT_MS = 5_000;
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("timed out")), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Work out whose live grant to extend and merge it.
+ *
+ * The person is anonymous until they approve, so the owner comes from
+ * `--owner` or from an earlier approval of this app key on this machine.
+ * Grant ids are one per owner and app, so two different grant ids mean two
+ * different people approved, and merging either one's scopes would ask the
+ * other for data they never granted: that case is left to the approval
+ * page, which signs the union for whoever actually approves.
+ *
+ * Never throws for the network: an unreachable gateway sends the request
+ * with --scopes only.
+ */
+export async function planGrantUnion(input: {
+  scopes: string[];
+  removeScopes: string[];
+  owner?: string;
+  merge: boolean;
+  appAddress: string;
+  network: string;
+  gatewayUrl: string;
+  requests: RequestsStore;
+  createClient: (gatewayUrl: string) => GrantUnionClient;
+}): Promise<GrantUnionPlan> {
+  const requestedOnly = unionGrantScopes([], input.scopes, input.removeScopes);
+  if (!input.merge) {
+    return { status: "disabled", ...requestedOnly };
+  }
+
+  let grantIds: string[] = [];
+  if (!input.owner) {
+    grantIds = [
+      ...new Set(
+        input.requests
+          .list({ appAddress: input.appAddress, network: input.network })
+          .filter(
+            (entry) => entry.grantId && entry.gatewayUrl === input.gatewayUrl,
+          )
+          .map((entry) => entry.grantId!.toLowerCase()),
+      ),
+    ];
+    if (grantIds.length === 0) {
+      return {
+        status: "owner_unknown",
+        reason: "no earlier approval for this app on this machine",
+        ...requestedOnly,
+      };
+    }
+    if (grantIds.length > 1) {
+      return {
+        status: "owner_ambiguous",
+        reason: `${grantIds.length} different people approved this app; pass --owner to extend one person's grant`,
+        ...requestedOnly,
+      };
+    }
+  }
+
+  try {
+    const client = input.createClient(input.gatewayUrl);
+    let owner = input.owner;
+    let granteeId: string | undefined;
+    if (!owner) {
+      const previous = await withTimeout(
+        client.getGrant(grantIds[0]!),
+        GRANT_LOOKUP_TIMEOUT_MS,
+      );
+      if (!previous) {
+        return {
+          status: "owner_unknown",
+          reason: `the gateway has no grant ${grantIds[0]}`,
+          ...requestedOnly,
+        };
+      }
+      owner = previous.grantorAddress;
+      granteeId = previous.granteeId;
+    }
+    const merged = await withTimeout(
+      mergeWithLiveGrant({
+        gateway: client,
+        owner,
+        ...(granteeId ? { granteeId } : { appAddress: input.appAddress }),
+        scopes: input.scopes,
+        removeScopes: input.removeScopes,
+      }),
+      GRANT_LOOKUP_TIMEOUT_MS,
+    );
+    return { ...merged, owner };
+  } catch (error) {
+    return {
+      status: "unavailable",
+      reason: `the gateway was not reached (${error instanceof Error ? error.message : String(error)})`,
+      ...(input.owner ? { owner: input.owner } : {}),
+      ...requestedOnly,
+    };
+  }
+}
+
+/** The kept/added/removed lists every outcome of a request carries. */
+function grantUnionData(plan: GrantUnionPlan): Record<string, unknown> {
+  return {
+    kept: plan.kept,
+    added: plan.added,
+    removed: plan.removed,
+    grantUnion: {
+      status: plan.status,
+      owner: plan.owner ?? null,
+      grantId: plan.grantId ?? null,
+      ...(plan.reason ? { reason: plan.reason } : {}),
+      notCarried: plan.notCarried,
+    },
+  };
+}
+
+function describePlan(plan: GrantUnionPlan): string {
+  const list = (entries: string[]) => entries.join(", ") || "nothing";
+  const lines: string[] = [];
+  if (plan.status === "merged") {
+    lines.push(`  Live grant  ${plan.grantId} (owner ${plan.owner})`);
+  } else if (plan.status === "no_live_grant") {
+    lines.push(`  Live grant  none for owner ${plan.owner}`);
+  } else if (plan.status !== "disabled") {
+    lines.push(
+      `  Live grant  not read: ${plan.reason}. The approval page keeps what the approver already granted.`,
+    );
+  }
+  lines.push(`  Keeping     ${list(plan.kept)}`);
+  lines.push(`  Adding      ${list(plan.added)}`);
+  if (plan.removed.length > 0 || plan.status !== "merged") {
+    lines.push(`  Removing    ${list(plan.removed)}`);
+  }
+  if (plan.notCarried.length > 0) {
+    lines.push(
+      `  Not carried ${plan.notCarried.join(", ")} (this request cannot hold these; the approval page decides)`,
+    );
+  }
+  return `\n${lines.join("\n")}\n`;
 }
 
 const POLL_INTERVAL_MS = 3_000;
@@ -192,6 +383,59 @@ export async function runAppRequest(
   // What `vana app register --app-name/--app-url` remembered for this key.
   const profile = (deps.readProfile ?? readAppProfile)(key.address);
 
+  const removeScopes = splitList(options.removeScopes);
+  if (options.owner && !ADDRESS.test(options.owner)) {
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "bad_usage",
+      message: `--owner ${options.owner} is not an address.`,
+      network: network.name,
+    });
+  }
+  const requests = deps.requests ?? createRequestsStore();
+  let plan: GrantUnionPlan;
+  try {
+    plan = await planGrantUnion({
+      scopes,
+      removeScopes,
+      owner: options.owner,
+      merge: options.mergeGrant !== false,
+      appAddress: key.address,
+      network: network.name,
+      gatewayUrl: network.gatewayUrl,
+      requests,
+      createClient: deps.createClient ?? createGatewayClient,
+    });
+  } catch (error) {
+    if (error instanceof GrantUnionConflictError) {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "bad_usage",
+        message: error.message,
+        network: network.name,
+      });
+    }
+    throw error;
+  }
+  // A question's source may not also be a raw read on the same request (the
+  // service refuses it: the person is told the app will not see the
+  // sources), so a live raw read of one is left for the approval page.
+  const carriedSources = sourceScopes.filter((scope) =>
+    plan.kept.includes(scope),
+  );
+  if (carriedSources.length > 0) {
+    plan = {
+      ...plan,
+      scopes: plan.scopes.filter((scope) => !carriedSources.includes(scope)),
+      kept: plan.kept.filter((scope) => !carriedSources.includes(scope)),
+      notCarried: [...plan.notCarried, ...carriedSources],
+    };
+  }
+  const requestScopes = plan.scopes;
+  if (!options.json && !options.quiet) {
+    process.stderr.write(describePlan(plan));
+  }
+
   const controller = (deps.createController ?? createDirectDataController)({
     // The dev host set serves moksha; production serves both networks.
     env: network.env === "dev" ? "dev" : "production",
@@ -204,13 +448,18 @@ export async function runAppRequest(
         options.appUrl ?? profile.url ?? "https://github.com/vana-com/vana-cli",
     },
     source: resolveSourceKey(scopes, options.derived, sourceScopes),
-    scopes,
+    scopes: requestScopes,
   });
 
-  const requests = deps.requests ?? createRequestsStore();
   let created;
   try {
+    // `removeScopes` tells the approval page to leave those entries out of
+    // the union it signs. SDK 4.0.0 drops the field; it is sent from the
+    // SDK release that adds it (vana-sdk#215).
+    const extra: Record<string, unknown> =
+      removeScopes.length > 0 ? { removeScopes } : {};
     created = await controller.createAccessRequest({
+      ...extra,
       returnUrl: options.returnUrl ?? "https://github.com/vana-com/vana-cli",
       ...(options.question && options.derived
         ? {
@@ -241,7 +490,8 @@ export async function runAppRequest(
     appAddress: key.address,
     network: network.name,
     gatewayUrl: network.gatewayUrl,
-    scopes,
+    scopes: requestScopes,
+    ...(removeScopes.length > 0 ? { removeScopes } : {}),
     approvalUrl: created.approvalUrl,
     createdAt: new Date().toISOString(),
     status: "pending",
@@ -263,8 +513,9 @@ export async function runAppRequest(
       data: {
         requestId: created.requestId,
         approvalUrl: created.approvalUrl,
-        scopes,
+        scopes: requestScopes,
         expiresAt: created.expiresAt ?? null,
+        ...grantUnionData(plan),
       },
     });
   }
@@ -307,11 +558,11 @@ export async function runAppRequest(
           code: "grant_invalid",
           message: `The request was ${status.status}.`,
           network: network.name,
-          data: { requestId: created.requestId },
+          data: { requestId: created.requestId, ...grantUnionData(plan) },
         });
       }
 
-      const approvedScopes = status.scopes ?? scopes;
+      const approvedScopes = status.scopes ?? requestScopes;
       const nextScope =
         options.derived && approvedScopes.includes(options.derived)
           ? options.derived
@@ -330,6 +581,7 @@ export async function runAppRequest(
           scopes: approvedScopes,
           delivery: status.delivery ?? "personal_server",
           personalServerUrl: status.personalServerUrl ?? null,
+          ...grantUnionData(plan),
         },
       });
     }
@@ -345,6 +597,7 @@ export async function runAppRequest(
     data: {
       requestId: created.requestId,
       approvalUrl: created.approvalUrl,
+      ...grantUnionData(plan),
     },
   });
 }

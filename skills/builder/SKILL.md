@@ -63,6 +63,18 @@ vana app request --scopes spotify.savedTracks,spotify.playlists --json
 Waits up to ten minutes by default (`--timeout <seconds>`). On approval the
 outcome carries `grantId` and the exact read command in `remedy`.
 
+One grant per owner and app: an approval replaces the grant's scopes, it
+does not add a second grant. So when this machine already holds an approval
+for the app key, `request` reads that live grant and asks for the union, and
+prints what it keeps, adds and removes before creating the request. Give up
+a scope with `--remove-scopes a,b`; pick whose grant to extend with
+`--owner <address>` when more than one person approved; send `--scopes`
+verbatim with `--no-merge-grant`. `--json` carries `kept`, `added`,
+`removed` and `grantUnion.status` (`merged`, `no_live_grant`,
+`owner_unknown`, `owner_ambiguous`, `disabled`, `unavailable`). With no
+earlier approval the person is unknown until they approve, and the approval
+page keeps what they already granted.
+
 When no human is watching the terminal, do not block:
 
 ```bash
