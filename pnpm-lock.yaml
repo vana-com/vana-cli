@@ -17,8 +17,8 @@ importers:
         specifier: ^1.27.1
         version: 1.27.1(zod@4.3.6)
       "@opendatalabs/vana-sdk":
-        specifier: 4.0.0
-        version: 4.0.0(bufferutil@4.1.0)(react@19.2.4)(typescript@5.7.3)(utf-8-validate@5.0.10)
+        specifier: 4.3.1
+        version: 4.3.1(bufferutil@4.1.0)(react@19.2.4)(typescript@5.7.3)(utf-8-validate@5.0.10)
       "@sigstore/bundle":
         specifier: ^5.0.0
         version: 5.0.0
@@ -2583,10 +2583,10 @@ packages:
         integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==,
       }
 
-  "@opendatalabs/vana-sdk@4.0.0":
+  "@opendatalabs/vana-sdk@4.3.1":
     resolution:
       {
-        integrity: sha512-a53SwjfB+jDvKnB+AIyF2tM5YwqPQQdKVEekSYr93a4R1W/79Efs+9TuZtX3aC3rzUUYbuJXIZ9KzFrcW7Vjqg==,
+        integrity: sha512-IUc/MuQoeG01edhVDZKa3egeBDqWr9CK9Wz2enx51XazPXAQeuQrlj8ess2hTI4SgN/cVKbDQglFQ81Kx7dDOA==,
       }
     engines: { node: ">=22.0.0" }
     peerDependencies:
@@ -14655,7 +14655,7 @@ snapshots:
 
   "@open-draft/until@2.1.0": {}
 
-  "@opendatalabs/vana-sdk@4.0.0(bufferutil@4.1.0)(react@19.2.4)(typescript@5.7.3)(utf-8-validate@5.0.10)":
+  "@opendatalabs/vana-sdk@4.3.1(bufferutil@4.1.0)(react@19.2.4)(typescript@5.7.3)(utf-8-validate@5.0.10)":
     dependencies:
       "@noble/hashes": 1.8.0
       "@noble/secp256k1": 2.3.0
@@ -17259,14 +17259,14 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.0.3
 
-  "@vitest/mocker@4.0.18(msw@2.12.10(@types/node@20.19.33)(typescript@5.7.3))(vite@7.3.1(@types/node@25.2.2)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))":
+  "@vitest/mocker@4.0.18(msw@2.12.10(@types/node@20.19.33)(typescript@5.7.3))(vite@7.3.1(@types/node@20.19.33)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))":
     dependencies:
       "@vitest/spy": 4.0.18
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
       msw: 2.12.10(@types/node@20.19.33)(typescript@5.7.3)
-      vite: 7.3.1(@types/node@25.2.2)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2)
+      vite: 7.3.1(@types/node@20.19.33)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2)
 
   "@vitest/mocker@4.0.18(msw@2.12.10(@types/node@25.2.2)(typescript@5.7.3))(vite@7.3.1(@types/node@25.2.2)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))":
     dependencies:
@@ -22561,7 +22561,7 @@ snapshots:
   vitest@4.0.18(@types/node@20.19.33)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@1.8.0))(lightningcss@1.30.2)(msw@2.12.10(@types/node@20.19.33)(typescript@5.7.3))(yaml@2.8.2):
     dependencies:
       "@vitest/expect": 4.0.18
-      "@vitest/mocker": 4.0.18(msw@2.12.10(@types/node@20.19.33)(typescript@5.7.3))(vite@7.3.1(@types/node@25.2.2)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))
+      "@vitest/mocker": 4.0.18(msw@2.12.10(@types/node@20.19.33)(typescript@5.7.3))(vite@7.3.1(@types/node@20.19.33)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))
       "@vitest/pretty-format": 4.0.18
       "@vitest/runner": 4.0.18
       "@vitest/snapshot": 4.0.18

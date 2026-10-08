@@ -898,6 +898,31 @@ describe("vana app request - extending the live grant", () => {
     );
   });
 
+  it("refuses a malformed --remove-scopes entry before any call", async () => {
+    const exitCode = await runAppRequest(
+      {
+        json: true,
+        noInput: true,
+        scopes: "whoop.recovery",
+        removeScopes: "delete:oura.sleep",
+      },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        createClient: () => {
+          throw new Error("must not read the gateway");
+        },
+        createController: () => {
+          throw new Error("must not create a request");
+        },
+      },
+    );
+    expect(exitCode).toBe(2);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).message).toContain(
+      "--remove-scopes delete:oura.sleep",
+    );
+  });
+
   it("leaves a live raw read of a question's source out of the request", async () => {
     // The service refuses a source that is also a raw read on the request.
     const gw = liveGateway(["github.repositories", "oura.sleep"]);

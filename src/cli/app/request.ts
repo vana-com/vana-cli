@@ -15,7 +15,10 @@ import {
   createGatewayClient,
   type GatewayClient,
 } from "@opendatalabs/vana-sdk";
-import { createDirectDataController } from "@opendatalabs/vana-sdk/server";
+import {
+  createDirectDataController,
+  parseScopeEntry,
+} from "@opendatalabs/vana-sdk/server";
 import {
   AppKeyMissingError,
   resolveAppKey,
@@ -34,6 +37,7 @@ import {
 } from "../../core/requests-store.js";
 import { readAppProfile } from "../../core/app-profile.js";
 import {
+  assertNoGrantUnionConflict,
   GrantUnionConflictError,
   mergeWithLiveGrant,
   unionGrantScopes,
@@ -132,6 +136,7 @@ export async function planGrantUnion(input: {
   requests: RequestsStore;
   createClient: (gatewayUrl: string) => GrantUnionClient;
 }): Promise<GrantUnionPlan> {
+  assertNoGrantUnionConflict(input.scopes, input.removeScopes);
   const requestedOnly = unionGrantScopes([], input.scopes, input.removeScopes);
   if (!input.merge) {
     return { status: "disabled", ...requestedOnly };
@@ -384,6 +389,19 @@ export async function runAppRequest(
   const profile = (deps.readProfile ?? readAppProfile)(key.address);
 
   const removeScopes = splitList(options.removeScopes);
+  for (const entry of removeScopes) {
+    try {
+      // Grammar only: a wildcard such as `chatgpt.*` is a valid removal.
+      parseScopeEntry(entry);
+    } catch (error) {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "bad_usage",
+        message: `--remove-scopes ${entry}: ${error instanceof Error ? error.message : String(error)}`,
+        network: network.name,
+      });
+    }
+  }
   if (options.owner && !ADDRESS.test(options.owner)) {
     return emitAppOutcome(options, {
       status: "failed",
@@ -454,12 +472,10 @@ export async function runAppRequest(
   let created;
   try {
     // `removeScopes` tells the approval page to leave those entries out of
-    // the union it signs. SDK 4.0.0 drops the field; it is sent from the
-    // SDK release that adds it (vana-sdk#215).
-    const extra: Record<string, unknown> =
-      removeScopes.length > 0 ? { removeScopes } : {};
+    // the union it signs. No `owner` is passed: the union above is already
+    // merged into the controller's scopes, so the controller sends them as is.
     created = await controller.createAccessRequest({
-      ...extra,
+      ...(removeScopes.length > 0 ? { removeScopes } : {}),
       returnUrl: options.returnUrl ?? "https://github.com/vana-com/vana-cli",
       ...(options.question && options.derived
         ? {
