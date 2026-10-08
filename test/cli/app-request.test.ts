@@ -642,3 +642,320 @@ describe("vana app requests", () => {
     );
   });
 });
+
+describe("vana app request - extending the live grant", () => {
+  const OWNER = "0x00000000000000000000000000000000000000aa";
+  const BUILDER = `0x${"ab".repeat(32)}`;
+
+  /** A store that already holds one approved request, so the owner is known. */
+  function storeWithApproval(grantId = GRANT) {
+    const requests = store();
+    requests.save({
+      requestId: "dcr_earlier",
+      appAddress: account.address,
+      network: "mainnet",
+      gatewayUrl: "https://dp-rpc.vana.org",
+      scopes: ["oura.sleep"],
+      approvalUrl: "https://app.vana.org/approve/earlier",
+      createdAt: "2026-10-01T00:00:00Z",
+      status: "completed",
+      updatedAt: "2026-10-01T00:00:00Z",
+      grantId,
+    });
+    return requests;
+  }
+
+  function liveGateway(scopes: string[]) {
+    const liveGrant = {
+      id: GRANT,
+      grantorAddress: OWNER,
+      granteeId: BUILDER,
+      scopes,
+      revokedAt: null,
+      expired: false,
+      grantVersion: "3",
+    };
+    const client = {
+      getGrant: vi.fn(async () => liveGrant as never),
+      listGrantsByUser: vi.fn(async () => [liveGrant] as never),
+      getBuilder: vi.fn(async () => ({ id: BUILDER }) as never),
+    };
+    return { client, createClient: vi.fn(() => client) };
+  }
+
+  /** Controller stub recording the configured scopes and the create input. */
+  function recordingController() {
+    const seen: { scopes?: string[]; input?: Record<string, unknown> } = {};
+    const createController = ((config: { scopes: string[] }) => {
+      seen.scopes = config.scopes;
+      const inner = controller([{ status: "pending" }])() as {
+        createAccessRequest: (input: Record<string, unknown>) => unknown;
+      };
+      return {
+        ...inner,
+        createAccessRequest: async (input: Record<string, unknown>) => {
+          seen.input = input;
+          return inner.createAccessRequest(input);
+        },
+      };
+    }) as never;
+    return { seen, createController };
+  }
+
+  it("keeps what the live grant covers, adds the new scope, drops removals", async () => {
+    const requests = storeWithApproval();
+    const gw = liveGateway(["oura.sleep", "github.repositories"]);
+    const { seen, createController } = recordingController();
+    const exitCode = await runAppRequest(
+      {
+        json: true,
+        noInput: true,
+        scopes: "whoop.recovery",
+        removeScopes: "github.repositories",
+      },
+      {
+        resolveKey: () => appKey,
+        requests,
+        createClient: gw.createClient,
+        createController,
+      },
+    );
+    expect(exitCode).toBe(7);
+    expect(gw.client.listGrantsByUser).toHaveBeenCalledWith(OWNER);
+    expect(seen.scopes).toEqual(["oura.sleep", "whoop.recovery"]);
+    expect(seen.input).toMatchObject({ removeScopes: ["github.repositories"] });
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.data).toMatchObject({
+      scopes: ["oura.sleep", "whoop.recovery"],
+      kept: ["oura.sleep"],
+      added: ["whoop.recovery"],
+      removed: ["github.repositories"],
+      grantUnion: { status: "merged", owner: OWNER, grantId: GRANT },
+    });
+    expect(requests.get(REQUEST_ID)).toMatchObject({
+      scopes: ["oura.sleep", "whoop.recovery"],
+      removeScopes: ["github.repositories"],
+    });
+  });
+
+  it("prints what will be kept, added and removed before creating", async () => {
+    const gw = liveGateway(["oura.sleep", "github.repositories"]);
+    let stderr = "";
+    vi.mocked(process.stderr.write).mockImplementation((chunk) => {
+      stderr += String(chunk);
+      return true;
+    });
+    await runAppRequest(
+      {
+        noInput: true,
+        scopes: "whoop.recovery",
+        removeScopes: "github.repositories",
+      },
+      {
+        resolveKey: () => appKey,
+        requests: storeWithApproval(),
+        createClient: gw.createClient,
+        createController: controller([{ status: "pending" }]),
+      },
+    );
+    expect(stderr).toContain(`Live grant  ${GRANT} (owner ${OWNER})`);
+    expect(stderr).toContain("Keeping     oura.sleep");
+    expect(stderr).toContain("Adding      whoop.recovery");
+    expect(stderr).toContain("Removing    github.repositories");
+  });
+
+  it("reads nothing when this machine has no earlier approval", async () => {
+    const gw = liveGateway(["oura.sleep"]);
+    const { seen, createController } = recordingController();
+    await runAppRequest(
+      { json: true, noInput: true, scopes: "whoop.recovery" },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        createClient: gw.createClient,
+        createController,
+      },
+    );
+    expect(gw.createClient).not.toHaveBeenCalled();
+    expect(seen.scopes).toEqual(["whoop.recovery"]);
+    expect(seen.input).not.toHaveProperty("removeScopes");
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.data).toMatchObject({
+      kept: [],
+      added: ["whoop.recovery"],
+      grantUnion: { status: "owner_unknown" },
+    });
+  });
+
+  it("does not guess between two people who approved this app", async () => {
+    const requests = storeWithApproval();
+    requests.save({
+      ...requests.get("dcr_earlier")!,
+      requestId: "dcr_other",
+      grantId: `0x${"22".repeat(32)}`,
+    });
+    const gw = liveGateway(["oura.sleep"]);
+    const { seen, createController } = recordingController();
+    await runAppRequest(
+      { json: true, noInput: true, scopes: "whoop.recovery" },
+      {
+        resolveKey: () => appKey,
+        requests,
+        createClient: gw.createClient,
+        createController,
+      },
+    );
+    expect(gw.createClient).not.toHaveBeenCalled();
+    expect(seen.scopes).toEqual(["whoop.recovery"]);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.data).toMatchObject({
+      grantUnion: { status: "owner_ambiguous" },
+    });
+  });
+
+  it("uses --owner to pick whose grant to extend", async () => {
+    const gw = liveGateway(["oura.sleep"]);
+    const { seen, createController } = recordingController();
+    await runAppRequest(
+      { json: true, noInput: true, scopes: "whoop.recovery", owner: OWNER },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        createClient: gw.createClient,
+        createController,
+      },
+    );
+    expect(gw.client.getBuilder).toHaveBeenCalledWith(account.address);
+    expect(seen.scopes).toEqual(["oura.sleep", "whoop.recovery"]);
+  });
+
+  it("sends --scopes verbatim with --no-merge-grant", async () => {
+    const gw = liveGateway(["oura.sleep"]);
+    const { seen, createController } = recordingController();
+    await runAppRequest(
+      {
+        json: true,
+        noInput: true,
+        scopes: "whoop.recovery",
+        mergeGrant: false,
+      },
+      {
+        resolveKey: () => appKey,
+        requests: storeWithApproval(),
+        createClient: gw.createClient,
+        createController,
+      },
+    );
+    expect(gw.createClient).not.toHaveBeenCalled();
+    expect(seen.scopes).toEqual(["whoop.recovery"]);
+  });
+
+  it("still creates the request when the gateway is down", async () => {
+    const failing = {
+      getGrant: vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+      listGrantsByUser: vi.fn(),
+      getBuilder: vi.fn(),
+    };
+    const { seen, createController } = recordingController();
+    const exitCode = await runAppRequest(
+      { json: true, noInput: true, scopes: "whoop.recovery" },
+      {
+        resolveKey: () => appKey,
+        requests: storeWithApproval(),
+        createClient: () => failing as never,
+        createController,
+      },
+    );
+    expect(exitCode).toBe(7);
+    expect(seen.scopes).toEqual(["whoop.recovery"]);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.data).toMatchObject({
+      grantUnion: { status: "unavailable" },
+    });
+  });
+
+  it("refuses a scope that is both requested and removed", async () => {
+    const exitCode = await runAppRequest(
+      {
+        json: true,
+        noInput: true,
+        scopes: "whoop.recovery",
+        removeScopes: "whoop.recovery",
+      },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        createController: () => {
+          throw new Error("must not create a request");
+        },
+      },
+    );
+    expect(exitCode).toBe(2);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).message).toContain(
+      "both requested and removed",
+    );
+  });
+
+  it("refuses a malformed --remove-scopes entry before any call", async () => {
+    const exitCode = await runAppRequest(
+      {
+        json: true,
+        noInput: true,
+        scopes: "whoop.recovery",
+        removeScopes: "delete:oura.sleep",
+      },
+      {
+        resolveKey: () => appKey,
+        requests: store(),
+        createClient: () => {
+          throw new Error("must not read the gateway");
+        },
+        createController: () => {
+          throw new Error("must not create a request");
+        },
+      },
+    );
+    expect(exitCode).toBe(2);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).message).toContain(
+      "--remove-scopes delete:oura.sleep",
+    );
+  });
+
+  it("leaves a live raw read of a question's source out of the request", async () => {
+    // The service refuses a source that is also a raw read on the request.
+    const gw = liveGateway(["github.repositories", "oura.sleep"]);
+    const { seen, createController } = recordingController();
+    const exitCode = await runAppRequest(
+      {
+        json: true,
+        noInput: true,
+        question: "Which languages?",
+        derived: "myapp.languages",
+        sources: "github.repositories",
+      },
+      {
+        resolveKey: () => appKey,
+        requests: storeWithApproval(),
+        createClient: gw.createClient,
+        createController,
+      },
+    );
+    expect(exitCode).toBe(7);
+    expect(seen.scopes).toEqual(["oura.sleep", "myapp.languages"]);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.data).toMatchObject({
+      kept: ["oura.sleep"],
+      grantUnion: { notCarried: ["github.repositories"] },
+    });
+  });
+
+  it("rejects an --owner that is not an address", async () => {
+    const exitCode = await runAppRequest(
+      { json: true, noInput: true, scopes: "a.b", owner: "alice" },
+      { resolveKey: () => appKey, requests: store() },
+    );
+    expect(exitCode).toBe(2);
+  });
+});

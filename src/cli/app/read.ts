@@ -473,6 +473,10 @@ function emitReadSuccess(
  * than implying the read was free by protocol design. When the gateway
  * starts quoting a price, this is where the escrow path plugs in.
  *
+ * Since vana-sdk 4.2.0 the jobs client signs a quoted price on its own when
+ * the gateway answers 402. `maxPrice: "0"` keeps this leg from spending:
+ * a charged read stops before anything is signed, as `payment_required`.
+ *
  * Waking a cold sandbox takes seconds, so the inline wait is used and a
  * timeout is `not_ready` (exit 6) rather than a failure.
  */
@@ -499,6 +503,7 @@ async function runEnclaveRead(
       grantId: grantId as `0x${string}`,
       scope,
       wait: MAX_INLINE_WAIT_SECONDS,
+      maxPrice: "0",
     });
 
     const text = new TextDecoder().decode(result.body);
@@ -519,6 +524,22 @@ async function runEnclaveRead(
       server: "gateway job queue",
     });
   } catch (error) {
+    if (isPaymentRequired(error)) {
+      const details = error.details ?? {};
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "payment_required",
+        message:
+          "This enclave read is charged, and paying for enclave reads is not supported by this CLI yet. Nothing was signed or spent.",
+        network: network.name,
+        data: {
+          delivery: "enclave",
+          owner,
+          amount: details.amount ?? null,
+          asset: details.asset ?? null,
+        },
+      });
+    }
     return emitAppOutcome(options, {
       status: "failed",
       code: enclaveErrorCode(error),

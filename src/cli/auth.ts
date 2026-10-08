@@ -11,6 +11,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { getVanaHome } from "../core/paths.js";
+import { formatDisplayPath } from "./render/format.js";
 
 export interface VanaCredentials {
   account: {
@@ -63,6 +64,14 @@ export function getAuthFilePath(): string {
   }
   const safe = host.replace(/[^A-Za-z0-9.-]/g, "_");
   return path.join(getVanaHome(), `auth.${safe}.json`);
+}
+
+/**
+ * The line login prints after saving: the file this login actually went to,
+ * which follows VANA_HOME and the Account environment, home-shortened.
+ */
+export function credentialsSavedLine(): string {
+  return `Credentials saved to ${formatDisplayPath(getAuthFilePath())}`;
 }
 
 function normalizeCredentials(

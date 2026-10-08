@@ -59,7 +59,10 @@ vana app request --scopes github.repositories      # prints an approval URL, wai
 vana app read github.repositories --grant <id>     # signed read
 ```
 
-`request` returns the grant id once the person approves. `read` stops at
+`request` returns the grant id once the person approves. Asking the same
+person again extends their grant rather than replacing it: `request` keeps
+what the live grant already covers and prints what it keeps, adds and
+removes (`--remove-scopes` to give one up). `read` stops at
 exit 4 with the exact price before spending anything; add `--pay` to settle
 it from escrow and `--max-fee` to cap it. The rest of the group:
 

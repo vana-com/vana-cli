@@ -539,6 +539,9 @@ describe("vana app read, enclave delivery", () => {
       grantId: GRANT,
       scope: "github.repos",
       chainId: 14800,
+      // The jobs client signs a quoted price on its own; the CLI never lets
+      // an enclave read spend.
+      maxPrice: "0",
     });
     const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
     expect(outcome.data).toMatchObject({
@@ -571,6 +574,41 @@ describe("vana app read, enclave delivery", () => {
     const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
     expect(outcome.code).toBe("owner_not_ready");
     expect(outcome.remedy).toContain("Personal Server setup");
+  });
+
+  it("stops a charged enclave read at exit 4 without signing a payment", async () => {
+    const exitCode = await runAppRead(
+      "github.repos",
+      { json: true, grant: GRANT, pay: true },
+      {
+        resolveKey: () => appKey,
+        requests: enclaveRequests(),
+        receipts: store(),
+        createClient: () => grantClient(),
+        createJobs: (() => ({
+          readRaw: async () => {
+            const error = Object.assign(
+              new Error(
+                "The quoted price is above the maxPrice you set for this read",
+              ),
+              {
+                name: "PaymentRequiredError",
+                details: { amount: "1000", asset: "0xasset", maxPrice: "0" },
+              },
+            );
+            throw error;
+          },
+        })) as never,
+      },
+    );
+    expect(exitCode).toBe(4);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.code).toBe("payment_required");
+    expect(outcome.data).toMatchObject({
+      delivery: "enclave",
+      amount: "1000",
+      asset: "0xasset",
+    });
   });
 
   it("treats a waking sandbox as not ready, worth retrying", async () => {

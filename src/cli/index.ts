@@ -175,6 +175,7 @@ import {
   readStoredAuthFile,
   readStoredAccountAddress,
   saveCredentials,
+  credentialsSavedLine,
   clearCredentials,
   isExpired,
   formatAddress,
@@ -8045,7 +8046,7 @@ async function loginToPersonalServer(
     await updateCliConfig({ personalServerUrl: psUrl });
 
     renderer?.success(`Logged in to ${psUrl}`);
-    renderer?.detail("Credentials saved to ~/.vana/auth.json");
+    renderer?.detail(credentialsSavedLine());
     if (
       liveAccount &&
       liveAccount.address.toLowerCase() !== result.address.toLowerCase()
@@ -8286,7 +8287,7 @@ async function runLogin(
             );
           }
         }
-        renderer.detail("Credentials saved to ~/.vana/auth.json");
+        renderer.detail(credentialsSavedLine());
       },
       onExpired: () => {
         renderer.fail("Authorization expired");

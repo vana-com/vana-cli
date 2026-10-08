@@ -13,6 +13,7 @@ vi.mock("node:child_process", () => ({
 
 import {
   accountSessionToPreserve,
+  credentialsSavedLine,
   getAccountUrl,
   getAuthFilePath,
   getAuthTarget,
@@ -830,6 +831,38 @@ describe("getAccountUrl", () => {
       expect(loadCredentials()?.account.address).toBe("0xprod");
     } finally {
       process.env.HOME = originalHome;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("says where the login was really saved", async () => {
+    const home = await mkdtemp(join(tmpdir(), "vana-auth-line-"));
+    const original = {
+      home: process.env.HOME,
+      vanaHome: process.env.VANA_HOME,
+    };
+    try {
+      process.env.HOME = home;
+      delete process.env.VANA_HOME;
+      delete process.env.VANA_ENV;
+      delete process.env.VANA_ACCOUNT_URL;
+      expect(credentialsSavedLine()).toBe(
+        "Credentials saved to ~/.vana/auth.json",
+      );
+      process.env.VANA_ACCOUNT_URL = "https://account-dev.vana.org";
+      expect(credentialsSavedLine()).toBe(
+        "Credentials saved to ~/.vana/auth.account-dev.vana.org.json",
+      );
+      const elsewhere = await mkdtemp(join(tmpdir(), "vana-auth-home-"));
+      process.env.VANA_HOME = join(elsewhere, ".vana");
+      expect(credentialsSavedLine()).toBe(
+        `Credentials saved to ${join(elsewhere, ".vana", "auth.account-dev.vana.org.json")}`,
+      );
+      await rm(elsewhere, { recursive: true, force: true });
+    } finally {
+      process.env.HOME = original.home;
+      if (original.vanaHome === undefined) delete process.env.VANA_HOME;
+      else process.env.VANA_HOME = original.vanaHome;
       await rm(home, { recursive: true, force: true });
     }
   });
