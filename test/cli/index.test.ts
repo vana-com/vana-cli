@@ -2603,14 +2603,17 @@ describe("runCli", () => {
         owner: "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d",
       },
     });
-    mockLoadCredentials.mockReturnValue({
-      account: {
-        address: "0xbffbd3316ef8c6d8b8046151228c09840ae08d48",
-        session_token: "expired",
-        expires_at: "2026-01-01T00:00:00.000Z",
-      },
-      personal_server: null,
-    });
+    mockLoadCredentials.mockReturnValue(null);
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        account: {
+          address: "0xbffbd3316ef8c6d8b8046151228c09840ae08d48",
+          session_token: "expired",
+          expires_at: "2026-01-01T00:00:00.000Z",
+        },
+        personal_server: null,
+      }),
+    );
     mockConfirm.mockResolvedValueOnce(false);
 
     const { runCli } = await import("../../src/cli/index.js");
@@ -2691,9 +2694,32 @@ describe("runCli", () => {
       mockLoadCredentials.mockReturnValue(null);
     });
 
-    it.each([["--no-input"], ["--yes"], ["--ipc"]])(
-      "connect %s refuses to store data there",
-      async (flag) => {
+    function selectLogin(login: string) {
+      mockLoadCredentials.mockReturnValue(null);
+      mockReadFileSync.mockImplementation((file) => {
+        if (!/auth(?:\..+)?\.json$/.test(String(file)))
+          throw new Error("missing");
+        return JSON.stringify({
+          ...signedIn,
+          account: {
+            ...signedIn.account,
+            expires_at:
+              login === "expired"
+                ? "2000-01-01T00:00:00.000Z"
+                : signedIn.account.expires_at,
+          },
+        });
+      });
+    }
+
+    it.each(
+      ["current", "expired"].flatMap((login) =>
+        ["--no-input", "--yes", "--ipc"].map((flag) => [login, flag]),
+      ),
+    )(
+      "%s login, connect %s refuses to store data there",
+      async (login, flag) => {
+        selectLogin(login);
         const { runCli } = await import("../../src/cli/index.js");
         const exitCode = await runCli([
           "node",
@@ -2718,85 +2744,127 @@ describe("runCli", () => {
       },
     );
 
-    it("a scheduled collect --all stores nothing there and says why", async () => {
-      mockReadCliState.mockResolvedValue({
-        version: 1,
-        sources: {
-          github: {
-            connectorInstalled: true,
-            exportFrequency: "daily",
-            lastCollectedAt: "2020-01-01T00:00:00.000Z",
-            lastResultPath: "/tmp/results/github.json",
-            dataState: "collected_local",
+    it.each(["current", "expired"])(
+      "a scheduled collect --all stores nothing there with %s login",
+      async (login) => {
+        selectLogin(login);
+        mockReadCliState.mockResolvedValue({
+          version: 1,
+          sources: {
+            github: {
+              connectorInstalled: true,
+              exportFrequency: "daily",
+              lastCollectedAt: "2020-01-01T00:00:00.000Z",
+              lastResultPath: "/tmp/results/github.json",
+              dataState: "collected_local",
+            },
           },
-        },
-      });
-      const previous = process.env.VANA_SCHEDULED_RUN;
-      process.env.VANA_SCHEDULED_RUN = "1";
-      try {
+        });
+        const previous = process.env.VANA_SCHEDULED_RUN;
+        process.env.VANA_SCHEDULED_RUN = "1";
+        try {
+          const { runCli } = await import("../../src/cli/index.js");
+          const exitCode = await runCli([
+            "node",
+            "vana",
+            "collect",
+            "--all",
+            "--quiet",
+            "--no-input",
+          ]);
+
+          expect(exitCode).toBe(5);
+          expect(mockIngestResult).not.toHaveBeenCalled();
+          expect(stderr).toContain(
+            "Not storing your data: the Personal Server at http://localhost:8080 belongs to 0x99Bf...88d, not to you.",
+          );
+          expect(stderr).toContain("Pending data not synced");
+        } finally {
+          if (previous === undefined) delete process.env.VANA_SCHEDULED_RUN;
+          else process.env.VANA_SCHEDULED_RUN = previous;
+        }
+      },
+    );
+
+    it.each(["current", "expired"])(
+      "collect --all refuses pending-only uploads with %s login",
+      async (login) => {
+        selectLogin(login);
+        mockReadCliState.mockResolvedValue({
+          version: 1,
+          sources: {
+            github: {
+              connectorInstalled: true,
+              exportFrequency: "daily",
+              lastCollectedAt: "2999-01-01T00:00:00.000Z",
+              lastResultPath: "/tmp/results/github.json",
+              dataState: "collected_local",
+            },
+          },
+        });
         const { runCli } = await import("../../src/cli/index.js");
         const exitCode = await runCli([
           "node",
           "vana",
           "collect",
           "--all",
-          "--quiet",
-          "--no-input",
-        ]);
-
-        expect(exitCode).toBe(5);
-        expect(mockIngestResult).not.toHaveBeenCalled();
-        expect(stderr).toContain(
-          "Not storing your data: the Personal Server at http://localhost:8080 belongs to 0x99Bf...88d, not to you.",
-        );
-        expect(stderr).toContain("Pending data not synced");
-      } finally {
-        if (previous === undefined) delete process.env.VANA_SCHEDULED_RUN;
-        else process.env.VANA_SCHEDULED_RUN = previous;
-      }
-    });
-
-    it("server sync --no-input refuses; interactively it asks first", async () => {
-      mockReadCliState.mockResolvedValue({
-        version: 1,
-        sources: {
-          github: {
-            connectorInstalled: true,
-            lastResultPath: "/tmp/results/github.json",
-            dataState: "collected_local",
-          },
-        },
-      });
-      const { runCli } = await import("../../src/cli/index.js");
-      expect(
-        await runCli([
-          "node",
-          "vana",
-          "server",
-          "sync",
           "--no-input",
           "--json",
-        ]),
-      ).toBe(5);
-      expect(JSON.parse(stdout.trim())).toMatchObject({
-        error: "personal_server_not_yours",
-        owner: theirs,
-      });
-      expect(mockIngestResult).not.toHaveBeenCalled();
+        ]);
+        expect(exitCode).toBe(5);
+        expect(mockIngestResult).not.toHaveBeenCalled();
+        expect(JSON.parse(stdout.trim())).toMatchObject({
+          syncedPendingCount: 0,
+          sources: [{ source: "github", outcome: "sync_pending" }],
+        });
+      },
+    );
 
-      stdout = "";
-      mockConfirm.mockResolvedValueOnce(false);
-      expect(await runCli(["node", "vana", "server", "sync"])).toBe(5);
-      expect(mockConfirm).toHaveBeenCalledTimes(1);
-      expect(mockIngestResult).not.toHaveBeenCalled();
+    it.each(["current", "expired"])(
+      "server sync refuses or asks first with %s login",
+      async (login) => {
+        selectLogin(login);
+        mockReadCliState.mockResolvedValue({
+          version: 1,
+          sources: {
+            github: {
+              connectorInstalled: true,
+              lastResultPath: "/tmp/results/github.json",
+              dataState: "collected_local",
+            },
+          },
+        });
+        const { runCli } = await import("../../src/cli/index.js");
+        expect(
+          await runCli([
+            "node",
+            "vana",
+            "server",
+            "sync",
+            "--no-input",
+            "--json",
+          ]),
+        ).toBe(5);
+        expect(JSON.parse(stdout.trim())).toMatchObject({
+          error: "personal_server_not_yours",
+          owner: theirs,
+        });
+        expect(mockIngestResult).not.toHaveBeenCalled();
 
-      mockConfirm.mockResolvedValueOnce(true);
-      mockIngestResult.mockResolvedValue([
-        { type: "ingest-complete", source: "github" },
-      ]);
-      expect(await runCli(["node", "vana", "server", "sync"])).toBe(0);
-      expect(mockIngestResult).toHaveBeenCalledTimes(1);
-    });
+        stdout = "";
+        mockConfirm.mockResolvedValueOnce(false);
+        expect(await runCli(["node", "vana", "server", "sync"])).toBe(5);
+        expect(mockConfirm).toHaveBeenCalledTimes(1);
+        expect(mockIngestResult).not.toHaveBeenCalled();
+
+        mockConfirm.mockResolvedValueOnce(true);
+        mockIngestResult.mockResolvedValue([
+          { type: "ingest-complete", source: "github" },
+        ]);
+        expect(await runCli(["node", "vana", "server", "sync"])).toBe(0);
+        expect(mockIngestResult).toHaveBeenCalledTimes(1);
+      },
+    );
   });
 
   it("guides recovery for runtime errors during connect", async () => {
