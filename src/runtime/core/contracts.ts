@@ -86,6 +86,8 @@ export interface RuntimeInputRequest {
 export interface ConnectorRunRequest {
   connectorPath: string;
   source: string;
+  /** Output path for this run; defaults to the source's standard result path. */
+  resultPath?: string;
   noInput?: boolean;
   signal?: AbortSignal;
   onNeedInput?: (event: RuntimeInputRequest) => Promise<Record<string, string>>;

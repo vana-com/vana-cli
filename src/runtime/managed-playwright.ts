@@ -34,6 +34,8 @@ export interface RuntimeInstallResult {
 export interface RunConnectorOptions {
   connectorPath: string;
   source: string;
+  /** Output path for this run; defaults to the source's standard result path. */
+  resultPath?: string;
   pretty?: boolean;
   noInput?: boolean;
   signal?: AbortSignal;

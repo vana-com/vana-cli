@@ -42,7 +42,7 @@ beforeAll(() => {
 }, 60_000);
 
 interface Upload {
-  owner: string;
+  owner: string | null;
   authorization: string | undefined;
   body: unknown;
 }
@@ -60,9 +60,12 @@ describe("account-bound queued exports at the CLI boundary", () => {
   let executionFile: string;
   let server: http.Server;
   let url: string;
-  let owner: string;
+  let owner: string | null;
   let rejectUploads: boolean;
   let uploads: Upload[];
+  let stateAtUpload: any;
+  let rejectScope: string | undefined;
+  let uploadGate: (() => Promise<void>) | undefined;
 
   async function write(file: string, value: unknown) {
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -88,7 +91,10 @@ describe("account-bound queued exports at the CLI boundary", () => {
     });
   }
 
-  function run(args: string[]): Promise<CommandResult> {
+  function run(
+    args: string[],
+    extra: NodeJS.ProcessEnv = {},
+  ): Promise<CommandResult> {
     return new Promise((resolve, reject) => {
       const child = spawn(process.execPath, ["dist/cli/bin.js", ...args], {
         cwd: repo,
@@ -102,7 +108,8 @@ describe("account-bound queued exports at the CLI boundary", () => {
           VANA_TELEMETRY_DISABLED: "1",
           VANA_PDPP_NODE: connectorNode,
           FAKE_EXECUTION_FILE: executionFile,
-          FAKE_RECORD_OWNER: owner,
+          FAKE_RECORD_OWNER: owner ?? "unknown",
+          ...extra,
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -140,6 +147,13 @@ describe("account-bound queued exports at the CLI boundary", () => {
       owner: A,
       authorization: `Bearer fake-ps-${A}`,
     });
+    expect(stateAtUpload.sources.fake).toMatchObject({
+      dataState: "collected_local",
+      exportReceipt: {
+        version: 1,
+        owner: { accountUrl: "https://account.vana.org", address: A },
+      },
+    });
     const before = await state();
     expect(before.sources.fake.dataState).toBe("ingest_failed");
     const resultPath = before.sources.fake.lastResultPath as string;
@@ -148,7 +162,12 @@ describe("account-bound queued exports at the CLI boundary", () => {
     const executions = await fs.readFile(executionFile, "utf8");
     rejectUploads = false;
     uploads = [];
-    return { resultPath, bytes, executions };
+    return {
+      resultPath,
+      bytes,
+      executions,
+      receipt: before.sources.fake.exportReceipt,
+    };
   }
 
   beforeEach(async () => {
@@ -158,6 +177,9 @@ describe("account-bound queued exports at the CLI boundary", () => {
     executionFile = path.join(root, "executions.log");
     uploads = [];
     rejectUploads = false;
+    rejectScope = undefined;
+    uploadGate = undefined;
+    stateAtUpload = undefined;
     server = http.createServer(async (request, response) => {
       response.setHeader("content-type", "application/json");
       if (request.url === "/health") {
@@ -175,8 +197,11 @@ describe("account-bound queued exports at the CLI boundary", () => {
           authorization: request.headers.authorization,
           body: JSON.parse(body),
         });
-        response.writeHead(rejectUploads ? 503 : 201);
-        response.end(rejectUploads ? '{"error":"interrupted upload"}' : "{}");
+        stateAtUpload = await state();
+        const rejected = rejectUploads || request.url === rejectScope;
+        await uploadGate?.();
+        response.writeHead(rejected ? 503 : 201);
+        response.end(rejected ? '{"error":"interrupted upload"}' : "{}");
       } else {
         response.writeHead(404);
         response.end("{}");
@@ -198,9 +223,13 @@ import readline from "node:readline";
 fs.appendFileSync(process.env.FAKE_EXECUTION_FILE, "run\\n");
 const input = readline.createInterface({ input: process.stdin });
 await input[Symbol.asyncIterator]().next();
+if (process.env.FAKE_WAIT_FILE) {
+  while (!fs.existsSync(process.env.FAKE_WAIT_FILE)) await new Promise((resolve) => setTimeout(resolve, 10));
+}
 const emit = (event) => process.stdout.write(JSON.stringify(event) + "\\n");
-emit({ type: "RECORD", stream: "profile", key: "fake", data: { owner: process.env.FAKE_RECORD_OWNER }, emitted_at: "2026-01-01T00:00:00Z" });
-emit({ type: "DONE", status: "succeeded", records_emitted: 1 });
+emit({ type: "RECORD", stream: "profile", key: "fake", data: { owner: process.env.FAKE_RECORD_OWNER, value: process.env.FAKE_RECORD_VALUE }, emitted_at: "2026-01-01T00:00:00Z" });
+if (process.env.FAKE_SECOND_STREAM) emit({ type: "RECORD", stream: "other", key: "other", data: { owner: process.env.FAKE_RECORD_OWNER }, emitted_at: "2026-01-01T00:00:00Z" });
+emit({ type: "DONE", status: "succeeded", records_emitted: process.env.FAKE_SECOND_STREAM ? 2 : 1 });
 await new Promise((resolve) => input.once("close", resolve));
 `,
     );
@@ -237,8 +266,11 @@ await new Promise((resolve) => input.once("close", resolve));
     expect.soft(await fs.readFile(queued.resultPath)).toEqual(queued.bytes);
     expect.soft((await state()).sources.fake.dataState).toBe("ingest_failed");
     expect
-      .soft(synced.stdout + synced.stderr)
-      .toMatch(/(owner|account|unattributed|attributed|belong)/i);
+      .soft((await state()).sources.fake.exportReceipt)
+      .toEqual(queued.receipt);
+    expect
+      .soft(JSON.parse(synced.stdout).error)
+      .toBe("pending_exports_blocked");
   });
 
   it.each([
@@ -285,5 +317,212 @@ await new Promise((resolve) => input.once("close", resolve));
     expect((await state()).sources.fake.dataState).toBe(
       "ingested_personal_server",
     );
+  });
+
+  it.each(["missing receipt", "malformed receipt"])(
+    "keeps a legacy export local and inspectable with %s",
+    async (kind) => {
+      const queued = await collectA();
+      const saved = await state();
+      saved.sources.fake.exportReceipt =
+        kind === "missing receipt" ? undefined : { owner: A };
+      await write(path.join(home, "vana-connect-state.json"), saved);
+      const synced = await run(["server", "sync", "--no-input", "--json"]);
+      expect(synced.code).toBe(5);
+      // copy-assertion-ok: re-login must not be offered as a repair for missing provenance.
+      expect(synced.stdout).toContain("receipt");
+      expect(synced.stdout).not.toContain("Sign in");
+      const inspected = await run(["data", "show", "fake", "--json"]);
+      expect(inspected.code).toBe(0);
+      expect(JSON.parse(inspected.stdout).path).toBe(queued.resultPath);
+      expect(inspected.stdout).toContain(A);
+      const collected = await run([
+        "connect",
+        "fake",
+        "--from",
+        checkout,
+        "--no-input",
+        "--json",
+      ]);
+      expect(collected.code).toBe(5);
+      expect(uploads).toEqual([]);
+      expect(await fs.readFile(queued.resultPath)).toEqual(queued.bytes);
+      expect(await fs.readFile(executionFile, "utf8")).toBe(queued.executions);
+    },
+  );
+
+  it.each([
+    "environment token",
+    "missing health owner",
+    "changed bytes",
+    "different deployment",
+  ])("refuses deferred upload with %s", async (kind) => {
+    const queued = await collectA();
+    let extra: NodeJS.ProcessEnv = {};
+    if (kind === "environment token")
+      extra = { VANA_SESSION_TOKEN: "fake-env-token" };
+    if (kind === "missing health owner") owner = null;
+    if (kind === "changed bytes") await fs.appendFile(queued.resultPath, " ");
+    if (kind === "different deployment") {
+      await fs.copyFile(
+        path.join(home, "auth.json"),
+        path.join(home, "auth.account-dev.vana.org.json"),
+      );
+      extra = { VANA_ENV: "dev" };
+    }
+    const beforeBytes = await fs.readFile(queued.resultPath);
+    const synced = await run(["server", "sync", "--no-input", "--json"], extra);
+    expect(synced.code, synced.stdout + synced.stderr).toBe(5);
+    expect(uploads).toEqual([]);
+    expect(await fs.readFile(queued.resultPath)).toEqual(beforeBytes);
+    expect((await state()).sources.fake.exportReceipt).toEqual(queued.receipt);
+  });
+
+  it("preserves fresh accountless upload to an explicit destination without assigning its owner to later retry", async () => {
+    owner = A;
+    const extra = { VANA_PS_TOKEN: "fake-explicit-ps-token" };
+    const collected = await run(
+      ["connect", "fake", "--from", checkout, "--no-input", "--json"],
+      extra,
+    );
+    expect(collected.code, collected.stdout + collected.stderr).toBe(0);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].authorization).toBe("Bearer fake-explicit-ps-token");
+    expect((await state()).sources.fake.exportReceipt.owner).toBeNull();
+    rejectUploads = true;
+    uploads = [];
+    await run(
+      ["connect", "fake", "--from", checkout, "--no-input", "--json"],
+      extra,
+    );
+    expect(uploads).toHaveLength(1);
+    expect((await state()).sources.fake.dataState).toBe("ingest_failed");
+    await login(A);
+    rejectUploads = false;
+    uploads = [];
+    const synced = await run(["server", "sync", "--no-input", "--json"]);
+    expect(synced.code).toBe(5);
+    expect(JSON.parse(synced.stdout).error).toBe("pending_exports_blocked");
+    expect(uploads).toEqual([]);
+  });
+
+  it("reports B's automatic and scheduled exclusion of a partially synced A export", async () => {
+    await login(A);
+    await write(path.join(checkout, "connectors/fake/manifest.json"), {
+      connector_key: "fake",
+      display_name: "Fake",
+      version: "0.0.1",
+      streams: [{ name: "profile" }, { name: "other" }],
+    });
+    rejectScope = "/v1/data/fake.other";
+    const partial = await run(
+      ["connect", "fake", "--from", checkout, "--no-input", "--json"],
+      {
+        FAKE_SECOND_STREAM: "1",
+      },
+    );
+    expect(partial.code, partial.stdout + partial.stderr).toBe(0);
+    const saved = await state();
+    expect(saved.sources.fake.dataState).toBe("ingested_personal_server");
+    expect(saved.sources.fake.ingestScopes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ scope: "fake.profile", status: "stored" }),
+        expect.objectContaining({ scope: "fake.other", status: "failed" }),
+      ]),
+    );
+    saved.sources.fake.exportFrequency = "daily";
+    await write(path.join(home, "vana-connect-state.json"), saved);
+    const bytes = await fs.readFile(saved.sources.fake.lastResultPath);
+    await login(B);
+    uploads = [];
+    for (const scheduled of [false, true]) {
+      const collected = await run(
+        ["collect", "--all", "--no-input", "--json"],
+        scheduled ? { VANA_SCHEDULED_RUN: "1" } : {},
+      );
+      expect(collected.code).toBe(5);
+      expect(JSON.parse(collected.stdout).sources).toEqual([
+        expect.objectContaining({
+          source: "fake",
+          outcome: "sync_pending",
+          error: expect.stringContaining(A),
+        }),
+      ]);
+    }
+    expect((await state()).lastScheduledRun).toMatchObject({
+      exitCode: 5,
+      sources: [{ source: "fake", outcome: "sync_pending" }],
+    });
+    expect(uploads).toEqual([]);
+    expect(await fs.readFile(saved.sources.fake.lastResultPath)).toEqual(bytes);
+  });
+
+  it("preserves A's admitted bytes when B's already-running collection loses publication", async () => {
+    await login(B);
+    const gate = path.join(root, "release-b");
+    const competing = run(
+      ["connect", "fake", "--from", checkout, "--no-input", "--json"],
+      { FAKE_WAIT_FILE: gate },
+    );
+    while (
+      !(await fs.readFile(executionFile, "utf8").catch(() => "")).includes(
+        "run",
+      )
+    )
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    const queued = await collectA();
+    await login(B);
+    await write(gate, "release");
+    const rejected = await competing;
+    expect(rejected.code, rejected.stdout + rejected.stderr).toBe(5);
+    const outcome = rejected.stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .find((event) => event.reason === "pending_export_changed");
+    expect(outcome.resultPath).not.toBe(queued.resultPath);
+    expect(await fs.readFile(outcome.resultPath, "utf8")).toContain(B);
+    expect(await fs.readFile(queued.resultPath)).toEqual(queued.bytes);
+    expect((await state()).sources.fake.exportReceipt).toEqual(queued.receipt);
+    expect(uploads).toEqual([]);
+  });
+
+  it("settles only the accepted generation when an earlier upload finishes after a newer collection", async () => {
+    await login(A);
+    rejectUploads = true;
+    let release!: () => void;
+    let posted!: () => void;
+    const firstPosted = new Promise<void>((resolve) => {
+      posted = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    uploadGate = async () => {
+      uploadGate = undefined;
+      posted();
+      await held;
+    };
+    const first = run(
+      ["connect", "fake", "--from", checkout, "--no-input", "--json"],
+      { FAKE_RECORD_VALUE: "first" },
+    );
+    await firstPosted;
+    const firstReceipt = (await state()).sources.fake.exportReceipt;
+    rejectUploads = false;
+    const second = await run(
+      ["connect", "fake", "--from", checkout, "--no-input", "--json"],
+      { FAKE_RECORD_VALUE: "second" },
+    );
+    expect(second.code, second.stdout + second.stderr).toBe(0);
+    const accepted = (await state()).sources.fake;
+    release();
+    expect((await first).code).toBe(5);
+    expect(accepted.exportReceipt.id).not.toBe(firstReceipt.id);
+    expect(await fs.readFile(firstReceipt.path, "utf8")).toContain("first");
+    expect(await fs.readFile(accepted.lastResultPath, "utf8")).toContain(
+      "second",
+    );
+    expect((await state()).sources.fake).toEqual(accepted);
   });
 });

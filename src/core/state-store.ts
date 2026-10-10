@@ -3,6 +3,11 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 import { getCliStatePath, getVanaHome } from "./paths.js";
+import {
+  pendingExportBlockReason,
+  readExportReceipt,
+} from "./source-export.js";
+import type { SourceExportReceipt } from "./source-export.js";
 
 const STATE_LOCK_TIMEOUT_MS = 5_000;
 const STATE_LOCK_RETRY_MS = 25;
@@ -16,6 +21,7 @@ let testHooks:
   | undefined;
 
 export interface StoredSourceState {
+  exportReceipt?: SourceExportReceipt;
   connectorInstalled?: boolean;
   connectorVersion?: string;
   exportFrequency?: string;
@@ -111,21 +117,44 @@ export async function readCliState(): Promise<CliStateFile> {
   }
 }
 
+type SourceExportGuard = { publish: SourceExportReceipt } | { settle: string };
+
+export function updateSourceState(
+  source: string,
+  patch: StoredSourceState,
+): Promise<void>;
+export function updateSourceState(
+  source: string,
+  patch: StoredSourceState,
+  exportGuard: SourceExportGuard,
+): Promise<boolean>;
 export async function updateSourceState(
   source: string,
   patch: StoredSourceState,
-): Promise<void> {
+  exportGuard?: SourceExportGuard,
+): Promise<void | boolean> {
   await fs.mkdir(getVanaHome(), { recursive: true });
-  await withStateFileLock(async () => {
+  return withStateFileLock(async () => {
     await testHooks?.beforeRead?.();
     const state = await readCliState();
     const current = state.sources[source] ?? {};
+    if (exportGuard) {
+      if ("publish" in exportGuard) {
+        if (pendingExportBlockReason(current, exportGuard.publish.owner))
+          return false;
+      } else if (
+        readExportReceipt(current.exportReceipt)?.id !== exportGuard.settle
+      ) {
+        return false;
+      }
+    }
     state.sources[source] = { ...current, ...patch };
     await testHooks?.beforeWrite?.();
     await atomicWriteFile(
       getCliStatePath(),
       `${JSON.stringify(state, null, 2)}\n`,
     );
+    return exportGuard ? true : undefined;
   });
 }
 

@@ -28,6 +28,28 @@ const mockReadCliState = vi.fn();
 const mockReadCliConfig = vi.fn();
 const mockUpdateCliConfig = vi.fn();
 const mockUpdateSourceState = vi.fn();
+const exportAccount = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+function ownedReceipt(resultPath: string, address = exportAccount) {
+  return {
+    version: 1,
+    id: "accepted-export",
+    path: resultPath,
+    sha256: "a".repeat(64),
+    owner: { accountUrl: "https://account.vana.org", address },
+  };
+}
+function selectExportAccount() {
+  mockReadFileSync.mockReturnValue(
+    JSON.stringify({
+      account: {
+        address: exportAccount,
+        session_token: "fake-account-token",
+        expires_at: "2999-01-01T00:00:00Z",
+      },
+      personal_server: null,
+    }),
+  );
+}
 const mockRecordScheduledRun = vi.fn();
 const mockConfirm = vi.fn();
 const mockInput = vi.fn();
@@ -405,6 +427,7 @@ describe("runCli", () => {
     mockResolvePersonalServerAuthConfig.mockReset();
     mockCreatePersonalServerClient.mockReset();
     mockUpdateSourceState.mockReset();
+    mockUpdateSourceState.mockResolvedValue(true);
     mockRecordScheduledRun.mockReset();
     mockRecordScheduledRun.mockResolvedValue(undefined);
     mockUpdateCliConfig.mockReset();
@@ -2866,9 +2889,15 @@ describe("runCli", () => {
 
         mockConfirm.mockResolvedValueOnce(true);
         mockIngestResult.mockResolvedValue([
-          { type: "ingest-complete", source: "github" },
+          {
+            type: "ingest-skipped",
+            source: "github",
+            reason: "export_unattributed",
+            message:
+              "The legacy export has no collection account receipt and stays local.",
+          },
         ]);
-        expect(await runCli(["node", "vana", "server", "sync"])).toBe(0);
+        expect(await runCli(["node", "vana", "server", "sync"])).toBe(5);
         expect(mockIngestResult).toHaveBeenCalledTimes(1);
       },
     );
@@ -2884,6 +2913,10 @@ describe("runCli", () => {
         sources: {
           github: {
             lastResultPath: "/tmp/results/github.json",
+            exportReceipt: ownedReceipt(
+              "/tmp/results/github.json",
+              signedIn.account.address,
+            ),
             dataState: "collected_local",
           },
         },
@@ -2907,7 +2940,7 @@ describe("runCli", () => {
     });
 
     it.each(["env", "accountless"])(
-      "preserves %s identity's unattended sync",
+      "keeps %s identity's unattributed pending export local",
       async (identity) => {
         if (identity === "env") {
           selectLogin("expired");
@@ -2923,7 +2956,13 @@ describe("runCli", () => {
           },
         });
         mockIngestResult.mockResolvedValue([
-          { type: "ingest-complete", source: "github" },
+          {
+            type: "ingest-skipped",
+            source: "github",
+            reason: "export_unattributed",
+            message:
+              "The export's collecting account is unknown; it stays local.",
+          },
         ]);
         const { runCli } = await import("../../src/cli/index.js");
         expect(
@@ -2935,13 +2974,13 @@ describe("runCli", () => {
             "--no-input",
             "--json",
           ]),
-        ).toBe(0);
+        ).toBe(5);
         expect(mockIngestResult).toHaveBeenCalledTimes(1);
         expect(mockConfirm).not.toHaveBeenCalled();
       },
     );
 
-    it("collect --all succeeds when a foreign server has no automatically retryable pending work", async () => {
+    it("collect --all reports a retained failed export even when it is not automatically retried", async () => {
       selectLogin("expired");
       mockReadCliState.mockResolvedValue({
         version: 1,
@@ -2963,11 +3002,16 @@ describe("runCli", () => {
           "--no-input",
           "--json",
         ]),
-      ).toBe(0);
+      ).toBe(5);
       expect(JSON.parse(stdout.trim())).toMatchObject({
         count: 0,
         syncedPendingCount: 0,
-        sources: [],
+        sources: [
+          expect.objectContaining({
+            source: "github",
+            outcome: "sync_pending",
+          }),
+        ],
       });
       expect(mockIngestResult).not.toHaveBeenCalled();
       expect(stderr).toBe("");
@@ -4222,6 +4266,7 @@ describe("runCli", () => {
         dataState: "ingest_failed",
         lastError: "server exploded",
       }),
+      { settle: expect.any(String) },
     );
   });
 
@@ -4276,6 +4321,7 @@ describe("runCli", () => {
         lastRunOutcome: "connected_and_ingested",
         dataState: "ingested_personal_server",
       }),
+      { settle: expect.any(String) },
     );
   });
 
@@ -4518,6 +4564,10 @@ describe("runCli", () => {
   });
 
   it("allows collect when previously connected", async () => {
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({ profile: { id: "fixture" } }),
+    );
+    selectExportAccount();
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },
     ]);
@@ -4531,6 +4581,7 @@ describe("runCli", () => {
           lastRunOutcome: "connected_local_only",
           dataState: "collected_local",
           lastResultPath: "/tmp/results/github.json",
+          exportReceipt: ownedReceipt("/tmp/results/github.json"),
         },
       },
     });
@@ -4553,6 +4604,10 @@ describe("runCli", () => {
   });
 
   it("titles a collect run Collect, not Connect", async () => {
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({ profile: { id: "fixture" } }),
+    );
+    selectExportAccount();
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },
     ]);
@@ -4565,6 +4620,7 @@ describe("runCli", () => {
           lastRunOutcome: "connected_local_only",
           dataState: "collected_local",
           lastResultPath: "/tmp/results/github.json",
+          exportReceipt: ownedReceipt("/tmp/results/github.json"),
         },
       },
     });
@@ -4669,9 +4725,11 @@ describe("runCli", () => {
     });
 
     it("server sync settles the failed outcome it fixed", async () => {
+      selectExportAccount();
       mockDetectPersonalServerTarget.mockResolvedValue({
         state: "available",
         url: "http://localhost:8080",
+        health: { owner: exportAccount },
       });
       mockReadCliState.mockResolvedValue({
         version: 1,
@@ -4680,6 +4738,7 @@ describe("runCli", () => {
             connectorInstalled: true,
             lastRunOutcome: "ingest_failed",
             lastResultPath: "/tmp/results/github.json",
+            exportReceipt: ownedReceipt("/tmp/results/github.json"),
             dataState: "ingest_failed",
             ingestScopes: [
               { scope: "github.repos", status: "failed", error: "HTTP 401" },
@@ -4705,6 +4764,7 @@ describe("runCli", () => {
           dataState: "ingested_personal_server",
           lastRunOutcome: "connected_and_ingested",
         }),
+        { settle: "accepted-export" },
       );
     });
   });
@@ -5152,6 +5212,10 @@ describe("runCli", () => {
     });
 
     it("collect runs a saved local connector, not the legacy runtime", async () => {
+      mockReadFile.mockResolvedValue(
+        JSON.stringify({ profile: { id: "fixture" } }),
+      );
+      selectExportAccount();
       // The entry needs a manual browser step; a headless Linux runner (CI)
       // has no display and would stop before the runtime is chosen.
       vi.stubEnv("DISPLAY", ":0");
@@ -5178,6 +5242,7 @@ describe("runCli", () => {
             lastRunOutcome: "connected_local_only",
             dataState: "collected_local",
             lastResultPath: "/tmp/results/slack_browser.json",
+            exportReceipt: ownedReceipt("/tmp/results/slack_browser.json"),
           },
         },
       });
@@ -5209,7 +5274,7 @@ describe("runCli", () => {
       expect(managedFetchCalls).toBe(0);
       // No --from: the runtime looks the saved entry up itself.
       expect(pdppRuntimeOptions).toEqual([
-        { from: undefined, owner: undefined },
+        { from: undefined, owner: exportAccount },
       ]);
       const events = stdout
         .trim()
@@ -5228,6 +5293,9 @@ describe("runCli", () => {
     });
 
     it("connect prints where a saved local connector runs from", async () => {
+      mockReadFile.mockResolvedValue(
+        JSON.stringify({ profile: { id: "fixture" } }),
+      );
       mockReadCliConfig.mockResolvedValue({
         localConnectors: { slack_browser: entry },
       });
@@ -5324,9 +5392,11 @@ describe("runCli", () => {
   });
 
   it("server sync succeeds with pending datasets", async () => {
+    selectExportAccount();
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
+      health: { owner: exportAccount },
     });
     mockReadCliState.mockResolvedValue({
       version: 1,
@@ -5334,6 +5404,7 @@ describe("runCli", () => {
         github: {
           connectorInstalled: true,
           lastResultPath: "/tmp/results/github.json",
+          exportReceipt: ownedReceipt("/tmp/results/github.json"),
           dataState: "collected_local",
         },
       },
@@ -5376,9 +5447,11 @@ describe("runCli", () => {
   });
 
   it("collect --all flushes pending sync work even when no sources are due", async () => {
+    selectExportAccount();
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
+      health: { owner: exportAccount },
     });
     mockReadCliState.mockResolvedValue({
       version: 1,
@@ -5388,6 +5461,7 @@ describe("runCli", () => {
           exportFrequency: "1d",
           lastCollectedAt: new Date().toISOString(),
           lastResultPath: "/tmp/results/github.json",
+          exportReceipt: ownedReceipt("/tmp/results/github.json"),
           dataState: "ingest_unavailable",
         },
       },
@@ -5417,7 +5491,12 @@ describe("runCli", () => {
         state: "available",
         url: "http://localhost:8080",
       }),
-      undefined,
+      {
+        export: {
+          kind: "retry",
+          receipt: ownedReceipt("/tmp/results/github.json"),
+        },
+      },
     );
 
     const parsed = JSON.parse(stdout.trim());
@@ -5433,15 +5512,18 @@ describe("runCli", () => {
           }),
         ]),
       }),
+      { settle: "accepted-export" },
     );
   });
 
   it("collect --all exits non-zero and says so on stderr when sync fails, even with --quiet", async () => {
+    selectExportAccount();
     // A scheduled run once printed nothing and exited 0 every night while
     // every source's sync was answered with a 401.
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
+      health: { owner: exportAccount },
     });
     mockReadCliState.mockResolvedValue({
       version: 1,
@@ -5451,6 +5533,7 @@ describe("runCli", () => {
           exportFrequency: "1d",
           lastCollectedAt: new Date().toISOString(),
           lastResultPath: "/tmp/results/github.json",
+          exportReceipt: ownedReceipt("/tmp/results/github.json"),
           dataState: "ingest_unavailable",
         },
       },
@@ -5682,6 +5765,7 @@ describe("runCli", () => {
           }),
         ]),
       }),
+      { settle: expect.any(String) },
     );
   });
 
@@ -5781,6 +5865,7 @@ describe("runCli", () => {
         dataState: "ingest_unavailable",
         lastResultPath: "/tmp/.vana/github-result.json",
       }),
+      { settle: expect.any(String) },
     );
     expect(stderr).toContain("Personal Server sync is pending.");
   });
@@ -5833,9 +5918,11 @@ describe("runCli", () => {
   });
 
   it("server sync re-ingests failed scopes", async () => {
+    selectExportAccount();
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
+      health: { owner: exportAccount },
     });
     mockReadCliState.mockResolvedValue({
       version: 1,
@@ -5843,6 +5930,7 @@ describe("runCli", () => {
         github: {
           connectorInstalled: true,
           lastResultPath: "/tmp/results/github.json",
+          exportReceipt: ownedReceipt("/tmp/results/github.json"),
           dataState: "ingested_personal_server",
           ingestScopes: [
             { scope: "github.profile", status: "stored" },
@@ -5870,7 +5958,13 @@ describe("runCli", () => {
         state: "available",
         url: "http://localhost:8080",
       }),
-      { scopes: ["github.starred"] },
+      {
+        scopes: ["github.starred"],
+        export: {
+          kind: "retry",
+          receipt: ownedReceipt("/tmp/results/github.json"),
+        },
+      },
     );
     const lines = stdout.trim().split("\n");
     const lastLine = JSON.parse(lines[lines.length - 1]);
@@ -5890,6 +5984,7 @@ describe("runCli", () => {
           }),
         ]),
       }),
+      { settle: "accepted-export" },
     );
   });
 
@@ -6370,9 +6465,11 @@ describe("runCli", () => {
   });
 
   it("server sync shows themed scope results with next step guidance", async () => {
+    selectExportAccount();
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
+      health: { owner: exportAccount },
     });
     mockReadCliState.mockResolvedValue({
       version: 1,
@@ -6380,6 +6477,7 @@ describe("runCli", () => {
         github: {
           connectorInstalled: true,
           lastResultPath: "/tmp/results/github.json",
+          exportReceipt: ownedReceipt("/tmp/results/github.json"),
           dataState: "collected_local",
         },
       },
@@ -6741,9 +6839,11 @@ describe("runCli", () => {
   });
 
   it("server sync suggests retry when some scopes fail", async () => {
+    selectExportAccount();
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
+      health: { owner: exportAccount },
     });
     mockReadCliState.mockResolvedValue({
       version: 1,
@@ -6751,6 +6851,7 @@ describe("runCli", () => {
         github: {
           connectorInstalled: true,
           lastResultPath: "/tmp/results/github.json",
+          exportReceipt: ownedReceipt("/tmp/results/github.json"),
           dataState: "collected_local",
         },
       },
@@ -6783,9 +6884,11 @@ describe("runCli", () => {
   });
 
   it("server sync humanizes transport and scope validation errors", async () => {
+    selectExportAccount();
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
+      health: { owner: exportAccount },
     });
     mockReadCliState.mockResolvedValue({
       version: 1,
@@ -6793,6 +6896,7 @@ describe("runCli", () => {
         youtube: {
           connectorInstalled: true,
           lastResultPath: "/tmp/results/youtube.json",
+          exportReceipt: ownedReceipt("/tmp/results/youtube.json"),
           dataState: "collected_local",
         },
       },

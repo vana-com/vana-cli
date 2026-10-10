@@ -429,9 +429,10 @@ export function startInProcessConnectorRun({
           "data" in result
             ? (result as { data: unknown }).data
             : result;
-        const resultPath = getSourceResultPath(request.source);
+        const resultPath =
+          request.resultPath ?? getSourceResultPath(request.source);
         await ensureParentDir(resultPath);
-        await rotateResult(request.source);
+        if (!request.resultPath) await rotateResult(request.source);
         await fsp.writeFile(
           resultPath,
           `${JSON.stringify(exportData, null, 2)}\n`,
@@ -780,9 +781,10 @@ function createPageApi({
       }
       if (key === "result") {
         if (!runState.hasResult) {
-          const resultPath = getSourceResultPath(request.source);
+          const resultPath =
+            request.resultPath ?? getSourceResultPath(request.source);
           await ensureParentDir(resultPath);
-          await rotateResult(request.source);
+          if (!request.resultPath) await rotateResult(request.source);
           await fsp.writeFile(
             resultPath,
             `${JSON.stringify(value, null, 2)}\n`,
