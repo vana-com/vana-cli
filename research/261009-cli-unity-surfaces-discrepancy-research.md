@@ -2,6 +2,8 @@
 
 Date: 2026-10-09, Australia/Brisbane. Status: dated source baseline, not an accepted migration plan.
 
+**Correction, 2026-10-10:** this comparison used the design branch, not current dev/production. The MCP request page in finding 2 and the approving-owner grant union/removal portion of finding 4 were already in a successful 8 October production deployment before this note was written. Finding 4 also covered delivery acknowledgment, which remains a separate conditional gap. See the [latest-dev recheck and team-response assessment](./261010-cli-unity-team-response-review.md) for deployment evidence, all ten updated findings and the public-source/release tradeoffs around moving CLI into Unity. The dated baseline and verbatim discussion below are retained.
+
 Owner: this cross-repository research note in `vana-cli/research`. Revisit after changes to the producer/consumer contracts identified below; the owning source and current tests take precedence over this baseline. Existing Unity doctrine and upstream consolidation candidates remain at their current owners.
 
 ## Finding
