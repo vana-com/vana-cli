@@ -5,7 +5,6 @@ import { join } from "node:path";
 
 const mocks = vi.hoisted(() => ({
   readCliConfig: vi.fn(),
-  loadCredentials: vi.fn(),
   loadPersonalServerSession: vi.fn(),
   actualLoadPersonalServerSession: null as null | (() => unknown),
 }));
@@ -21,7 +20,6 @@ vi.mock("../../src/cli/auth.js", async () => {
   ).loadPersonalServerSession;
   return {
     ...actual,
-    loadCredentials: mocks.loadCredentials,
     loadPersonalServerSession: mocks.loadPersonalServerSession,
   };
 });
@@ -31,6 +29,7 @@ import {
   personalServerOwnerMismatch,
   resolvePersonalServerAuthConfig,
 } from "../../src/personal-server/index.js";
+import { getAuthFilePath, saveCredentials } from "../../src/cli/auth.js";
 
 const originalEnv = { ...process.env };
 const fetchMock = vi.fn<typeof fetch>();
@@ -38,8 +37,6 @@ const fetchMock = vi.fn<typeof fetch>();
 beforeEach(() => {
   mocks.readCliConfig.mockReset();
   mocks.readCliConfig.mockResolvedValue({});
-  mocks.loadCredentials.mockReset();
-  mocks.loadCredentials.mockReturnValue(null);
   mocks.loadPersonalServerSession.mockReset();
   mocks.loadPersonalServerSession.mockReturnValue(null);
   fetchMock.mockReset();
@@ -154,6 +151,14 @@ describe("resolvePersonalServerAuthConfig", () => {
 });
 
 describe("detectPersonalServerTarget", () => {
+  beforeEach(() => {
+    delete process.env.VANA_SESSION_TOKEN;
+  });
+
+  afterEach(async () => {
+    await rm(getAuthFilePath(), { force: true });
+  });
+
   it("falls back from an unreachable saved URL to the authenticated personal server URL", async () => {
     mocks.readCliConfig.mockResolvedValue({
       personalServerUrl: "https://dead.example.com",
@@ -189,88 +194,94 @@ describe("detectPersonalServerTarget", () => {
     });
   });
 
-  it("prefers a scanned server the signed-in account owns over the first to answer", async () => {
-    const mine = "0x1234567890abcdef1234567890abcdef12345678";
-    const theirs = "0x99bf14e94de7edb022e08528c5cdb627f73a988d";
-    mocks.loadCredentials.mockReturnValue({
-      account: {
-        address: mine,
-        session_token: "t",
-        expires_at: "2026-04-22T00:00:00.000Z",
-      },
-      personal_server: null,
-    });
+  it.each(["2099-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z"])(
+    "prefers a scanned server the saved account owns with Account expiry %s",
+    async (expiresAt) => {
+      const mine = "0x1234567890abcdef1234567890abcdef12345678";
+      const theirs = "0x99bf14e94de7edb022e08528c5cdb627f73a988d";
+      await saveCredentials({
+        account: {
+          address: mine,
+          session_token: "t",
+          expires_at: expiresAt,
+        },
+        personal_server: null,
+      });
 
-    const health = (owner: string) =>
-      new Response(
-        JSON.stringify({
-          status: "healthy",
-          version: "1.0.0",
-          uptime: 1,
-          owner,
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    // 8080 answers first but belongs to another identity.
-    fetchMock
-      .mockResolvedValueOnce(health(theirs))
-      .mockResolvedValueOnce(health(mine));
+      const health = (owner: string) =>
+        new Response(
+          JSON.stringify({
+            status: "healthy",
+            version: "1.0.0",
+            uptime: 1,
+            owner,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      // 8080 answers first but belongs to another identity.
+      fetchMock
+        .mockResolvedValueOnce(health(theirs))
+        .mockResolvedValueOnce(health(mine));
 
-    await expect(detectPersonalServerTarget()).resolves.toMatchObject({
-      url: "http://localhost:8081",
-      source: "scan",
-      health: { owner: mine },
-    });
-  });
+      await expect(detectPersonalServerTarget()).resolves.toMatchObject({
+        url: "http://localhost:8081",
+        source: "scan",
+        health: { owner: mine },
+      });
+    },
+  );
 
-  it("passes over a saved server of another account for one of ours", async () => {
-    // Two accounts' servers on one machine: auth.json still names A's.
-    const mine = "0xaff7000000000000000000000000000000000001";
-    const theirs = "0x99bf14e94de7edb022e08528c5cdb627f73a988d";
-    mocks.loadCredentials.mockReturnValue({
-      account: {
-        address: mine,
-        session_token: "t",
+  it.each(["2099-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z"])(
+    "passes over a saved foreign server with Account expiry %s",
+    async (expiresAt) => {
+      // Two accounts' servers on one machine: auth.json still names A's.
+      const mine = "0xaff7000000000000000000000000000000000001";
+      const theirs = "0x99bf14e94de7edb022e08528c5cdb627f73a988d";
+      await saveCredentials({
+        account: {
+          address: mine,
+          session_token: "t",
+          expires_at: expiresAt,
+        },
+        personal_server: null,
+      });
+      mocks.loadPersonalServerSession.mockReturnValue({
+        url: "http://localhost:8080",
+        session_token: "vana_ps_token",
         expires_at: "2999-01-01T00:00:00.000Z",
-      },
-      personal_server: null,
-    });
-    mocks.loadPersonalServerSession.mockReturnValue({
-      url: "http://localhost:8080",
-      session_token: "vana_ps_token",
-      expires_at: "2999-01-01T00:00:00.000Z",
-    });
-    const owners: Record<string, string> = {
-      "http://localhost:8080/health": theirs,
-      "http://localhost:8082/health": mine,
-    };
-    fetchMock.mockImplementation(async (input) => {
-      const owner = owners[String(input)];
-      if (!owner) throw new Error("nothing there");
-      return new Response(
-        JSON.stringify({ status: "healthy", version: "1", uptime: 1, owner }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    });
+      });
+      const owners: Record<string, string> = {
+        "http://localhost:8080/health": theirs,
+        "http://localhost:8082/health": mine,
+      };
+      fetchMock.mockImplementation(async (input) => {
+        const owner = owners[String(input)];
+        if (!owner) throw new Error("nothing there");
+        return new Response(
+          JSON.stringify({ status: "healthy", version: "1", uptime: 1, owner }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      });
 
-    await expect(detectPersonalServerTarget()).resolves.toMatchObject({
-      url: "http://localhost:8082",
-      source: "scan",
-      health: { owner: mine },
-    });
+      await expect(detectPersonalServerTarget()).resolves.toMatchObject({
+        url: "http://localhost:8082",
+        source: "scan",
+        health: { owner: mine },
+      });
 
-    // With ours down, the saved one is still reported, as someone else's.
-    delete owners["http://localhost:8082/health"];
-    await expect(detectPersonalServerTarget()).resolves.toMatchObject({
-      url: "http://localhost:8080",
-      source: "auth",
-      health: { owner: theirs },
-    });
-  });
+      // With ours down, the saved one is still reported, as someone else's.
+      delete owners["http://localhost:8082/health"];
+      await expect(detectPersonalServerTarget()).resolves.toMatchObject({
+        url: "http://localhost:8080",
+        source: "auth",
+        health: { owner: theirs },
+      });
+    },
+  );
 
   it("falls back to a server owned by someone else when nothing of ours answers", async () => {
     const theirs = "0x99bf14e94de7edb022e08528c5cdb627f73a988d";
-    mocks.loadCredentials.mockReturnValue({
+    await saveCredentials({
       account: {
         address: "0x1234567890abcdef1234567890abcdef12345678",
         session_token: "t",

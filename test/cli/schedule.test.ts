@@ -368,14 +368,23 @@ describe("collect --all outcome", () => {
   });
 
   it("names each failed source for the log", () => {
+    // copy-assertion-ok: distinguish a foreign-owner refusal from no server answering in the human failure log.
     expect(
       describeCollectAllFailures([
         { source: "a", outcome: "ok" },
         { source: "b", outcome: "sync_failed", error: "HTTP 401" },
+        {
+          source: "c",
+          outcome: "sync_pending",
+          error: "Server belongs to another account",
+        },
+        { source: "d", outcome: "sync_pending" },
       ]),
     ).toEqual([
-      "1 of 2 source(s) did not collect and sync:",
+      "3 of 4 source(s) did not collect and sync:",
       "  b: sync failed (HTTP 401)",
+      "  c: sync pending (Server belongs to another account)",
+      "  d: not synced, no Personal Server answered",
     ]);
     expect(
       describeCollectAllFailures([{ source: "a", outcome: "ok" }]),

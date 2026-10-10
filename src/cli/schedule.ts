@@ -360,9 +360,10 @@ export function classifyCollectedSource(
 
 /**
  * The exit code for a whole `collect --all`: OK only when every source it
- * touched collected and synced. When the only problem is that no Personal
- * Server answered, that is {@link CliExitCode.SERVER_UNAVAILABLE}; anything
- * else is {@link CliExitCode.FAILURE}.
+ * touched collected and synced. When the only problem is sync pending because
+ * no usable Personal Server answered, that is
+ * {@link CliExitCode.SERVER_UNAVAILABLE}; anything else is
+ * {@link CliExitCode.FAILURE}.
  */
 export function collectAllExitCode(
   results: readonly CollectAllSourceResult[],
@@ -384,13 +385,13 @@ export function describeCollectAllFailures(
     ok: "ok",
     collect_failed: "collection failed",
     sync_failed: "sync failed",
-    sync_pending: "not synced, no Personal Server answered",
+    sync_pending: "sync pending",
   };
   return [
     `${failures.length} of ${results.length} source(s) did not collect and sync:`,
     ...failures.map(
       (r) =>
-        `  ${r.source}: ${label[r.outcome]}${r.error ? ` (${r.error})` : ""}`,
+        `  ${r.source}: ${r.outcome === "sync_pending" && !r.error ? "not synced, no Personal Server answered" : label[r.outcome]}${r.error ? ` (${r.error})` : ""}`,
     ),
   ];
 }

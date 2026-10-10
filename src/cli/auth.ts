@@ -167,6 +167,15 @@ export function readStoredAccountAddress(): string | null {
 }
 
 /**
+ * The saved account for Personal Server ownership checks, even after expiry.
+ * An env token has unknown identity and overrides the saved account. This
+ * address is never authorization; tokens keep their own validity checks.
+ */
+export function loadAccountAddressForOwnership(): string | null {
+  return process.env.VANA_SESSION_TOKEN ? null : readStoredAccountAddress();
+}
+
+/**
  * Raw peek at auth.json ignoring expiry: the previous address and the
  * previous personal_server block. Login uses it to detect an account switch
  * and to carry a still-useful PS session across a same-account cloud

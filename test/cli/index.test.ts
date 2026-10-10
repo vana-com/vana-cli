@@ -2620,6 +2620,7 @@ describe("runCli", () => {
     const exitCode = await runCli(["node", "vana", "connect", "github"]);
 
     expect(exitCode).toBe(7);
+    // copy-assertion-ok: expired credentials must not present a past account as currently signed in.
     expect(stderr).toContain("Your vana login has expired");
     expect(stderr).toContain("Run `vana login` to check.");
     expect(stderr).not.toContain("you are signed in as");
@@ -2642,20 +2643,24 @@ describe("runCli", () => {
         owner: "0x99Bf14e94DE7edB022E08528C5Cdb627f73A988d",
       },
     });
-    mockLoadCredentials.mockReturnValue({
-      account: {
-        address: "0xbffbd3316ef8c6d8b8046151228c09840ae08d48",
-        session_token: "current",
-        expires_at: "2999-01-01T00:00:00.000Z",
-      },
-      personal_server: null,
-    });
+    mockLoadCredentials.mockReturnValue(null);
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        account: {
+          address: "0xbffbd3316ef8c6d8b8046151228c09840ae08d48",
+          session_token: "current",
+          expires_at: "2999-01-01T00:00:00.000Z",
+        },
+        personal_server: null,
+      }),
+    );
     mockConfirm.mockResolvedValueOnce(false);
 
     const { runCli } = await import("../../src/cli/index.js");
     const exitCode = await runCli(["node", "vana", "connect", "github"]);
 
     expect(exitCode).toBe(7);
+    // copy-assertion-ok: the current-login warning identifies the live account, unlike the expired-login warning.
     expect(stderr).toContain("but you are signed in as");
     mockLoadCredentials.mockReset();
     mockLoadCredentials.mockReturnValue(null);
@@ -2687,7 +2692,7 @@ describe("runCli", () => {
         { id: "github", name: "GitHub", authMode: "interactive" },
       ]);
       mockDetectPersonalServerTarget.mockResolvedValue(foreignTarget);
-      mockLoadCredentials.mockReturnValue(signedIn as never);
+      mockLoadCredentials.mockReturnValue(null);
     });
     afterEach(() => {
       mockLoadCredentials.mockReset();
@@ -2775,10 +2780,7 @@ describe("runCli", () => {
 
           expect(exitCode).toBe(5);
           expect(mockIngestResult).not.toHaveBeenCalled();
-          expect(stderr).toContain(
-            "Not storing your data: the Personal Server at http://localhost:8080 belongs to 0x99Bf...88d, not to you.",
-          );
-          expect(stderr).toContain("Pending data not synced");
+          expect(managedFetchCalls).toBe(0);
         } finally {
           if (previous === undefined) delete process.env.VANA_SCHEDULED_RUN;
           else process.env.VANA_SCHEDULED_RUN = previous;
@@ -2815,7 +2817,12 @@ describe("runCli", () => {
         expect(mockIngestResult).not.toHaveBeenCalled();
         expect(JSON.parse(stdout.trim())).toMatchObject({
           syncedPendingCount: 0,
-          sources: [{ source: "github", outcome: "sync_pending" }],
+          sources: [
+            {
+              source: "github",
+              outcome: "sync_pending",
+            },
+          ],
         });
       },
     );
@@ -2865,6 +2872,106 @@ describe("runCli", () => {
         expect(mockIngestResult).toHaveBeenCalledTimes(1);
       },
     );
+
+    it("keeps same-owner sync usable after Account expiry", async () => {
+      selectLogin("expired");
+      mockDetectPersonalServerTarget.mockResolvedValue({
+        ...foreignTarget,
+        health: { ...foreignTarget.health, owner: signedIn.account.address },
+      });
+      mockReadCliState.mockResolvedValue({
+        version: 1,
+        sources: {
+          github: {
+            lastResultPath: "/tmp/results/github.json",
+            dataState: "collected_local",
+          },
+        },
+      });
+      mockIngestResult.mockResolvedValue([
+        { type: "ingest-complete", source: "github" },
+      ]);
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli([
+          "node",
+          "vana",
+          "server",
+          "sync",
+          "--no-input",
+          "--json",
+        ]),
+      ).toBe(0);
+      expect(mockIngestResult).toHaveBeenCalledTimes(1);
+      expect(mockConfirm).not.toHaveBeenCalled();
+    });
+
+    it.each(["env", "accountless"])(
+      "preserves %s identity's unattended sync",
+      async (identity) => {
+        if (identity === "env") {
+          selectLogin("expired");
+          vi.stubEnv("VANA_SESSION_TOKEN", "env-token");
+        }
+        mockReadCliState.mockResolvedValue({
+          version: 1,
+          sources: {
+            github: {
+              lastResultPath: "/tmp/results/github.json",
+              dataState: "collected_local",
+            },
+          },
+        });
+        mockIngestResult.mockResolvedValue([
+          { type: "ingest-complete", source: "github" },
+        ]);
+        const { runCli } = await import("../../src/cli/index.js");
+        expect(
+          await runCli([
+            "node",
+            "vana",
+            "server",
+            "sync",
+            "--no-input",
+            "--json",
+          ]),
+        ).toBe(0);
+        expect(mockIngestResult).toHaveBeenCalledTimes(1);
+        expect(mockConfirm).not.toHaveBeenCalled();
+      },
+    );
+
+    it("collect --all succeeds when a foreign server has no automatically retryable pending work", async () => {
+      selectLogin("expired");
+      mockReadCliState.mockResolvedValue({
+        version: 1,
+        sources: {
+          github: {
+            lastResultPath: "/tmp/results/github.json",
+            dataState: "ingest_failed",
+          },
+          shop: { dataState: "collected_local" },
+        },
+      });
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli([
+          "node",
+          "vana",
+          "collect",
+          "--all",
+          "--no-input",
+          "--json",
+        ]),
+      ).toBe(0);
+      expect(JSON.parse(stdout.trim())).toMatchObject({
+        count: 0,
+        syncedPendingCount: 0,
+        sources: [],
+      });
+      expect(mockIngestResult).not.toHaveBeenCalled();
+      expect(stderr).toBe("");
+    });
   });
 
   it("guides recovery for runtime errors during connect", async () => {
