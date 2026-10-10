@@ -6,7 +6,10 @@ import { resolveScopes } from "./scope-resolver.js";
 import { createPersonalServerClient } from "./client.js";
 import { readCachedConnectorMetadata } from "../connectors/registry.js";
 import { getConnectorCacheDir } from "../core/paths.js";
-import { loadCredentials, loadPersonalServerSession } from "../cli/auth.js";
+import {
+  loadAccountAddressForOwnership,
+  loadPersonalServerSession,
+} from "../cli/auth.js";
 
 export { createPersonalServerClient } from "./client.js";
 export type {
@@ -96,7 +99,7 @@ export async function detectPersonalServerTarget(): Promise<PersonalServerTarget
   // 2. Auth credentials (from `vana login`). The saved server can be another
   // account's, kept across a login switch: then a server of this account
   // found by the scan below wins over it.
-  const account = loadCredentials()?.account?.address ?? null;
+  const account = loadAccountAddressForOwnership();
   const savedSession = loadPersonalServerSession();
   let savedForeign: PersonalServerTarget | null = null;
   if (savedSession?.url) {
@@ -118,7 +121,7 @@ export async function detectPersonalServerTarget(): Promise<PersonalServerTarget
 
   // 4. Localhost port scan. One machine can host servers for several
   // identities, so the first port to answer is not necessarily ours; prefer
-  // one the signed-in account owns and only fall back to a stranger's.
+  // one the saved account owns and only fall back to a stranger's.
   let unowned: PersonalServerTarget | null = null;
   for (const port of DEFAULT_PORTS) {
     const url = `http://localhost:${port}`;

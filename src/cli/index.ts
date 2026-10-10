@@ -170,6 +170,7 @@ import {
   isNewerVersion,
 } from "./update-check.js";
 import {
+  loadAccountAddressForOwnership,
   loadCredentials,
   loadPersonalServerSession,
   readStoredAuthFile,
@@ -1832,14 +1833,14 @@ async function runConnect(
     const credentials = loadCredentials();
     const mismatch = personalServerOwnerMismatch(
       target.health?.owner,
-      credentials?.account?.address,
+      loadAccountAddressForOwnership(),
     );
     if (mismatch) {
       // An expired login names whoever signed in last, which may be long
       // gone; say that, rather than claim a current identity.
       renderer?.detail(
-        credentials && isExpired(credentials)
-          ? `Your vana login has expired, so the CLI cannot check that the Personal Server at ${target.url} (owner ${formatAddress(mismatch.owner)}) is yours. Run \`vana login\` to check.`
+        !credentials
+          ? `Your vana login has expired or is unavailable, so the CLI cannot check that the Personal Server at ${target.url} (owner ${formatAddress(mismatch.owner)}) is yours. Run \`vana login\` to check.`
           : `The Personal Server at ${target.url} belongs to ${formatAddress(mismatch.owner)}, but you are signed in as ${formatAddress(mismatch.account)}.`,
       );
       if (cannotAskAboutForeignServer(options)) {
@@ -4766,12 +4767,22 @@ async function runCollectAll(options: GlobalOptions): Promise<number> {
   // may be another account's.
   const foreign = personalServerOwnerMismatch(
     target.health?.owner,
-    loadCredentials()?.account?.address,
+    loadAccountAddressForOwnership(),
   );
-  if (target.state === "available" && foreign && !options.json) {
-    process.stderr.write(
-      `Pending data not synced: the Personal Server at ${target.url} belongs to ${formatAddress(foreign.owner)}, not to you. Start yours with \`vana server start\`.\n`,
-    );
+  let blockedPendingCount = 0;
+  if (target.state === "available" && foreign) {
+    const after = await readCliState();
+    const error = `Pending data not synced: the Personal Server at ${target.url} belongs to ${formatAddress(foreign.owner)}, not to you. Start yours with \`vana server start\`.`;
+    for (const [source, stored] of Object.entries(after.sources)) {
+      if (!shouldRetryPendingSource(stored, "automatic")) continue;
+      blockedPendingCount++;
+      const prior = results.get(source)?.outcome;
+      if (prior === "collect_failed" || prior === "sync_failed") continue;
+      results.set(source, { source, outcome: "sync_pending", error });
+    }
+    if (blockedPendingCount > 0 && !options.json) {
+      process.stderr.write(`${error}\n`);
+    }
   }
   if (target.state === "available" && !foreign) {
     const synced = await syncPendingSources(target, "automatic");
@@ -4806,7 +4817,9 @@ async function runCollectAll(options: GlobalOptions): Promise<number> {
       const message =
         syncedPendingCount > 0
           ? `Synced ${syncedPendingCount} pending dataset(s).`
-          : "No sources are due for collection.";
+          : blockedPendingCount > 0
+            ? `${blockedPendingCount} pending dataset(s) not synced: the Personal Server belongs to another account.`
+            : "No sources are due for collection.";
       process.stdout.write(
         `${JSON.stringify({ message, count: 0, syncedPendingCount, sources: sourceResults })}\n`,
       );
@@ -4868,7 +4881,7 @@ async function runServerSync(options: GlobalOptions): Promise<number> {
 
   const mismatch = personalServerOwnerMismatch(
     target.health?.owner,
-    loadCredentials()?.account?.address,
+    loadAccountAddressForOwnership(),
   );
   if (mismatch) {
     let useIt = false;
