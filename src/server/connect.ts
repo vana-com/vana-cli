@@ -11,8 +11,9 @@ import { createDataClient } from "./data-client.js";
 /**
  * Creates a session on the Session Relay and returns the session ID, connect URL, and deep link URL.
  *
- * This is the entry point for the Vana Connect flow. The returned `connectUrl`
- * should be presented to the user to sign in on account.vana.org and launch Data Connect.
+ * @deprecated For current Account browser approval, use the Direct controller
+ * from `@opendatalabs/vana-sdk/server`. This legacy session-only Account URL
+ * does not satisfy current Account's OAuth client requirements.
  *
  * @param config - Connection configuration including private key and scopes.
  * @returns Session ID, connect URL, and expiration timestamp.

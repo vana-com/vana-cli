@@ -59,6 +59,9 @@ export interface UseVanaDataResult {
 }
 
 /**
+ * @deprecated For current Account browser approval, use `useDirectVanaConnect`
+ * from `@opendatalabs/vana-sdk/react`. This hook uses legacy Session Relay.
+ *
  * Full-flow hook that orchestrates the entire Vana Connect lifecycle:
  * session init, polling, and data fetching.
  *

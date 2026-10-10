@@ -1,0 +1,53 @@
+name: Next.js starter
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "examples/nextjs-starter/**"
+      - "test/examples/nextjs-starter.test.ts"
+      - "vitest.config.ts"
+      - "src/server/**"
+      - "src/core/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig*.json"
+      - ".github/workflows/nextjs-starter.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "examples/nextjs-starter/**"
+      - "test/examples/nextjs-starter.test.ts"
+      - "vitest.config.ts"
+      - "src/server/**"
+      - "src/core/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig*.json"
+      - ".github/workflows/nextjs-starter.yml"
+
+concurrency:
+  group: nextjs-starter-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      APP_URL: http://localhost:3001
+      VANA_ENV: dev
+      # Public Hardhat fixture identity. No hosted requests run during build.
+      VANA_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test test/examples/nextjs-starter.test.ts
+      - run: pnpm --filter nextjs-starter build
