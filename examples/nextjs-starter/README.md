@@ -1,52 +1,42 @@
-# Next.js Starter
+# Next.js starter
 
-Minimal Next.js app demonstrating the Vana Connect flow. Shows the server-side SDK (`connect()` + `getData()`) and client-side polling via `useVanaData()`.
+Connect ChatGPT data to a Next.js app through Vana approval. The starter uses `createDirectDataController` and `useDirectVanaConnect` from `@opendatalabs/vana-sdk` 4.3.1. App keys, scope selection, request signing, and Personal Server reads stay on the server.
 
-## Prerequisites
+## Run the app
 
-- A builder address registered on-chain via the Vana Gateway
-- A running Personal Server with `VANA_MASTER_KEY_SIGNATURE` set
+1. Register your app identity on the selected Vana network and obtain its app private key.
+2. Copy `.env.local.example` to `.env.local`.
+3. Set `VANA_PRIVATE_KEY` and `APP_URL`. The server also accepts `VANA_APP_PRIVATE_KEY` when `VANA_PRIVATE_KEY` is unset.
+4. Set `VANA_ENV=dev` for Moksha and `app-dev.vana.org`, or `VANA_ENV=prod` for mainnet and `app.vana.org`. Other values fail configuration.
+5. Run `pnpm install` from the repository root.
+6. Run `pnpm --filter nextjs-starter dev`.
+7. Open `http://localhost:3001` and click **Connect with Vana**.
+8. Approve the requested data in Vana. The starter automatically reads the approved ChatGPT conversations and displays the response in the original tab.
 
-## Setup
+The owner needs ChatGPT data available through their Personal Server. This app resolves the server from the approved request. It does not start or configure a Personal Server.
 
-```bash
-cp .env.local.example .env.local
-# Edit .env.local with your private key and APP_URL
-pnpm install
-pnpm dev   # Opens on http://localhost:3001
-```
+Set the app identity, `source`, and concrete scope in `src/config.ts` before adapting this example. The starter requests and reads `chatgpt.conversations`. The browser cannot select the scope, grant, server URL, or return URL. Keep `.env.local` private and never give the app key a `NEXT_PUBLIC_` prefix.
 
-## Environment Variables
+## Request flow
 
-| Variable           | Required | Description                             |
-| ------------------ | -------- | --------------------------------------- |
-| `VANA_PRIVATE_KEY` | Yes      | Builder private key registered on-chain |
-| `APP_URL`          | Yes      | Public URL of your deployed app         |
+`POST /api/connect` creates a signed Direct access request and returns the SDK's `AccessRequest`, including `requestId` and `approvalUrl`. `GET /api/status?requestId=...` fetches signed, uncached status. `POST /api/data` accepts only `{ "requestId": "dcr_..." }`, rechecks approval, and reads the configured scope through the SDK.
 
-> Scopes are configured in `src/config.ts`. Edit the `SCOPES` array to change which user data your app requests.
+The SDK opens the approval tab during the button click. If the popup is blocked, the starter shows **Open approval**. On supported mobile requests it shows the SDK's HTTPS **Open Vana** continuation link. The starter polls while approval is pending. **Try again** reuses a live approved request after a read failure when the SDK can do so. **Reset** starts a fresh flow.
 
-## Web App Manifest
+The controller currently reads Personal Server delivery. An enclave-only result has no Personal Server URL and cannot be read by this starter. Successful reads trigger a best-effort consumer acknowledgement. Displayed data does not confirm that the acknowledgement succeeded or that Vana closed the approval tab. Completed requests are terminal and require a fresh flow.
 
-The app serves a W3C Web App Manifest at `/manifest.json` containing a signed `vana` block. The Desktop App uses this to verify the builder's identity. The manifest is generated dynamically using `signVanaManifest()` from the SDK, which signs the vana block fields with EIP-191 using your `VANA_PRIVATE_KEY`.
+## Payment policy
 
-## Webhook
+This starter does not authorize payments. Its Personal Server fetch policy rejects every HTTP 402 before the SDK can sign or send `X-PAYMENT`. It uses one transport attempt per read. A 402 response becomes **Payment required** in the app. An explicit retry makes another unpaid read attempt. There is no automatic payment opt-in.
 
-`POST /api/webhook` is a stub endpoint for receiving grant notifications from the Desktop App. Extend it with signature verification and grant processing for production use.
+## Manifest and webhook
 
-## App Icon
+`GET /manifest.json` retains the existing signed W3C manifest contract through `signVanaManifest()` from `vana-cli/server`. The manifest uses the same server-only key and `APP_URL`. Replace its example privacy, terms, and support URLs before publication. The starter exposes `/icon.svg`.
 
-Connect resolves your app icon from `APP_URL` in this order: `/icon.svg`, `/icon.png`, `/favicon.ico`. Expose at least one of those routes publicly. In this starter, `src/app/icon.svg` serves `/icon.svg`.
+`POST /api/webhook` retains the existing stub for grant notifications. It logs the payload and does not verify signatures or process grants. The Direct browser flow uses status polling and does not depend on this stub. Add authentication and processing before using the webhook in production.
 
-## E2E Testing Workflow
+## Verify
 
-1. **Terminal 1** — Start your Personal Server (`pnpm dev`)
-2. **Terminal 2** — Start this app (`pnpm dev`)
-3. **Browser Tab 1** — Open `http://localhost:3001`, click "Connect with Vana"
-4. Click "Open in DataConnect" to launch the deep link in the DataConnect app
-5. Alternatively, copy the deep link URL and paste it into the Personal Server Dev UI → Connect tab
-6. Click "Auto-Approve All" (or step through manually)
-7. Tab 1 updates from "Waiting..." to "Approved!" with grant details
+From the repository root, run `pnpm test test/examples/nextjs-starter.test.ts` and `pnpm --filter nextjs-starter build`. Route tests use local transport fixtures with the real SDK. They cover signed request creation and status, input rejection, read outcomes, and payment refusal. They do not prove hosted approval, live owner consent, or provider delivery.
 
-## Personal Server
-
-This app does not configure the Personal Server — it resolves the user's server URL at runtime via the Data Gateway. The Personal Server is a separate protocol participant (desktop-bundled, ODL Cloud, or self-hosted). See [Personal servers](https://docs.vana.org/protocol-reference/personal-servers) for details.
+For a live check, run the app with your registered identity, approve a request in Vana, and confirm the configured scope appears in the original tab. A local fixture response is separate from that proof.

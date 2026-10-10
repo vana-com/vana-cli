@@ -11,7 +11,9 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "vana-cli": "workspace:*",
-    "viem": "^2.0.0"
+    "viem": "^2.0.0",
+    "@opendatalabs/vana-sdk": "4.3.1",
+    "server-only": "0.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

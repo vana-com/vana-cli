@@ -1,165 +1,172 @@
 "use client";
 
-// useVanaData() manages the full connect → poll → fetch-data lifecycle.
-// initConnect() starts a session, the hook polls until approved, then
-// fetchData() calls /api/data with the grant to retrieve user data.
+import {
+  useDirectVanaConnect,
+  type DirectConnectState,
+} from "@opendatalabs/vana-sdk/react";
+import { useState } from "react";
+import type {
+  AccessRequest,
+  AccessRequestStatus,
+  ApprovedDataResult,
+} from "@opendatalabs/vana-sdk/server";
 
-import type { ConnectionStatus } from "vana-cli/core";
-import { useVanaData } from "vana-cli/react";
-import { useEffect, useRef } from "react";
+async function checkedResponse<T>(response: Response): Promise<T> {
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(
+      typeof body?.error === "string"
+        ? body.error
+        : `Request failed (${response.status})`,
+    );
+  }
+  return body;
+}
 
 const STATUS_DISPLAY: Record<
-  ConnectionStatus,
-  { dot: string; label: string; className: string }
+  DirectConnectState["type"],
+  { label: string; className: string }
 > = {
-  idle: { dot: "\u25CB", label: "Idle", className: "status-default" },
-  connecting: {
-    dot: "\u25CB",
-    label: "Connecting",
-    className: "status-default",
-  },
-  waiting: {
-    dot: "\u25CB",
+  idle: { label: "Ready to connect", className: "status-default" },
+  creating: { label: "Creating request", className: "status-default" },
+  awaiting_approval: {
     label: "Waiting for approval",
     className: "status-waiting",
   },
-  approved: { dot: "\u25CF", label: "Approved", className: "status-approved" },
-  denied: { dot: "\u25CF", label: "Denied", className: "status-denied" },
-  expired: { dot: "\u25CF", label: "Expired", className: "status-expired" },
-  error: { dot: "\u25CF", label: "Error", className: "status-error" },
+  ready_to_open: {
+    label: "Open Vana to continue",
+    className: "status-waiting",
+  },
+  reading: { label: "Reading approved data", className: "status-approved" },
+  done: { label: "Data received", className: "status-approved" },
+  error: { label: "Action needed", className: "status-error" },
 };
 
 export default function ConnectFlow() {
-  const {
-    status,
-    grant,
-    data,
-    error,
-    connectUrl,
-    initConnect,
-    fetchData,
-    isLoading,
-  } = useVanaData({
-    environment: (process.env.NEXT_PUBLIC_VANA_ENV as "dev" | "prod") ?? "dev",
+  const [retrying, setRetrying] = useState(false);
+  const { state, start, retryRead, reset } = useDirectVanaConnect({
+    createRequest: async () =>
+      checkedResponse<AccessRequest>(
+        await fetch("/api/connect", { method: "POST" }),
+      ),
+    getStatus: async (requestId) =>
+      checkedResponse<AccessRequestStatus>(
+        await fetch(`/api/status?requestId=${encodeURIComponent(requestId)}`, {
+          cache: "no-store",
+        }),
+      ),
+    readResult: async (requestId) =>
+      checkedResponse<ApprovedDataResult>(
+        await fetch("/api/data", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestId }),
+        }),
+      ),
   });
-
-  const initRef = useRef(false);
-  useEffect(() => {
-    if (!initRef.current) {
-      initRef.current = true;
-      void initConnect();
-    }
-  }, [initConnect]);
-
-  const display = STATUS_DISPLAY[status];
-  const sessionReady = !!connectUrl;
-  const hasConnectFailure = !sessionReady && !!error;
+  const display = STATUS_DISPLAY[state.type];
+  const approvalUrl =
+    state.type === "ready_to_open"
+      ? state.mobileContinuationUrl
+      : state.type === "awaiting_approval" && state.popupBlocked
+        ? state.request.approvalUrl
+        : undefined;
 
   return (
-    <div>
-      {/* Launch button — shown until approved */}
-      {status !== "approved" && (
-        <div className="card">
-          <div style={{ marginBottom: 20 }}>
-            <div className="field-row">
-              <span className="label">Status</span>
-              <span className={`mono ${display.className}`}>
-                {display.dot} {display.label}
-              </span>
-            </div>
-          </div>
-
-          {sessionReady ? (
-            <a
-              href={connectUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn-primary"
-              style={{
-                display: "inline-block",
-                boxSizing: "border-box",
-                fontSize: 13,
-                textDecoration: "none",
-                textAlign: "center",
-                width: "100%",
-              }}
-            >
-              Connect with Vana
-            </a>
-          ) : (
+    <div data-slot="connect-flow">
+      <div
+        className={`card ${state.type === "done" ? "card-approved" : state.type === "error" ? "card-error" : ""}`}
+      >
+        <div className="field-row" style={{ marginBottom: 20 }}>
+          <span className="label">Status</span>
+          <span className={`mono ${display.className}`} role="status">
+            {display.label}
+          </span>
+        </div>
+        {state.type === "idle" && (
+          <>
+            <p>
+              Approve access in Vana. This app automatically reads your ChatGPT
+              conversations after approval.
+            </p>
             <button
               type="button"
-              onClick={() => {
-                void initConnect();
-              }}
-              disabled={isLoading}
+              onClick={start}
               className="btn-primary"
               style={{ width: "100%" }}
             >
-              {isLoading ? (
-                <>
-                  <span className="spinner" /> Creating session...
-                </>
-              ) : hasConnectFailure ? (
-                "Retry session"
-              ) : (
-                "Create session"
-              )}
+              Connect with Vana
             </button>
-          )}
-        </div>
-      )}
-
-      {/* Grant details + data */}
-      {status === "approved" && grant && (
-        <div className="card card-approved">
-          <div style={{ marginBottom: 20 }}>
-            <div className="field-row">
-              <span className="label">Status</span>
-              <span className={`mono ${display.className}`}>
-                {display.dot} {display.label}
-              </span>
-            </div>
-          </div>
-
-          <div className="label">Grant</div>
-          <pre className="pre-block">{JSON.stringify(grant, null, 2)}</pre>
-
-          <button
-            type="button"
-            onClick={fetchData}
-            disabled={isLoading}
-            className="btn-primary"
-            style={{ marginTop: 16, width: "100%" }}
-          >
-            {isLoading ? "Fetching..." : "Fetch Data"}
-          </button>
-
-          {data != null && (
-            <div style={{ marginTop: 16 }}>
-              <div className="label">Response</div>
-              <pre className="pre-block" style={{ maxHeight: 400 }}>
-                {JSON.stringify(data, null, 2)}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Errors */}
-      {error && (
-        <div className="card card-error">
-          <p className="text-error" style={{ margin: 0 }}>
-            {error}
+          </>
+        )}
+        {state.type === "creating" && (
+          <p>
+            <span className="spinner" /> Creating access request...
           </p>
-        </div>
-      )}
-
-      {/* Reset — reloads the page to start a fresh session */}
-      {status !== "idle" && status !== "connecting" && (
+        )}
+        {state.type === "awaiting_approval" && (
+          <p>
+            {state.popupBlocked
+              ? "Your browser blocked the approval tab. Open it below to continue."
+              : "Complete approval in the Vana tab. Your data will appear here."}
+          </p>
+        )}
+        {approvalUrl && (
+          <a
+            href={approvalUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn-primary"
+            style={{
+              display: "block",
+              textAlign: "center",
+              textDecoration: "none",
+            }}
+          >
+            {state.type === "ready_to_open" ? "Open Vana" : "Open approval"}
+          </a>
+        )}
+        {state.type === "reading" && (
+          <p>
+            <span className="spinner" /> Reading your approved data...
+          </p>
+        )}
+        {state.type === "done" && (
+          <>
+            <div className="label">{state.result.scope}</div>
+            <pre className="pre-block" style={{ maxHeight: 400 }}>
+              {JSON.stringify(state.result.data, null, 2)}
+            </pre>
+          </>
+        )}
+        {state.type === "error" && (
+          <>
+            <p className="text-error" role="alert">
+              {state.error.message}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setRetrying(true);
+                void retryRead()
+                  .catch(() => {
+                    // The SDK reports retry failures through state.error too.
+                  })
+                  .finally(() => setRetrying(false));
+              }}
+              disabled={retrying}
+              className="btn-primary"
+              style={{ width: "100%" }}
+            >
+              {retrying ? "Trying again..." : "Try again"}
+            </button>
+          </>
+        )}
+      </div>
+      {(state.type === "done" || state.type === "error") && !retrying && (
         <button
           type="button"
-          onClick={() => window.location.reload()}
+          onClick={reset}
           className="btn-ghost"
           style={{ marginTop: 12 }}
         >

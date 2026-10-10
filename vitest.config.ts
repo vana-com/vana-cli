@@ -4,6 +4,12 @@ import { fileURLToPath } from "node:url";
 export default defineConfig({
   resolve: {
     alias: {
+      "server-only": fileURLToPath(
+        new URL(
+          "./examples/nextjs-starter/node_modules/server-only/empty.js",
+          import.meta.url,
+        ),
+      ),
       "@": fileURLToPath(
         new URL("./examples/nextjs-starter/src", import.meta.url),
       ),
