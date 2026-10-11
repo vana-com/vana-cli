@@ -12,6 +12,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { getVanaHome } from "../core/paths.js";
 import { formatDisplayPath } from "./render/format.js";
+import type { ExportOwner } from "../core/source-export.js";
 
 export interface VanaCredentials {
   account: {
@@ -173,6 +174,14 @@ export function readStoredAccountAddress(): string | null {
  */
 export function loadAccountAddressForOwnership(): string | null {
   return process.env.VANA_SESSION_TOKEN ? null : readStoredAccountAddress();
+}
+
+/** Capture identity independently of token expiry, never from a destination server. */
+export function loadExportOwner(): ExportOwner {
+  const address = loadAccountAddressForOwnership();
+  if (!address || !/^0x[a-f0-9]{40}$/i.test(address)) return null;
+  const accountUrl = new URL(getAccountUrl()).toString().replace(/\/+$/, "");
+  return { accountUrl, address: address.toLowerCase() };
 }
 
 /**

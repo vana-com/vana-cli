@@ -7,7 +7,14 @@ import { createPersonalServerClient } from "./client.js";
 import { readCachedConnectorMetadata } from "../connectors/registry.js";
 import { getConnectorCacheDir } from "../core/paths.js";
 import {
+  exportDigest,
+  readExportReceipt,
+  sameExportOwner,
+} from "../core/source-export.js";
+import type { SourceExportReceipt } from "../core/source-export.js";
+import {
   loadAccountAddressForOwnership,
+  loadExportOwner,
   loadPersonalServerSession,
 } from "../cli/auth.js";
 
@@ -50,6 +57,14 @@ export type PersonalServerAuthConfig =
 
 export interface IngestResultOptions {
   scopes?: string[];
+  export:
+    | { kind: "retry"; receipt: unknown }
+    | {
+        kind: "fresh";
+        receipt: SourceExportReceipt;
+        /** A person's destination consent applies to this collection only. */
+        allowForeignServer: boolean;
+      };
 }
 
 /**
@@ -152,7 +167,7 @@ export async function ingestResult(
   source: string,
   resultPath: string,
   target: PersonalServerTarget,
-  options?: IngestResultOptions,
+  options: IngestResultOptions,
 ): Promise<CliEvent[]> {
   if (target.state !== "available" || !target.url) {
     return [
@@ -164,13 +179,90 @@ export async function ingestResult(
     ];
   }
 
-  const raw = await fs.readFile(resultPath, "utf8");
-  const result = JSON.parse(raw) as Record<string, unknown>;
+  const receipt = readExportReceipt(options.export.receipt);
+  const selected = loadExportOwner();
+  const blocked = (
+    reason: string,
+    detail: string,
+    remedy = "Use `vana data show` to inspect it.",
+  ): CliEvent[] => [
+    {
+      type: "ingest-skipped",
+      source,
+      reason,
+      message: `${detail} Export kept locally at ${resultPath}. ${remedy}`,
+    },
+  ];
+  if (!receipt || receipt.path !== resultPath) {
+    return blocked(
+      "export_unattributed",
+      "The export has no valid collection account receipt.",
+    );
+  }
+  if (options.export.kind === "retry") {
+    if (!receipt.owner)
+      return blocked(
+        "export_unattributed",
+        "The export's collection account is unknown.",
+      );
+    if (!sameExportOwner(receipt.owner, selected)) {
+      return blocked(
+        "export_owner_mismatch",
+        "The selected Account deployment or account does not own this export.",
+        `Sign in as ${receipt.owner.address} at ${receipt.owner.accountUrl}, then run \`vana server sync\`.`,
+      );
+    }
+    if (
+      !target.health?.owner ||
+      target.health.owner.toLowerCase() !== receipt.owner.address.toLowerCase()
+    ) {
+      return blocked(
+        "export_server_owner_mismatch",
+        "The Personal Server has not reported this export's collecting account as its owner.",
+        "Select the collecting account's Personal Server, then run `vana server sync`.",
+      );
+    }
+  } else if (receipt.owner) {
+    if (!sameExportOwner(receipt.owner, selected)) {
+      return blocked(
+        "export_owner_mismatch",
+        "The collecting account changed before this export could be uploaded.",
+      );
+    }
+    if (
+      personalServerOwnerMismatch(
+        target.health?.owner,
+        receipt.owner.address,
+      ) &&
+      !options.export.allowForeignServer
+    ) {
+      return blocked(
+        "export_server_owner_mismatch",
+        "The Personal Server belongs to another account.",
+      );
+    }
+  }
+  let raw: Buffer;
+  try {
+    raw = await fs.readFile(resultPath);
+  } catch {
+    return blocked(
+      "export_unreadable",
+      "The accepted export file cannot be read; no data was uploaded.",
+    );
+  }
+  if (exportDigest(raw) !== receipt.sha256) {
+    return blocked(
+      "export_bytes_changed",
+      "The export bytes changed after collection and cannot be safely synced.",
+    );
+  }
+  const result = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
   const metadata = await readCachedConnectorMetadata(
     source,
     getConnectorCacheDir(),
   );
-  const selectedScopes = options?.scopes ? new Set(options.scopes) : null;
+  const selectedScopes = options.scopes ? new Set(options.scopes) : null;
   const scopeMappings = resolveScopes(source, result, metadata).filter(
     (mapping) => !selectedScopes || selectedScopes.has(mapping.scope),
   );

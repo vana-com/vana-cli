@@ -5,6 +5,14 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
 import os from "node:os";
+import crypto from "node:crypto";
+import {
+  exportDigest,
+  hasUnresolvedExport,
+  pendingExportBlockReason,
+  readExportReceipt,
+} from "../core/source-export.js";
+import type { SourceExportReceipt } from "../core/source-export.js";
 
 import { confirm, input, isPromptInputClosed, password } from "./prompts.js";
 import { searchSelect } from "./search-select.js";
@@ -48,6 +56,7 @@ import {
   getLogsDir,
   getSessionsDir,
   getSourceResultPath,
+  getResultsDir,
   readCliState,
   readCliConfig,
   recordScheduledRun,
@@ -171,6 +180,7 @@ import {
 } from "./update-check.js";
 import {
   loadAccountAddressForOwnership,
+  loadExportOwner,
   loadCredentials,
   loadPersonalServerSession,
   readStoredAuthFile,
@@ -1801,6 +1811,14 @@ async function runConnect(
   connectOptions: ConnectOptions = {},
 ): Promise<number> {
   const source = rawSource.toLowerCase();
+  const collectionOwner = loadExportOwner();
+  const exportId = crypto.randomUUID();
+  const resultKey = path.basename(getSourceResultPath(source), ".json");
+  const runResultPath = path.join(
+    getResultsDir(),
+    resultKey,
+    `${exportId}.json`,
+  );
   const pdppSource = await resolvePdppSource(source, {
     from: connectOptions.from,
   });
@@ -1822,6 +1840,24 @@ async function runConnect(
     // Title
     renderer?.title(displayName);
 
+    const beforeCollection = await readCliState();
+    const pendingBlock = pendingExportBlockReason(
+      beforeCollection.sources[source],
+      collectionOwner,
+    );
+    if (pendingBlock) {
+      renderer?.fail(pendingBlock);
+      if (!renderer && !options.json) process.stderr.write(`${pendingBlock}\n`);
+      emit.event({
+        type: "outcome",
+        status: CliOutcomeStatus.PERSONAL_SERVER_UNAVAILABLE,
+        source,
+        reason: "pending_export_account_mismatch",
+        message: pendingBlock,
+      });
+      return CliExitCode.SERVER_UNAVAILABLE;
+    }
+
     const target = await withPhaseProgress(
       renderer,
       "Finding your Personal Server",
@@ -1831,9 +1867,10 @@ async function runConnect(
     // Collecting into a server owned by another identity looks like success
     // and is not undoable, so settle ownership before touching the source.
     const credentials = loadCredentials();
+    let allowForeignServer = false;
     const mismatch = personalServerOwnerMismatch(
       target.health?.owner,
-      loadAccountAddressForOwnership(),
+      collectionOwner?.address,
     );
     if (mismatch) {
       // An expired login names whoever signed in last, which may be long
@@ -1875,6 +1912,7 @@ async function runConnect(
           );
           return CliExitCode.CONFIRMATION_REQUIRED;
         }
+        allowForeignServer = true;
       }
     }
 
@@ -1883,7 +1921,10 @@ async function runConnect(
     const runtime = isPdpp
       ? new PdppRuntime({
           from: connectOptions.from,
-          owner: target.health?.owner ?? loadCredentials()?.account?.address,
+          owner:
+            collectionOwner?.address ??
+            target.health?.owner ??
+            loadCredentials()?.account?.address,
         })
       : new ManagedPlaywrightRuntime();
 
@@ -2243,9 +2284,11 @@ async function runConnect(
         };
 
     const shownBrowserPrompts = new Set<string>();
+    let acceptedReceipt: SourceExportReceipt | undefined;
     for await (const event of runtime.runConnector({
       connectorPath: resolution.connectorPath,
       source: resolution.source,
+      resultPath: runResultPath,
       noInput: options.ipc ? false : options.noInput,
       onNeedInput: interactiveCallback,
     })) {
@@ -2395,10 +2438,10 @@ async function runConnect(
           continue;
         }
 
-        // Check if the result is actually an error object
+        let exportBytes: Buffer;
         try {
-          const raw = await fsp.readFile(event.resultPath, "utf8");
-          const parsed = JSON.parse(raw);
+          exportBytes = await fsp.readFile(event.resultPath);
+          const parsed = JSON.parse(exportBytes.toString("utf8"));
           const errorOnly =
             parsed &&
             typeof parsed === "object" &&
@@ -2447,14 +2490,52 @@ async function runConnect(
           await updateSourceState(source, {
             lastError: `Failed to parse result file (${event.resultPath}): ${msg}`,
           });
+          pendingExitCode = CliExitCode.FAILURE;
+          continue;
         }
 
-        collectedResult = true;
         resultPath = event.resultPath;
+        const receipt: SourceExportReceipt = {
+          version: 1,
+          id: exportId,
+          owner: collectionOwner,
+          path: resultPath,
+          sha256: exportDigest(exportBytes),
+        };
+        acceptedReceipt = receipt;
+        const admitted = await updateSourceState(
+          resolution.source,
+          {
+            exportReceipt: receipt,
+            lastResultPath: resultPath,
+            dataState: "collected_local",
+            ingestScopes: undefined,
+            lastCollectedAt: new Date().toISOString(),
+          },
+          { publish: receipt },
+        );
+        if (!admitted) {
+          const message = `Another account's pending export occupies ${source}. This run was kept locally at ${resultPath}; the accepted export was preserved. Run \`vana data show ${source}\` to inspect the accepted export.`;
+          renderer?.fail(message);
+          if (!renderer && !options.json) process.stderr.write(`${message}\n`);
+          emit.event({
+            type: "outcome",
+            source,
+            status: CliOutcomeStatus.PERSONAL_SERVER_UNAVAILABLE,
+            reason: "pending_export_changed",
+            message,
+            resultPath,
+          });
+          return CliExitCode.SERVER_UNAVAILABLE;
+        }
+        collectedResult = true;
         const ingestEvents = await withPhaseProgress(
           renderer,
           "Saving to your Personal Server",
-          () => ingestResult(resolution.source, resultPath, target),
+          () =>
+            ingestResult(resolution.source, resultPath, target, {
+              export: { kind: "fresh", receipt, allowForeignServer },
+            }),
         );
         for (const ingestEvent of ingestEvents) {
           emit.event(ingestEvent);
@@ -2481,6 +2562,11 @@ async function runConnect(
             ingestEvent.type === "ingest-skipped" &&
             ingestEvent.reason === "personal_server_unavailable",
         );
+        const blockedExport = ingestEvents.find(
+          (ingestEvent) =>
+            ingestEvent.type === "ingest-skipped" &&
+            ingestEvent.reason?.startsWith("export_"),
+        );
         if (ingestCompleted) {
           finalStatus = CliOutcomeStatus.CONNECTED_AND_INGESTED;
           finalDataState = "ingested_personal_server";
@@ -2492,6 +2578,11 @@ async function runConnect(
           finalDataState = "ingest_failed";
           ingestFailureMessage =
             ingestFailedEvent.message ?? "Personal Server sync failed.";
+        } else if (blockedExport) {
+          finalStatus = CliOutcomeStatus.PERSONAL_SERVER_UNAVAILABLE;
+          finalDataState = "collected_local";
+          ingestFailureMessage = blockedExport.message ?? null;
+          pendingExitCode = CliExitCode.SERVER_UNAVAILABLE;
         } else if (ingestSkippedUnavailable) {
           finalStatus = CliOutcomeStatus.CONNECTED_LOCAL_ONLY;
           finalDataState = "ingest_unavailable";
@@ -2517,7 +2608,7 @@ async function runConnect(
       return pendingExitCode;
     }
 
-    if (!collectedResult) {
+    if (!collectedResult || !acceptedReceipt) {
       await updateSourceState(resolution.source, {
         connectorInstalled: true,
         sessionPresent: fs.existsSync(profilePath),
@@ -2537,27 +2628,48 @@ async function runConnect(
       return 1;
     }
 
-    await updateSourceState(resolution.source, {
-      connectorInstalled: true,
-      connectorVersion: fetched.version,
-      exportFrequency: fetched.exportFrequency,
-      sessionPresent: true,
-      lastRunAt: new Date().toISOString(),
-      lastCollectedAt: new Date().toISOString(),
-      lastRunOutcome: finalStatus,
-      dataState: finalDataState,
-      lastError: ingestFailureMessage,
-      lastResultPath: resultPath,
-      lastLogPath: runLogPath ?? fetchLogPath ?? setupLogPath ?? null,
-      connectionHealth: pendingExitCode !== null ? undefined : "healthy",
-      connectionHealthChangedAt:
-        pendingExitCode !== null ? undefined : new Date().toISOString(),
-      connectionHealthReason:
-        pendingExitCode !== null ? undefined : "collection-complete",
-      connectionHealthRetryable: undefined,
-      ingestScopes: ingestScopeResults,
-      skippedStreams: skippedStreams.length > 0 ? skippedStreams : undefined,
-    });
+    const settled = await updateSourceState(
+      resolution.source,
+      {
+        connectorInstalled: true,
+        connectorVersion: fetched.version,
+        exportFrequency: fetched.exportFrequency,
+        sessionPresent: true,
+        lastRunAt: new Date().toISOString(),
+        lastCollectedAt: new Date().toISOString(),
+        lastRunOutcome: finalStatus,
+        dataState: finalDataState,
+        lastError: ingestFailureMessage,
+        lastResultPath: resultPath,
+        lastLogPath: runLogPath ?? fetchLogPath ?? setupLogPath ?? null,
+        connectionHealth: pendingExitCode !== null ? undefined : "healthy",
+        connectionHealthChangedAt:
+          pendingExitCode !== null ? undefined : new Date().toISOString(),
+        connectionHealthReason:
+          pendingExitCode !== null ? undefined : "collection-complete",
+        connectionHealthRetryable: undefined,
+        ingestScopes: ingestScopeResults,
+        skippedStreams: skippedStreams.length > 0 ? skippedStreams : undefined,
+      },
+      { settle: acceptedReceipt.id },
+    );
+    if (!settled || pendingExitCode === CliExitCode.SERVER_UNAVAILABLE) {
+      const message = !settled
+        ? `A newer export replaced this run's state. This run remains at ${resultPath}; its sync did not change the newer export.`
+        : (ingestFailureMessage ??
+          "Export kept locally; sync requires the collecting account.");
+      renderer?.fail(message);
+      if (!renderer && !options.json) process.stderr.write(`${message}\n`);
+      emit.event({
+        type: "outcome",
+        source,
+        status: CliOutcomeStatus.PERSONAL_SERVER_UNAVAILABLE,
+        reason: !settled ? "export_changed" : "export_ownership_unverified",
+        message,
+        resultPath,
+      });
+      return CliExitCode.SERVER_UNAVAILABLE;
+    }
 
     // Build scope-aware success summary
     const storedCount =
@@ -4538,6 +4650,7 @@ interface SyncPendingResult {
   syncedCount: number;
   sourceResults: Array<{
     source: string;
+    blocked?: string;
     scopeResults?: Array<{ scope: string; status: string; error?: string }>;
   }>;
 }
@@ -4573,7 +4686,7 @@ function shouldRetryPendingSource(
 function buildRetryOptions(
   stored: StoredSourceState | undefined,
   mode: SyncRetryMode,
-): IngestResultOptions | undefined {
+): Pick<IngestResultOptions, "scopes"> | undefined {
   if (!stored) {
     return undefined;
   }
@@ -4669,8 +4782,12 @@ async function syncPendingSources(
   mode: SyncRetryMode,
 ): Promise<SyncPendingResult> {
   const state = await readCliState();
-  const pendingSources = Object.entries(state.sources).filter(([, stored]) =>
-    shouldRetryPendingSource(stored, mode),
+  const selectedOwner = loadExportOwner();
+  const pendingSources = Object.entries(state.sources).filter(
+    ([, stored]) =>
+      shouldRetryPendingSource(stored, mode) ||
+      (hasUnresolvedExport(stored) &&
+        Boolean(pendingExportBlockReason(stored, selectedOwner))),
   );
 
   if (pendingSources.length === 0) {
@@ -4686,12 +4803,29 @@ async function syncPendingSources(
     }
 
     const ingestOptions = buildRetryOptions(stored, mode);
+    const receipt = readExportReceipt(stored.exportReceipt);
     const ingestEvents = await ingestResult(
       source,
       stored.lastResultPath,
       target,
-      ingestOptions,
+      {
+        ...ingestOptions,
+        export: { kind: "retry", receipt: stored.exportReceipt },
+      },
     );
+    const blockedExport = ingestEvents.find(
+      (event) =>
+        event.type === "ingest-skipped" && event.reason?.startsWith("export_"),
+    );
+    if (blockedExport) {
+      sourceResults.push({
+        source,
+        blocked:
+          blockedExport.message ??
+          "Export remains local until its collecting account and server are verified.",
+      });
+      continue;
+    }
 
     const resultEvent = ingestEvents.find(
       (event) =>
@@ -4716,17 +4850,32 @@ async function syncPendingSources(
         mergedScopes,
         stored.dataState as SourceStatus["dataState"] | null | undefined,
       );
-      await updateSourceState(source, {
-        dataState,
-        ingestScopes: mergedScopes,
-        lastError: summarizeSyncError(mergedScopes),
-        // The run's failed sync is now done; leaving the outcome would keep
-        // the source under "Needs attention".
-        ...(stored.lastRunOutcome === CliOutcomeStatus.INGEST_FAILED &&
-        dataState === "ingested_personal_server"
-          ? { lastRunOutcome: CliOutcomeStatus.CONNECTED_AND_INGESTED }
-          : {}),
-      });
+      const settled =
+        receipt &&
+        (await updateSourceState(
+          source,
+          {
+            dataState,
+            ingestScopes: mergedScopes,
+            lastError: summarizeSyncError(mergedScopes),
+            // The run's failed sync is now done; leaving the outcome would keep
+            // the source under "Needs attention".
+            ...(stored.lastRunOutcome === CliOutcomeStatus.INGEST_FAILED &&
+            dataState === "ingested_personal_server"
+              ? { lastRunOutcome: CliOutcomeStatus.CONNECTED_AND_INGESTED }
+              : {}),
+          },
+          { settle: receipt.id },
+        ));
+      if (!settled) {
+        syncedCount--;
+        sourceResults.push({
+          source,
+          blocked:
+            "A newer export replaced this queued export while syncing; the newer state was preserved.",
+        });
+        continue;
+      }
     }
 
     sourceResults.push({ source, scopeResults: resultEvent?.scopeResults });
@@ -4755,9 +4904,15 @@ async function runCollectAll(options: GlobalOptions): Promise<number> {
       connectExitCode = result;
     }
     const after = await readCliState();
+    const blocked =
+      result === CliExitCode.SERVER_UNAVAILABLE
+        ? pendingExportBlockReason(after.sources[source], loadExportOwner())
+        : null;
     results.set(
       source,
-      classifyCollectedSource(source, result, after.sources[source]),
+      blocked
+        ? { source, outcome: "sync_pending", error: blocked }
+        : classifyCollectedSource(source, result, after.sources[source]),
     );
   }
 
@@ -4774,7 +4929,7 @@ async function runCollectAll(options: GlobalOptions): Promise<number> {
     const after = await readCliState();
     const error = `Pending data not synced: the Personal Server at ${target.url} belongs to ${formatAddress(foreign.owner)}, not to you. Start yours with \`vana server start\`.`;
     for (const [source, stored] of Object.entries(after.sources)) {
-      if (!shouldRetryPendingSource(stored, "automatic")) continue;
+      if (!hasUnresolvedExport(stored)) continue;
       blockedPendingCount++;
       const prior = results.get(source)?.outcome;
       if (prior === "collect_failed" || prior === "sync_failed") continue;
@@ -4789,6 +4944,15 @@ async function runCollectAll(options: GlobalOptions): Promise<number> {
     syncedPendingCount = synced.syncedCount;
     for (const entry of synced.sourceResults) {
       if (results.get(entry.source)?.outcome === "collect_failed") continue;
+      if (entry.blocked) {
+        blockedPendingCount++;
+        results.set(entry.source, {
+          source: entry.source,
+          outcome: "sync_pending",
+          error: entry.blocked,
+        });
+        continue;
+      }
       const failed = entry.scopeResults?.find((r) => r.status === "failed");
       results.set(
         entry.source,
@@ -4818,7 +4982,7 @@ async function runCollectAll(options: GlobalOptions): Promise<number> {
         syncedPendingCount > 0
           ? `Synced ${syncedPendingCount} pending dataset(s).`
           : blockedPendingCount > 0
-            ? `${blockedPendingCount} pending dataset(s) not synced: the Personal Server belongs to another account.`
+            ? `${blockedPendingCount} pending dataset(s) kept locally; the collection account or server could not be verified.`
             : "No sources are due for collection.";
       process.stdout.write(
         `${JSON.stringify({ message, count: 0, syncedPendingCount, sources: sourceResults })}\n`,
@@ -4915,6 +5079,27 @@ async function runServerSync(options: GlobalOptions): Promise<number> {
   }
 
   const syncResult = await syncPendingSources(target, "manual");
+  const blockedExports = syncResult.sourceResults.filter(
+    (entry) => entry.blocked,
+  );
+  if (blockedExports.length > 0) {
+    const message = blockedExports
+      .map((entry) => `${entry.source}: ${entry.blocked}`)
+      .join("\n");
+    if (options.json) {
+      process.stdout.write(
+        `${JSON.stringify({
+          error: "pending_exports_blocked",
+          message,
+          syncedCount: syncResult.syncedCount,
+          sources: syncResult.sourceResults,
+        })}\n`,
+      );
+    } else {
+      process.stderr.write(`${message}\n`);
+    }
+    return CliExitCode.SERVER_UNAVAILABLE;
+  }
   const storedScopeCount = syncResult.sourceResults.reduce(
     (total, entry) =>
       total +

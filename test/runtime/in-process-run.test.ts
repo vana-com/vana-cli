@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { getSourceResultPath } from "../../src/core/paths.js";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -743,6 +744,14 @@ describe("startInProcessConnectorRun", () => {
 
   it("writes a result and emits collection-complete", async () => {
     createFakeRuntime();
+    const acceptedPath = getSourceResultPath("github");
+    const isolatedPath = path.join(
+      path.dirname(acceptedPath),
+      "github",
+      "return-run.json",
+    );
+    await fs.mkdir(path.dirname(acceptedPath), { recursive: true });
+    await fs.writeFile(acceptedPath, '{"accepted":"A"}');
     const connectorPath = await writeConnector(`
 (async () => {
   await page.setData("status", "Collecting");
@@ -761,6 +770,7 @@ describe("startInProcessConnectorRun", () => {
         connectorPath,
         source: "github",
         noInput: true,
+        resultPath: isolatedPath,
       },
       logPath: path.join(os.tmpdir(), "vana-connect-collection.log"),
     });
@@ -781,6 +791,8 @@ describe("startInProcessConnectorRun", () => {
     );
 
     const resultPath = (completion as { resultPath: string }).resultPath;
+    expect(resultPath).toBe(isolatedPath);
+    expect(await fs.readFile(acceptedPath, "utf8")).toBe('{"accepted":"A"}');
     const result = JSON.parse(await fs.readFile(resultPath, "utf8"));
     expect(result).toEqual({
       profile: { username: "tester" },
@@ -790,6 +802,14 @@ describe("startInProcessConnectorRun", () => {
 
   it("treats setData('result', ...) as collection completion", async () => {
     createFakeRuntime();
+    const acceptedPath = getSourceResultPath("github");
+    const isolatedPath = path.join(
+      path.dirname(acceptedPath),
+      "github",
+      "set-data-run.json",
+    );
+    await fs.mkdir(path.dirname(acceptedPath), { recursive: true });
+    await fs.writeFile(acceptedPath, '{"accepted":"A"}');
     const connectorPath = await writeConnector(`
 (async () => {
   await page.setData("status", "Collecting");
@@ -809,6 +829,7 @@ describe("startInProcessConnectorRun", () => {
         connectorPath,
         source: "github",
         noInput: false,
+        resultPath: isolatedPath,
       },
       logPath: path.join(os.tmpdir(), "vana-connect-setdata-result.log"),
     });
@@ -829,6 +850,8 @@ describe("startInProcessConnectorRun", () => {
     );
 
     const resultPath = (completion as { resultPath: string }).resultPath;
+    expect(resultPath).toBe(isolatedPath);
+    expect(await fs.readFile(acceptedPath, "utf8")).toBe('{"accepted":"A"}');
     const result = JSON.parse(await fs.readFile(resultPath, "utf8"));
     expect(result).toEqual({
       profile: { username: "tester" },

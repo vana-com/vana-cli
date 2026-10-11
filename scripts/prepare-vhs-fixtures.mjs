@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -117,6 +118,34 @@ async function seedDemoHome() {
   await fs.writeFile(browserPath, "", "utf8");
   await fs.chmod(browserPath, 0o755);
 
+  const demoAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const githubResultPath = path.join(dataConnectRoot, "last-result.json");
+  const githubResult = `${JSON.stringify(
+    {
+      profile: { username: "tnunamak" },
+      repositories: [{ name: "vana-connect" }, { name: "data-connectors" }],
+      starred: [],
+    },
+    null,
+    2,
+  )}\n`;
+  await fs.writeFile(
+    path.join(dataConnectRoot, "auth.json"),
+    `${JSON.stringify(
+      {
+        account: {
+          address: demoAddress,
+          session_token: "expired-demo-token",
+          expires_at: "2000-01-01T00:00:00.000Z",
+        },
+        personal_server: null,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
   const state = {
     version: 1,
     sources: {
@@ -125,7 +154,17 @@ async function seedDemoHome() {
         lastRunAt: "2026-03-14T13:10:03.677Z",
         lastRunOutcome: "connected_local_only",
         dataState: "collected_local",
-        lastResultPath: path.join(dataConnectRoot, "last-result.json"),
+        lastResultPath: githubResultPath,
+        exportReceipt: {
+          version: 1,
+          id: "demo-github-export",
+          owner: {
+            accountUrl: "https://account.vana.org",
+            address: demoAddress,
+          },
+          path: githubResultPath,
+          sha256: createHash("sha256").update(githubResult).digest("hex"),
+        },
         lastLogPath: path.join(dataConnectRoot, "logs", "run-github-demo.log"),
       },
       shop: {
@@ -156,19 +195,7 @@ async function seedDemoHome() {
     "utf8",
   );
 
-  await fs.writeFile(
-    path.join(dataConnectRoot, "last-result.json"),
-    `${JSON.stringify(
-      {
-        profile: { username: "tnunamak" },
-        repositories: [{ name: "vana-connect" }, { name: "data-connectors" }],
-        starred: [],
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+  await fs.writeFile(githubResultPath, githubResult, "utf8");
   await fs.writeFile(
     path.join(dataConnectRoot, "spotify-result.json"),
     `${JSON.stringify(

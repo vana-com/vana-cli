@@ -411,7 +411,7 @@ export class PdppRuntime {
       records,
       checkpoints,
     });
-    const resultPath = getSourceResultPath(source);
+    const resultPath = options.resultPath ?? getSourceResultPath(source);
     await writeResult(
       resultPath,
       projectResult(source, launch.displayName, merged, completed),
