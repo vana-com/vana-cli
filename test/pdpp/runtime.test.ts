@@ -40,6 +40,16 @@ if (process.env.FAKE_SKIP_ALL === "1") {
   await new Promise((resolve) => rl.once("close", resolve));
   process.exit();
 }
+if (process.env.FAKE_INTERLEAVE === "1") {
+  // A message and its attachment, record by record, the way slack_browser emits.
+  for (const id of [1, 2, 3]) {
+    emit({ type: "RECORD", stream: "chat_events", key: String(id), data: { id }, emitted_at: "t" });
+    emit({ type: "RECORD", stream: "profile", key: "p" + id, data: { id: "p" + id }, emitted_at: "t" });
+  }
+  emit({ type: "DONE", status: "succeeded", records_emitted: 6 });
+  await new Promise((resolve) => rl.once("close", resolve));
+  process.exit();
+}
 emit({ type: "RECORD", stream: "profile", key: "me", data: { id: "me", trigger: process.env.PDPP_RUN_TRIGGER_KIND, profileRoot: process.env.PDPP_BROWSER_PROFILE_ROOT, leaked: process.env.PDPP_FAKE_REMOTE_CDP_URL ?? null }, emitted_at: "t" });
 emit({ type: "PROGRESS", stream: "chat_events", message: "Reading chats" });
 for (const id of chats) {
@@ -68,6 +78,7 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
     HOME: process.env.HOME,
     VANA_PDPP_NODE: process.env.VANA_PDPP_NODE,
     FAKE_MANUAL: process.env.FAKE_MANUAL,
+    FAKE_INTERLEAVE: process.env.FAKE_INTERLEAVE,
     FAKE_SKIP_ALL: process.env.FAKE_SKIP_ALL,
     PDPP_FAKE_REMOTE_CDP_URL: process.env.PDPP_FAKE_REMOTE_CDP_URL,
   };
@@ -169,6 +180,20 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
     );
     // Nothing new came back, but the scope still carries every chat.
     expect(rerun["fake.chat_events"].chat_events).toHaveLength(3);
+  });
+
+  it("reports each stream's total once, even when streams interleave", async () => {
+    process.env.FAKE_INTERLEAVE = "1";
+    const events = await connect();
+    const progress = events.filter((event) => event.type === "progress-update");
+    const complete = progress
+      .map((event) => event.message)
+      .filter((message) => message?.startsWith("Complete"));
+    expect(complete).toEqual(["Complete: 3 records", "Complete: 3 records"]);
+    const collecting = progress.filter((event) =>
+      event.message?.startsWith("Collecting"),
+    );
+    expect(collecting).toHaveLength(2);
   });
 
   it("waits for the person on a manual step and passes the kind to the prompt", async () => {
