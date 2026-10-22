@@ -36,6 +36,8 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Verify release asset upload transport
+        run: node scripts/assert-release-upload.mjs
       - run: pnpm lint
       - run: pnpm lint:eslint
       - run: pnpm format:check

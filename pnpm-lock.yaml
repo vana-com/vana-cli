@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  "@semantic-release/github>undici": 7.30.1
+
 importers:
   .:
     dependencies:
@@ -12194,6 +12197,13 @@ packages:
       }
     engines: { node: ">=20.18.1" }
 
+  undici@7.30.1:
+    resolution:
+      {
+        integrity: sha512-03KrMbjIFDWQR5RNPrSw3bd1r12JpyFQl9/yxjUbJtqkjmllqC5lFjZh6ujeuJCKr8EOQvRW872Oy/az+nLYxg==,
+      }
+    engines: { node: ">=20.18.1" }
+
   unicode-emoji-modifier-base@1.0.0:
     resolution:
       {
@@ -16392,7 +16402,7 @@ snapshots:
       p-filter: 4.1.0
       semantic-release: 25.0.3(typescript@5.7.3)
       tinyglobby: 0.2.15
-      undici: 7.21.0
+      undici: 7.30.1
       url-join: 5.0.0
     transitivePeerDependencies:
       - supports-color
@@ -22322,6 +22332,8 @@ snapshots:
   undici@6.23.0: {}
 
   undici@7.21.0: {}
+
+  undici@7.30.1: {}
 
   unicode-emoji-modifier-base@1.0.0: {}
 
