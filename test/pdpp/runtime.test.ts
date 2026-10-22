@@ -18,8 +18,14 @@ const next = async () => JSON.parse((await lines.next()).value);
 const emit = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 
 const start = await next();
+const requested = new Set(start.scope.streams.map((stream) => stream.name));
 const seen = start.state.chat_events?.through ?? 0;
 const chats = [1, 2, 3].filter((id) => id > seen);
+if (process.env.FAKE_ASSISTANCE === "1") {
+  emit({ type: "ASSISTANCE", assistance_request_id: "asst_1", response_contract: "none", message: "Sign in to Fake in the browser.", timeout_seconds: 60 });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  emit({ type: "ASSISTANCE_STATUS", assistance_request_id: "asst_1", status: "resolved", message: "Signed in." });
+}
 if (process.env.FAKE_MANUAL === "1") {
   emit({ type: "INTERACTION", request_id: "int_1", kind: "manual_action", message: "Sign in to Fake." });
   const reply = await next();
@@ -40,13 +46,13 @@ if (process.env.FAKE_SKIP_ALL === "1") {
   await new Promise((resolve) => rl.once("close", resolve));
   process.exit();
 }
-emit({ type: "RECORD", stream: "profile", key: "me", data: { id: "me", trigger: process.env.PDPP_RUN_TRIGGER_KIND, profileRoot: process.env.PDPP_BROWSER_PROFILE_ROOT, leaked: process.env.PDPP_FAKE_REMOTE_CDP_URL ?? null }, emitted_at: "t" });
+if (requested.has("profile")) emit({ type: "RECORD", stream: "profile", key: "me", data: { id: "me", trigger: process.env.PDPP_RUN_TRIGGER_KIND, profileRoot: process.env.PDPP_BROWSER_PROFILE_ROOT, leaked: process.env.PDPP_FAKE_REMOTE_CDP_URL ?? null }, emitted_at: "t" });
 emit({ type: "PROGRESS", stream: "chat_events", message: "Reading chats" });
-for (const id of chats) {
+for (const id of requested.has("chat_events") ? chats : []) {
   emit({ type: "RECORD", stream: "chat_events", key: String(id), data: { id }, emitted_at: "t" });
 }
-emit({ type: "STATE", stream: "chat_events", cursor: { through: 3 } });
-emit({ type: "DONE", status: "succeeded", records_emitted: 1 + chats.length });
+if (requested.has("chat_events")) emit({ type: "STATE", stream: "chat_events", cursor: { through: 3 } });
+emit({ type: "DONE", status: "succeeded", records_emitted: (requested.has("profile") ? 1 : 0) + (requested.has("chat_events") ? chats.length : 0) });
 await new Promise((resolve) => rl.once("close", resolve));
 `;
 
@@ -68,6 +74,7 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
     HOME: process.env.HOME,
     VANA_PDPP_NODE: process.env.VANA_PDPP_NODE,
     FAKE_MANUAL: process.env.FAKE_MANUAL,
+    FAKE_ASSISTANCE: process.env.FAKE_ASSISTANCE,
     FAKE_SKIP_ALL: process.env.FAKE_SKIP_ALL,
     PDPP_FAKE_REMOTE_CDP_URL: process.env.PDPP_FAKE_REMOTE_CDP_URL,
   };
@@ -115,6 +122,7 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
 
   async function connect(
     options: {
+      streams?: string[];
       noInput?: boolean;
       onNeedInput?: (request: {
         kind?: string;
@@ -122,7 +130,11 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
       }) => Promise<Record<string, string>>;
     } = {},
   ) {
-    const runtime = new PdppRuntime({ from: checkout, owner: "0xOwner" });
+    const runtime = new PdppRuntime({
+      from: checkout,
+      owner: "0xOwner",
+      streams: options.streams,
+    });
     await runtime.fetchConnector("fake");
     const events: CliEvent[] = [];
     for await (const event of runtime.runConnector({
@@ -135,6 +147,30 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
     }
     return events;
   }
+
+  it("collects and publishes only explicitly selected streams", async () => {
+    const events = await connect({ streams: ["chat_events"] });
+    const complete = events.find(
+      (event) => event.type === "collection-complete",
+    );
+    expect(complete?.resultPath).toBeTruthy();
+    const result = JSON.parse(
+      fs.readFileSync(complete?.resultPath ?? "", "utf8"),
+    );
+    expect(result.completedStreams).toEqual(["chat_events"]);
+    expect(result["fake.chat_events"]).toEqual({
+      chat_events: [{ id: 1 }, { id: 2 }, { id: 3 }],
+    });
+    expect(result).not.toHaveProperty("fake.profile");
+  });
+
+  it.each([{ streams: [] }, { streams: ["missing"] }])(
+    "rejects an invalid stream selection $streams before collection",
+    async ({ streams }) => {
+      const runtime = new PdppRuntime({ from: checkout, streams });
+      await expect(runtime.fetchConnector("fake")).rejects.toThrow(/stream/i);
+    },
+  );
 
   it("collects, writes dotted scopes, and resumes from the saved cursor", async () => {
     const first = await connect();
@@ -169,6 +205,30 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
     );
     // Nothing new came back, but the scope still carries every chat.
     expect(rerun["fake.chat_events"].chat_events).toHaveLength(3);
+  });
+
+  it("shows automatic browser sign-in as an actionable human prompt", async () => {
+    process.env.FAKE_ASSISTANCE = "1";
+    const events = await connect();
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "headed-required",
+          message: "Sign in to Fake in the browser.",
+        }),
+        expect.objectContaining({ type: "collection-complete" }),
+      ]),
+    );
+    expect(events.some((event) => event.type === "needs-input")).toBe(false);
+  });
+
+  it("stops automatic browser sign-in under --no-input without publishing", async () => {
+    process.env.FAKE_ASSISTANCE = "1";
+    const events = await connect({ noInput: true });
+    expect(events.some((event) => event.type === "legacy-auth")).toBe(true);
+    expect(events.some((event) => event.type === "collection-complete")).toBe(
+      false,
+    );
   });
 
   it("waits for the person on a manual step and passes the kind to the prompt", async () => {

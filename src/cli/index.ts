@@ -503,14 +503,21 @@ More:
       "--from <checkout>",
       "Run a Collection Profile connector from a data-connectors checkout",
     )
+    .option(
+      "--streams <names>",
+      "Collect only these comma-separated Collection Profile streams",
+    )
     .action(
       async (source: string | undefined, commandOptions: ConnectOptions) => {
         process.exitCode = await runCommandWithTelemetry(
           { ...telemetryBaseContext, command: "connect", source },
           async () => {
-            if (commandOptions.from && (!source || parsedOptions.detach)) {
+            if (
+              (commandOptions.from || commandOptions.streams !== undefined) &&
+              (!source || parsedOptions.detach)
+            ) {
               process.stderr.write(
-                "--from needs a source and cannot be combined with --detach.\n",
+                "--from and --streams need a source and cannot be combined with --detach.\n",
               );
               return CliExitCode.USAGE;
             }
@@ -518,7 +525,10 @@ More:
               return runDetached("connect", source, parsedOptions);
             }
             return source
-              ? runConnect(source, parsedOptions, { from: commandOptions.from })
+              ? runConnect(source, parsedOptions, {
+                  from: commandOptions.from,
+                  streams: commandOptions.streams,
+                })
               : runConnectEntry(parsedOptions);
           },
         );
@@ -1595,6 +1605,8 @@ export async function withPhaseProgress<T>(
 }
 
 interface ConnectOptions {
+  /** Comma-separated Collection Profile stream names. */
+  streams?: string;
   /** A data-connectors checkout to run a Collection Profile connector from. */
   from?: string;
   /** How the flow is titled; `vana collect` says Collect. */
@@ -1823,6 +1835,12 @@ async function runConnect(
     from: connectOptions.from,
   });
   const isPdpp = pdppSource !== null;
+  if (connectOptions.streams !== undefined && !isPdpp) {
+    process.stderr.write(
+      "--streams requires a Collection Profile connector.\n",
+    );
+    return CliExitCode.USAGE;
+  }
   const emit = createEmitter(options);
   const renderer: ConnectRenderer | null =
     !options.json && !options.quiet
@@ -1921,6 +1939,9 @@ async function runConnect(
     const runtime = isPdpp
       ? new PdppRuntime({
           from: connectOptions.from,
+          streams: connectOptions.streams
+            ?.split(",")
+            .map((name) => name.trim()),
           owner:
             collectionOwner?.address ??
             target.health?.owner ??

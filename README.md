@@ -208,6 +208,23 @@ The existing `vana-cli/server`, `vana-cli/react`, and `vana-cli/core` exports re
 Available data connectors and their scopes (schema definitions):
 [`PDP-Connect/data-connectors/schemas`](https://github.com/PDP-Connect/data-connectors/tree/main/schemas)
 
+To collect only your Spotify saved tracks, including the scope Community uses:
+
+```bash
+vana connect spotify --streams saved_tracks
+```
+
+This installs the signed Spotify connector automatically. Sign in to Spotify
+in the separate browser if prompted; collection continues when sign-in is
+verified. The selected stream is uploaded to your Personal Server and other
+streams are preserved. Repeat the same command to refresh it. Full Spotify
+collection can still fail when Spotify changes an unrelated query such as
+top content; selecting saved tracks avoids that dependency.
+
+`--streams` takes comma-separated Collection Profile stream names, requires
+an explicit source, and cannot be used with `--detach`. Omit it to request
+all streams. No connector source checkout is needed for pinned sources.
+
 A Collection Profile connector you are still writing can run straight from
 its directory. `vana connect <key> --from <dir>` runs it once; registering
 it makes every later command use it:

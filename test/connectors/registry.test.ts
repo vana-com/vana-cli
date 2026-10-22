@@ -237,6 +237,7 @@ describe("listAvailableSources", () => {
     expect(sources.map((source) => source.id).sort()).toEqual([
       "github",
       "slack_browser",
+      "spotify",
       "whoop",
     ]);
     expect(sources.find((source) => source.id === "slack_browser")).toEqual({
@@ -272,7 +273,9 @@ describe("listAvailableSources", () => {
         whoop: { ...entry, displayName: "WHOOP (dev)" },
       }),
     });
-    expect(sources).toHaveLength(2);
+    expect(
+      sources.filter((source) => ["github", "whoop"].includes(source.id)),
+    ).toHaveLength(2);
     expect(sources.find((source) => source.id === "github")).toMatchObject({
       name: "GitHub (dev)",
       runtime: "pdpp",
@@ -293,6 +296,7 @@ describe("listAvailableSources", () => {
     });
     expect(sources.map((source) => source.id).sort()).toEqual([
       "github",
+      "spotify",
       "whoop",
     ]);
   });

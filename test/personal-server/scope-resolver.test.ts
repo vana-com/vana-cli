@@ -3,6 +3,35 @@ import { resolveScopes } from "../../src/personal-server/scope-resolver.js";
 import type { ConnectorMetadata } from "../../src/connectors/registry.js";
 
 describe("resolveScopes", () => {
+  it("publishes CLI Spotify saved tracks in the raw scope shape Community reads", () => {
+    const track = {
+      name: "Test track",
+      artist_names: ["Test artist"],
+      uri: "spotify:track:test",
+    };
+    const result = {
+      completedStreams: ["saved_tracks"],
+      "spotify.saved_tracks": { saved_tracks: [track] },
+    };
+    expect(resolveScopes("spotify", result, null)).toEqual([
+      { scope: "spotify.saved_tracks", data: { records: [track] } },
+    ]);
+    expect(result["spotify.saved_tracks"]).toEqual({ saved_tracks: [track] });
+  });
+
+  it("preserves already canonical Spotify saved-track scope payloads", () => {
+    expect(
+      resolveScopes(
+        "spotify",
+        {
+          completedStreams: ["saved_tracks"],
+          "spotify.saved_tracks": { records: [] },
+        },
+        null,
+      ),
+    ).toEqual([{ scope: "spotify.saved_tracks", data: { records: [] } }]);
+  });
+
   it("uses dotted keys directly when present in result", () => {
     const result = {
       "github.profile": { login: "alice" },
