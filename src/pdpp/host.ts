@@ -26,16 +26,16 @@ export function getPdppHome(): string {
  * SHASUMS256.txt values, so a download is checked against a hash that
  * shipped with the CLI rather than one fetched next to the tarball.
  */
-export const PDPP_NODE_VERSION = "24.21.0";
+export const PDPP_NODE_VERSION = "24.22.1";
 const PDPP_NODE_SHA256: Record<string, string> = {
   "darwin-arm64":
-    "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+    "89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7",
   "darwin-x64":
-    "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097",
+    "d132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035",
   "linux-arm64":
-    "724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5",
+    "33c37be234ba8bee041961047b19160f4d7d0f164e8e246f78bdd10feff148b3",
   "linux-x64":
-    "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff",
+    "eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c",
 };
 
 /** What a signed artifact's provenance asks of the machine running it. */
