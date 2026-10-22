@@ -63,6 +63,8 @@ export interface RunProtocolOptions {
     total?: number;
   }): void;
   onSkip(skip: SkipResult): void;
+  /** A browser step that resolves itself rather than requesting an stdin reply. */
+  onAssistance?(message: string): void;
   onInteraction(request: InteractionRequest): Promise<InteractionReply>;
   log(line: string): void;
 }
@@ -74,8 +76,6 @@ const KILL_GRACE_MS = 5_000;
 
 // Protocol lines a host may see but has no use for; logged, not acted on.
 const INFORMATIONAL_TYPES = new Set([
-  "ASSISTANCE",
-  "ASSISTANCE_STATUS",
   "STREAM_EVIDENCE",
   "DETAIL_GAP",
   "DETAIL_GAP_ATTEMPTED",
@@ -275,6 +275,19 @@ export function runCollectionProfile(
           options.onState(stream, cursor);
           return;
         }
+        case "ASSISTANCE":
+          if (typeof message.message === "string" && message.message) {
+            if (options.onAssistance) options.onAssistance(message.message);
+            else options.onProgress({ message: message.message });
+          }
+          return;
+        case "ASSISTANCE_STATUS":
+          // Browser handoffs resolve themselves; show their instructions without
+          // inventing an INTERACTION_RESPONSE that the connector never requested.
+          if (typeof message.message === "string" && message.message) {
+            options.onProgress({ message: message.message });
+          }
+          return;
         case "PROGRESS":
           options.onProgress({
             stream:

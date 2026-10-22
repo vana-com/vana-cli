@@ -80,10 +80,20 @@ export function resolveScopes(
     (key) => key.includes(".") && !EXCLUDED_KEYS.has(key),
   );
   if (dottedKeys.length > 0) {
-    return dottedKeys.map((key) => ({
-      scope: normalizeScope(key),
-      data: ensureObject(result[key]),
-    }));
+    return dottedKeys.map((key) => {
+      const data = ensureObject(result[key]);
+      // Community reads Spotify's PDPP saved-track scope as plain rows under
+      // `records`. Keep the local export intact for its attribution receipt.
+      if (
+        source === "spotify" &&
+        key === "spotify.saved_tracks" &&
+        isPdppResult(result) &&
+        Array.isArray(data.saved_tracks)
+      ) {
+        return { scope: key, data: { records: data.saved_tracks } };
+      }
+      return { scope: normalizeScope(key), data };
+    });
   }
 
   // A PDPP result names its scopes as dotted keys and nothing else. Without

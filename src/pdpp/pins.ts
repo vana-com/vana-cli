@@ -20,6 +20,16 @@ export interface PdppPin {
 
 export const PDPP_PINS: readonly PdppPin[] = [
   {
+    id: "spotify",
+    name: "Spotify",
+    company: "Spotify",
+    description:
+      "Exports your Spotify data; use --streams saved_tracks to collect only your saved tracks.",
+    version: "0.1.37",
+    digest:
+      "sha256:d75a773a3e0e63491f52ac2d588db67bce15f8f2954ed81cbdcb7d55e2c78bd9",
+  },
+  {
     id: "whoop",
     name: "WHOOP",
     company: "WHOOP",

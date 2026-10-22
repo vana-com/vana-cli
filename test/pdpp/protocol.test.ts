@@ -112,6 +112,26 @@ describe("runCollectionProfile", () => {
     ]);
   });
 
+  it("surfaces browser assistance while the connector waits for automatic readiness", async () => {
+    const file = connector(`
+      await next();
+      emit({ type: "ASSISTANCE", assistance_request_id: "browser_1", message: "Sign in to Spotify in the secure browser", response_contract: "none" });
+      emit({ type: "ASSISTANCE_STATUS", assistance_request_id: "browser_1", status: "resolved", message: "Sign-in verified" });
+      emit({ type: "DONE", status: "succeeded", records_emitted: 0 });
+      await waitForStdinClose();
+    `);
+    const progress: string[] = [];
+    const { promise, interactions } = run(file, {
+      onProgress: ({ message }) => progress.push(message),
+    });
+    expect((await promise).status).toBe("succeeded");
+    expect(progress).toEqual([
+      "Sign in to Spotify in the secure browser",
+      "Sign-in verified",
+    ]);
+    expect(interactions).toEqual([]);
+  });
+
   it("answers an interaction and lets the connector continue", async () => {
     const file = connector(`
       await next();

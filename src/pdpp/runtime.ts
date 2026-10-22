@@ -54,6 +54,8 @@ const EXPECTED_NODE_RANGE = ">=24.15.0 <25";
 export interface PdppRuntimeOptions {
   /** A data-connectors checkout to run the connector from, instead of an artifact. */
   from?: string;
+  /** Limit collection and publication to these declared stream names. */
+  streams?: readonly string[];
   /** Owner of the Personal Server the data goes to; state is kept per owner. */
   owner?: string | null;
   /** How saved local connectors are looked up; tests inject their own. */
@@ -143,6 +145,20 @@ export class PdppRuntime {
       } else {
         this.launch = await resolveLocalLaunch(resolved.path, source);
         this.localPath = resolved.path;
+      }
+      if (this.options.streams !== undefined) {
+        const requested = new Set(this.options.streams);
+        const declared = new Set(
+          this.launch.profile.streams.map((stream) => stream.name),
+        );
+        if (
+          !requested.size ||
+          [...requested].some((name) => !declared.has(name))
+        ) {
+          throw new Error(
+            `Select one or more declared streams: ${[...declared].join(", ")}`,
+          );
+        }
       }
     } catch (error) {
       await fsp.appendFile(
@@ -261,10 +277,13 @@ export class PdppRuntime {
 
     const statePath = collectionStatePath(source, this.options.owner);
     const previous = await readCollectionState(statePath);
-    const streamNames = launch.profile.streams.map((stream) => stream.name);
-    const mode = launch.profile.streams.some(
-      (stream) => stream.incremental === false,
-    )
+    const selectedStreams = launch.profile.streams.filter(
+      (stream) =>
+        this.options.streams === undefined ||
+        this.options.streams.includes(stream.name),
+    );
+    const streamNames = selectedStreams.map((stream) => stream.name);
+    const mode = selectedStreams.some((stream) => stream.incremental === false)
       ? "full_refresh"
       : "incremental";
     const runId = `vana-${source}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
@@ -360,6 +379,20 @@ export class PdppRuntime {
             logPath,
             message: progress.message,
           });
+        }
+      },
+      onAssistance: (message) => {
+        log(`[assistance] ${message}`);
+        push({
+          type: options.noInput ? "legacy-auth" : "headed-required",
+          source,
+          logPath,
+          message,
+        });
+        if (options.noInput) {
+          throw new Error(
+            "Browser sign-in is required; run without --no-input.",
+          );
         }
       },
       onSkip: (skip) => {
