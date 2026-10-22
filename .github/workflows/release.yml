@@ -44,6 +44,8 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
+      - name: Verify release asset upload transport
+        run: node scripts/assert-release-upload.mjs
       - name: Determine next version
         id: version
         run: |
@@ -222,9 +224,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
-          # semantic-release's undici 7 upload fails with Node 26's dispatcher.
-          # Keep publishing on patched LTS; SEA binaries stay on 26.12.1 above.
-          node-version: 24.22.1
+          node-version: 26.12.1
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile

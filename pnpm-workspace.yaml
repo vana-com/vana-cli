@@ -2,3 +2,6 @@ packages:
   - "."
   - "connect"
   - "examples/*"
+
+overrides:
+  "@semantic-release/github>undici": "7.30.1"
