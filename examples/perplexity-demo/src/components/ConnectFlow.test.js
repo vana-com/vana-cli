@@ -91,3 +91,30 @@ it("restores saved data when no newer connection has started", async () => {
     false,
   );
 });
+
+it("confirms a new connection that recovers the already displayed revision", async () => {
+  const originalFetch = fetch.getMockImplementation();
+  fetch.mockImplementation((url, init) =>
+    url === "/api/data" && init?.method === "POST"
+      ? Response.json({ scope: "perplexity.conversations", data: older })
+      : originalFetch(url, init),
+  );
+  await act(async () => root.render(createElement(ConnectFlow)));
+  await act(async () => releaseSnapshot());
+  expect(container.textContent).toContain("Previous saved title");
+
+  await act(async () => {
+    [...container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Connect with Vana")
+      .click();
+  });
+  await act(async () => vi.advanceTimersByTimeAsync(1500));
+
+  expect(container.textContent).toContain("Previous saved title");
+  expect(container.textContent).toContain("Delivery confirmed in Vana.");
+  expect(
+    [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Read latest",
+    ).disabled,
+  ).toBe(false);
+});
