@@ -207,3 +207,24 @@ a:focus-visible {
     animation: none;
   }
 }
+
+.thread-list {
+  list-style: none;
+  padding: 0;
+  max-height: 460px;
+  overflow-y: auto;
+}
+.thread-list li {
+  padding: 12px 0;
+  border-bottom: 1px solid #27272a;
+}
+.thread-list span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.thread-list time {
+  display: block;
+  font-size: 12px;
+  color: #a1a1aa;
+  margin-top: 4px;
+}

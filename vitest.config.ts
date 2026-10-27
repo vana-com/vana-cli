@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
+  esbuild: { jsx: "automatic" },
   resolve: {
     alias: {
       "server-only": fileURLToPath(
@@ -23,7 +24,7 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    include: ["test/**/*.test.ts"],
+    include: ["test/**/*.test.ts", "examples/perplexity-demo/src/**/*.test.js"],
     setupFiles: ["test/setup/isolate-home.ts"],
     coverage: {
       provider: "v8",

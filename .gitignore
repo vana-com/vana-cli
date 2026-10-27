@@ -11,6 +11,7 @@ coverage/
 .env
 .env.local
 .next/
+.research-shelf/
 *.log
 __pycache__/
 .claude

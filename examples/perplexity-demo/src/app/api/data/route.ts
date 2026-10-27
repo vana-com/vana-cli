@@ -1,13 +1,30 @@
-import { NextResponse } from "next/server";
+import { shelf } from "../../../config.js";
+import {
+  failure,
+  json,
+  onlyString,
+  sameOrigin,
+  session,
+} from "../../../server/http.js";
 
-/** Data reads and payment authorization belong to the next delivery step. */
-export async function POST(): Promise<Response> {
-  return NextResponse.json(
-    {
-      code: "read_not_enabled",
-      error:
-        "Data reads are not enabled in this demo yet. No payment has been authorized.",
-    },
-    { status: 501, headers: { "Cache-Control": "no-store" } },
-  );
+export async function GET(request: Request) {
+  try {
+    return json(await shelf.snapshot(session(request)));
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    sameOrigin(request);
+    return json(
+      await shelf.read(
+        session(request),
+        await onlyString(request, "requestId"),
+      ),
+    );
+  } catch (error) {
+    return failure(error);
+  }
 }

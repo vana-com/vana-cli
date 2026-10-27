@@ -9,17 +9,9 @@ export default function Home() {
         Bring your Perplexity conversations into your own app through Vana.
       </p>
       <ConnectFlow />
-      <section className="card threads" aria-labelledby="threads-title">
-        <h2 id="threads-title">Your threads</h2>
-        <p className="empty-state">No threads loaded.</p>
-        <p>
-          Conversation titles and last-updated times will appear here once data
-          reads are enabled.
-        </p>
-      </section>
       <p className="scope-note">
-        This demo prepares approval for Perplexity conversations only. Data
-        reads and payments are not enabled yet.
+        Reads use this app’s own grant and capped Moksha test VANA payments.
+        Your saved list stays available if a later read fails.
       </p>
     </main>
   );

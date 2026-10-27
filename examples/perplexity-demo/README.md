@@ -1,8 +1,8 @@
 # Perplexity demo — Research Shelf
 
-A separate Next.js example based on the ChatGPT starter. It creates signed Vana requests for `perplexity.conversations` on Moksha and shows the connection state beside an empty thread-list view. The original `nextjs-starter` is unchanged.
+A separate Next.js example based on the existing starter. It requests `perplexity.conversations`, reads through the app's own Moksha grant, saves conversation titles and update times locally, renders them, then acknowledges delivery. The original ChatGPT `nextjs-starter` is unchanged.
 
-This is BUI-929's connection/setup slice. `/api/data` returns HTTP 501 with `read_not_enabled`: it does not read data, authorize payment, persist threads or acknowledge delivery. The controller also refuses every Personal Server 402 before the SDK can sign a payment. The next slice, BUI-931, supplies the bounded paid read, save and display. BUI-932 supplies Read latest through the same grant after a connector edit. No fabricated conversation data is shown.
+The server refuses payments by default. Explicit Moksha opt-in, a per-read cap and a total cap are all required before it can transmit a payment, including replay of an existing signed receipt. No owner-key read, Mainnet payment, automatic faucet, Desktop dependency or Registry work is included.
 
 ## Choose one app identity
 
@@ -65,7 +65,7 @@ vana app escrow fund --network moksha --amount 1
 vana app escrow balance --network moksha --json
 ```
 
-Use the normal escrow path and check that the deposit is finalized with positive available balance. Do not use an owner-key shortcut or disable fees. A future paid read must check the current fee quote and a configured cap; a funded balance is not itself proof of successful app delivery. This version deliberately does not spend escrow.
+Use the normal escrow path and check that the deposit is finalized with positive available balance. Do not use an owner-key shortcut or disable fees. A future paid read must check the current fee quote and a configured cap; a funded balance is not itself proof of successful app delivery. Reading may spend test VANA only after the opt-in and caps below are configured.
 
 ## Run and review
 
@@ -80,13 +80,52 @@ Open `http://localhost:3090` in a desktop browser. **Connect with Vana** signs a
 
 Both `dev` and `start` bind to `127.0.0.1`. After building, use `pnpm --filter perplexity-demo start` to review the production build on the same local URL.
 
-The Web owner-only unfamiliar-source approval is BUI-924's separate dependency. If Vana cannot approve Perplexity yet, keep the refusal visible; do not manufacture consent, substitute a public source or use owner credentials. After approval becomes available, this version still stops with “Data reads are not enabled” and leaves the thread list empty. Mobile/Desktop app handoffs, the public Registry and connector publication are outside this example.
+## Enable bounded test reads
+
+Add server-only configuration deliberately:
+
+```dotenv
+VANA_ALLOW_MOKSHA_PAYMENT=true
+VANA_MAX_FEE=0.02
+VANA_MAX_TOTAL=0.04
+```
+
+Amounts are native Moksha VANA (18 decimals). These examples permit the observed 0.011 quote; recheck the current fee and finalized available escrow before choosing limits. `VANA_MAX_TOTAL` is a conservative authorization budget for each app/environment/owner/grant/scope ledger, including uncertain transmissions. It is not a chain accounting total. Reconnecting a browser does not reset it. Lowering or disabling the policy also blocks transmission of retained payment headers.
+
+The example supports the selected pinned server's `grant` challenge. A changed payment scheme, network, asset, invalid challenge, increased quote, insufficient finalized escrow or cap violation stops before signing. Transport retries are disabled. A payment is persisted before transmission; the received server envelope is also saved privately before decoding into titles; an uncertain response retains and replays the same signed header instead of signing another charge for the same operation. New connector data versions can require a new bounded authorization.
+
+`VANA_SHELF_DIRECTORY` selects a **private local** writable directory (default `.research-shelf`, gitignored). Files contain saved titles, trusted grant/server bindings and signed payment receipts. Directories use mode 0700, files 0600 and writes use fsync plus atomic rename. Do not publish this directory or its contents. The browser receives an opaque HttpOnly cookie and saved titles, never private keys, payment headers or a browser-selectable grant/server URL. This local single-owner example is not hosted multi-user authentication.
+
+App/environment changes invalidate the session. The app rechecks live grant ownership, scope, expiry/revocation and the registered owner-bound server before a new read. A failed read preserves the earlier saved list. `/api/acknowledge` only accepts the exact saved revision; the UI invokes it after that list commits to the DOM. Confirmation failure offers a separate retry without rereading or repaying.
+
+For an existing **local dev** approval test, set `VANA_APPROVAL_URL=http://localhost:3083` with `VANA_ENV=dev`. `VANA_RESUME_REQUEST_ID=dcr_...` may resume a deliberately selected existing approval server-side, checking its live grant/binding first; it does not mint consent or bypass a pending/refused approval. Leave it unset for normal Connect/new-request behavior.
+
+### Interrupted-process recovery
+
+The store fails closed if an action lock survives a process crash. Each `.lock` file records its process ID and creation time. Stop the owned demo process, confirm the recorded PID no longer exists and no other process is serving this store, then remove **only that abandoned `.lock` file** before restarting. Retain the connection and payment JSON files: deleting those would lose uncertain-payment protection and spending history. A live/unknown owner is not permission to clear a lock. Errors caught by a running process release their lock normally.
+
+The Web owner-only unfamiliar-source approval is BUI-924's separate dependency. If Vana cannot approve Perplexity yet, keep the refusal visible; do not manufacture consent, substitute a public source or use owner credentials. The result is complete only when real conversations are saved and rendered and Vana receives acknowledgement. Mobile/Desktop app handoffs, the public Registry and connector publication are outside this example.
 
 ## Verify
 
 ```sh
-pnpm test test/examples/perplexity-demo.test.ts test/examples/nextjs-starter.test.ts
+pnpm test test/examples/perplexity-demo.test.ts test/examples/nextjs-starter.test.ts examples/perplexity-demo/src/components/ConnectFlow.test.js
 pnpm --filter perplexity-demo build
 ```
 
-Route tests use local HTTP fixtures with the real SDK and a public Hardhat test identity. They verify the signed app identity, exact conversations-only Moksha request, deployment selection, key/address validation, status polling and the no-read/no-payment boundary. They do not establish live owner consent, paid delivery or the final iteration loop.
+Route tests use fixed local HTTP responses with the real SDK and public Hardhat identity. They verify normal app-key payment signatures, spending and grant refusals, reconnect/restart receipt recovery, actual private-file persistence, no acknowledgement before saving, and separate acknowledgement retry. They do not establish live provider collection, real paid delivery, browser rendering or the changed-output loop.
+
+The component regression renders the actual connection flow with delayed synthetic responses. It checks that a late saved-data snapshot cannot replace a newer delivered result, while ordinary saved-data restoration still works.
+
+## Live proof: distinct outcomes
+
+Use the maintained [connection verification evidence rules](https://github.com/vana-com/unity-surfaces/blob/a87843f90b9b570ce493e769d348b1a869a9ebae/.agents/skills/us-verify-data-connection-workflow/references/evidence-and-reruns.md) from merged #1933. Keep one private result per attempt with exact CLI/SDK/server/demo revisions, configuration, request/grant references, timestamps, actions and failures. Record these separately:
+
+1. CLI emitted and synced real conversations.
+2. The app's grant returned the selected scope through the public server path; record the current fee, budget and actual payment/grant status.
+3. The app durably saved a recognizable stable thread ID/title/time, then displayed that saved value in its actual browser route.
+4. Acknowledgement succeeded after persistence and rendering. `approved`, HTTP 200 or `completed` alone is insufficient proof of all four.
+
+Keep private titles and raw payloads outside Git/Linear. A successful server access log with no saved demo result is a failed consumer-delivery attempt, not end-to-end success. Preserve its receipt and cost; a fresh charged attempt requires an explicit operator decision rather than automatic replacement. Compare saved content to what the browser actually displays, and retain failure attempts rather than relabelling them. A grant's chain finalization and consumer acknowledgement are separate observations.
+
+[Motel composition guidance](https://github.com/vana-com/unity-surfaces/blob/a87843f90b9b570ce493e769d348b1a869a9ebae/.agents/skills/us-verify-with-motel/SKILL.md) is optional diagnosis. Its existing exporter is Desktop-specific and does not capture this example. Use existing request/payment/save evidence first; add app-owned, metadata-only probes only for a concrete unresolved failure. Do not launch Desktop, upgrade Personal Server or build an observability programme for this milestone.
