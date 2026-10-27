@@ -172,13 +172,14 @@ export default function ConnectFlow() {
   }
 
   // Effects run after the saved list has committed to the DOM.
+  // A new connection can recover the same revision and still needs its own ack.
   useEffect(() => {
     displayedRevision.current = saved?.revision;
     if (saved && !acknowledged) void acknowledge(saved.revision);
     return () => {
       displayedRevision.current = undefined;
     };
-  }, [saved?.revision]);
+  }, [saved]);
 
   return (
     <>
