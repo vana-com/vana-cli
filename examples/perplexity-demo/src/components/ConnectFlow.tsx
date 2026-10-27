@@ -67,11 +67,16 @@ export default function ConnectFlow() {
 
   useEffect(() => {
     let active = true;
+    const generation = connectionGeneration.current;
     fetch("/api/data", { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) return;
         const snapshot = await response.json();
-        if (active && snapshot.saved) {
+        if (
+          active &&
+          connectionGeneration.current === generation &&
+          snapshot.saved
+        ) {
           setSaved(snapshot.saved);
           setAcknowledgedRevision(
             snapshot.acknowledged ? snapshot.saved.revision : undefined,

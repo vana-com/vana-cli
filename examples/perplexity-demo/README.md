@@ -109,11 +109,13 @@ The Web owner-only unfamiliar-source approval is BUI-924's separate dependency. 
 ## Verify
 
 ```sh
-pnpm test test/examples/perplexity-demo.test.ts test/examples/nextjs-starter.test.ts
+pnpm test test/examples/perplexity-demo.test.ts test/examples/nextjs-starter.test.ts examples/perplexity-demo/src/components/ConnectFlow.test.js
 pnpm --filter perplexity-demo build
 ```
 
 Route tests use fixed local HTTP responses with the real SDK and public Hardhat identity. They verify normal app-key payment signatures, spending and grant refusals, reconnect/restart receipt recovery, actual private-file persistence, no acknowledgement before saving, and separate acknowledgement retry. They do not establish live provider collection, real paid delivery, browser rendering or the changed-output loop.
+
+The component regression renders the actual connection flow with delayed synthetic responses. It checks that a late saved-data snapshot cannot replace a newer delivered result, while ordinary saved-data restoration still works.
 
 ## Live proof: distinct outcomes
 
