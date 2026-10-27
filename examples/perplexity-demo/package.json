@@ -1,0 +1,24 @@
+{
+  "name": "perplexity-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 3090",
+    "start": "next start --hostname 127.0.0.1 --port 3090",
+    "build": "pnpm --filter vana-cli build && next build"
+  },
+  "dependencies": {
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "vana-cli": "workspace:*",
+    "viem": "^2.0.0",
+    "@opendatalabs/vana-sdk": "4.3.1",
+    "server-only": "0.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "typescript": "~5.7.0"
+  }
+}
