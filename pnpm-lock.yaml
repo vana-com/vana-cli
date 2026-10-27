@@ -257,6 +257,40 @@ importers:
         specifier: ~5.7.0
         version: 5.7.3
 
+  examples/perplexity-demo:
+    dependencies:
+      "@opendatalabs/vana-sdk":
+        specifier: 4.3.1
+        version: 4.3.1(bufferutil@4.1.0)(react@19.2.4)(typescript@5.7.3)(utf-8-validate@5.0.10)
+      next:
+        specifier: ^15.0.0
+        version: 15.5.12(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      react:
+        specifier: ^19.0.0
+        version: 19.2.4
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.4(react@19.2.4)
+      server-only:
+        specifier: 0.0.1
+        version: 0.0.1
+      vana-cli:
+        specifier: workspace:*
+        version: link:../..
+      viem:
+        specifier: ^2.0.0
+        version: 2.45.2(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.3.6)
+    devDependencies:
+      "@types/node":
+        specifier: ^22.0.0
+        version: 22.19.11
+      "@types/react":
+        specifier: ^19.0.0
+        version: 19.2.13
+      typescript:
+        specifier: ~5.7.0
+        version: 5.7.3
+
 packages:
   "@acemir/cssom@0.9.31":
     resolution:
