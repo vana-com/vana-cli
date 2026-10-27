@@ -42,6 +42,9 @@ export default function ConnectFlow() {
   const connectionGeneration = useRef(0);
   const acknowledged = !!saved && acknowledgedRevision === saved.revision;
   const [ackError, setAckError] = useState<string>();
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string>();
+  const [reviewRequired, setReviewRequired] = useState(false);
   const { state, start, reset, retryRead } = useDirectVanaConnect<
     NonNullable<Connection["saved"]>
   >({
@@ -124,6 +127,50 @@ export default function ConnectFlow() {
     }
   }
 
+  async function readLatest() {
+    const generation = connectionGeneration.current;
+    setRefreshing(true);
+    setRefreshError(undefined);
+    setReviewRequired(false);
+    try {
+      const response = await fetch("/api/latest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok && connectionGeneration.current === generation) {
+        const refusal = await response
+          .clone()
+          .json()
+          .catch(() => undefined);
+        setReviewRequired(
+          [401, 403].includes(response.status) ||
+            ["approval_required", "grant_invalid", "grant_refused"].includes(
+              refusal?.code,
+            ),
+        );
+      }
+      const result =
+        await checkedResponse<
+          ApprovedDataResult<NonNullable<Connection["saved"]>>
+        >(response);
+      if (connectionGeneration.current !== generation) return;
+      setSaved(result.data);
+      setAcknowledgedRevision(undefined);
+      setAckError(undefined);
+      setReviewRequired(false);
+    } catch (error) {
+      if (connectionGeneration.current !== generation) return;
+      setRefreshError(
+        error instanceof Error
+          ? error.message
+          : "The latest read did not finish.",
+      );
+    } finally {
+      if (connectionGeneration.current === generation) setRefreshing(false);
+    }
+  }
+
   // Effects run after the saved list has committed to the DOM.
   useEffect(() => {
     displayedRevision.current = saved?.revision;
@@ -160,9 +207,13 @@ export default function ConnectFlow() {
               onClick={() => {
                 connectionGeneration.current++;
                 setAckError(undefined);
+                setRefreshError(undefined);
+                setReviewRequired(false);
+                setRefreshing(false);
                 void start();
               }}
               className="btn-primary full-width"
+              disabled={refreshing}
             >
               Connect with Vana
             </button>
@@ -258,6 +309,32 @@ export default function ConnectFlow() {
                   </li>
                 ))}
               </ul>
+            )}
+          </>
+        )}
+        {saved && (
+          <>
+            <button
+              type="button"
+              className="btn-primary full-width"
+              disabled={
+                refreshing ||
+                !acknowledged ||
+                !["idle", "done", "error"].includes(state.type)
+              }
+              onClick={() => void readLatest()}
+            >
+              {refreshing ? "Reading latest…" : "Read latest"}
+            </button>
+            {refreshError && (
+              <p className="text-error" role="alert">
+                Your saved list is still available. {refreshError}
+              </p>
+            )}
+            {reviewRequired && state.type !== "idle" && (
+              <button type="button" className="btn-ghost" onClick={reset}>
+                Review access again
+              </button>
             )}
           </>
         )}
