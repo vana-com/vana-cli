@@ -1,16 +1,27 @@
-import { NextResponse } from "next/server";
-import { config, vana } from "../../../config.js";
+import { config, vana, shelf } from "../../../config.js";
+import {
+  failure,
+  json,
+  sameOrigin,
+  SESSION_COOKIE,
+} from "../../../server/http.js";
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
-    return NextResponse.json(
-      await vana.createAccessRequest({ returnUrl: config.appUrl }),
-      { headers: { "Cache-Control": "no-store" } },
-    );
-  } catch {
-    return NextResponse.json(
-      { error: "Failed to create access request" },
-      { status: 500 },
-    );
+    sameOrigin(request);
+    const created = await shelf.connect(async () => ({
+      ...(await vana.createAccessRequest({ returnUrl: config.appUrl })),
+    }));
+    const response = json(created.request);
+    response.cookies.set(SESSION_COOKIE, created.token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: new URL(config.appUrl).protocol === "https:",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 7,
+    });
+    return response;
+  } catch (error) {
+    return failure(error);
   }
 }

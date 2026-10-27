@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { vana } from "../../../config.js";
+import { shelf } from "../../../config.js";
+import { failure, json, session } from "../../../server/http.js";
 
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
@@ -13,13 +14,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Invalid requestId" }, { status: 400 });
   }
   try {
-    return NextResponse.json(await vana.getAccessRequestStatus(requestId), {
-      headers: { "Cache-Control": "no-store" },
-    });
-  } catch {
-    return NextResponse.json(
-      { error: "Failed to check access request" },
-      { status: 500 },
-    );
+    return json(await shelf.status(session(request), requestId));
+  } catch (error) {
+    return failure(error);
   }
 }
