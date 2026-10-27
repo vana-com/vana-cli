@@ -123,9 +123,16 @@ export function createShelf(config: DeliveryConfig) {
   const store = new ShelfStore(config.storageDirectory);
   const payments = new ShelfStore(`${config.storageDirectory}/payments`);
   interface PaymentLedger {
+    format?: number;
     spent: string;
     payment?: { header: string; operation: string; amount: string };
-    received?: { revision: string; receivedAt: string; body: unknown };
+    received?: {
+      revision: string;
+      receivedAt: string;
+      body: unknown;
+      paymentHeaderHash?: string;
+    };
+    history?: { header: string; operation: string; amount: string }[];
   }
   function paymentPolicy(amount: bigint, spent: bigint) {
     if (!config.allowPayment || !config.maxFee || !config.maxTotal)
@@ -163,7 +170,7 @@ export function createShelf(config: DeliveryConfig) {
     return state;
   }
 
-  async function liveBinding(state: Connection) {
+  async function liveBinding(state: Connection, requireCompleted = false) {
     const status = await access.getAccessRequestStatus(state.requestId);
     if (!["approved", "ready_for_read", "completed"].includes(status.status)) {
       throw new DeliveryError(
@@ -171,13 +178,19 @@ export function createShelf(config: DeliveryConfig) {
         `The request is ${status.status}. Review access in Vana.`,
       );
     }
+    if (requireCompleted && status.status !== "completed")
+      throw new DeliveryError(
+        "delivery_incomplete",
+        "Confirm the original delivery before reading latest.",
+      );
     const binding = state.binding;
     const grantId = binding?.grantId ?? status.grantId;
     const serverUrl = binding?.serverUrl ?? status.personalServerUrl;
     if (
       !grantId ||
       !serverUrl ||
-      !status.scopes?.includes(SCOPE) ||
+      ((!binding || status.status !== "completed") &&
+        !status.scopes?.includes(SCOPE)) ||
       (status.grantId && status.grantId !== grantId) ||
       (status.personalServerUrl && status.personalServerUrl !== serverUrl)
     ) {
@@ -299,7 +312,22 @@ export function createShelf(config: DeliveryConfig) {
         // A lost response can be recovered without another paid read.
         if (requestId && state.saved)
           return { scope: SCOPE, data: state.saved };
-        const grant = await liveBinding(state);
+        // Recover a saved response lost in transport before attempting another paid read.
+        if (
+          !requestId &&
+          state.saved &&
+          state.acknowledged !== state.saved.revision
+        )
+          return { scope: SCOPE, data: state.saved };
+        if (
+          !requestId &&
+          (!state.saved || state.acknowledged !== state.saved.revision)
+        )
+          throw new DeliveryError(
+            "delivery_incomplete",
+            "Save, display and confirm the initial delivery before reading latest.",
+          );
+        const grant = await liveBinding(state, !requestId);
         await store.save(token, state);
         const binding = state.binding!;
         const ledgerKey = createHash("sha256")
@@ -315,8 +343,34 @@ export function createShelf(config: DeliveryConfig) {
           .digest("hex");
         return payments.exclusive(ledgerKey, async () => {
           const ledger = (await payments.read<PaymentLedger>(ledgerKey)) ?? {
+            format: 2,
             spent: "0",
           };
+          if (ledger.format !== undefined && ledger.format !== 2)
+            throw new DeliveryError(
+              "storage_version",
+              "This payment store needs a compatible demo version.",
+            );
+          if (ledger.format === undefined) {
+            // BUI-931 had no fresh-read endpoint: an acknowledged saved revision
+            // matching its received body proves which existing header delivered it.
+            if (
+              ledger.payment &&
+              ledger.received &&
+              state.saved?.revision === ledger.received.revision &&
+              state.acknowledged === state.saved.revision &&
+              JSON.stringify(state.saved.threads) ===
+                JSON.stringify(threadsFrom(ledger.received.body))
+            ) {
+              ledger.received.paymentHeaderHash = createHash("sha256")
+                .update(ledger.payment.header)
+                .digest("hex");
+            }
+            if (!ledger.received || ledger.received.paymentHeaderHash) {
+              ledger.format = 2;
+              await payments.save(ledgerKey, ledger);
+            }
+          }
           async function saveReceived() {
             const received = ledger.received!;
             state.saved = {
@@ -328,7 +382,15 @@ export function createShelf(config: DeliveryConfig) {
             return { scope: SCOPE, data: state.saved };
           }
           // Recover a delivered body after decoder/save failure without another paid read.
-          if (requestId && ledger.received) return saveReceived();
+          if (
+            ledger.received &&
+            (requestId || ledger.received.revision !== state.saved?.revision)
+          )
+            return saveReceived();
+          const previousDelivered =
+            !!ledger.payment &&
+            ledger.received?.paymentHeaderHash ===
+              createHash("sha256").update(ledger.payment.header).digest("hex");
           let challengeOperation: string | undefined;
           const fetchRead: PersonalServerFetch = async (input, init) => {
             const headers = { ...init.headers };
@@ -344,6 +406,7 @@ export function createShelf(config: DeliveryConfig) {
                 Buffer.from(outgoing, "base64").toString("utf8"),
               );
               const amount: string = payment.payload.message.amount;
+              if (ledger.payment) (ledger.history ??= []).push(ledger.payment);
               ledger.payment = {
                 header: outgoing,
                 operation: challengeOperation,
@@ -352,7 +415,7 @@ export function createShelf(config: DeliveryConfig) {
               ledger.spent = (BigInt(ledger.spent) + BigInt(amount)).toString();
               // Persist before transmission: an uncertain response must not authorize another fee.
               await payments.save(ledgerKey, ledger);
-            } else if (ledger.payment) {
+            } else if (ledger.payment && (requestId || !previousDelivered)) {
               paymentPolicy(
                 BigInt(ledger.payment.amount),
                 BigInt(ledger.spent),
@@ -403,9 +466,7 @@ export function createShelf(config: DeliveryConfig) {
               const operation = `${required.opId}:${required.accessRecord?.dataPointId ?? ""}:${required.accessRecord?.version ?? ""}`;
               if (
                 ledger.payment &&
-                (outgoing ||
-                  ledger.payment.operation === operation ||
-                  !required.accessRecord)
+                (outgoing || requestId || !previousDelivered)
               )
                 throw new DeliveryError(
                   "payment_unconfirmed",
@@ -457,6 +518,9 @@ export function createShelf(config: DeliveryConfig) {
             revision: randomUUID(),
             receivedAt: new Date().toISOString(),
             body: result.data,
+            paymentHeaderHash: ledger.payment
+              ? createHash("sha256").update(ledger.payment.header).digest("hex")
+              : undefined,
           };
           await payments.save(ledgerKey, ledger);
           return saveReceived();
