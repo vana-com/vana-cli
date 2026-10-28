@@ -212,6 +212,7 @@ import {
   trackActiveTelemetryEvent,
 } from "./telemetry.js";
 import { dataScopeKeys, scopeLeaf, scopeList } from "./data-slice.js";
+import { queryOwnerIdentity, type OwnerIdentity } from "./identity.js";
 
 interface GlobalOptions {
   json?: boolean;
@@ -414,6 +415,7 @@ export async function runCli(argv = process.argv): Promise<number> {
       `
 Quick start:
   vana login             Log in to your Vana account
+  vana whoami            Show your signed-in account identity
   vana connect           Connect a source and collect data
   vana sources           Browse available sources
   vana status            Check system health
@@ -670,6 +672,16 @@ Examples:
   vana collect --json
 `,
   );
+
+  program
+    .command("whoami")
+    .description("Show your signed-in Vana account identity")
+    .action(async () => {
+      process.exitCode = await runCommandWithTelemetry(
+        { ...telemetryBaseContext, command: "whoami" },
+        async () => runWhoami(parsedOptions),
+      );
+    });
 
   const statusCommand = program
     .command("status")
@@ -3016,8 +3028,72 @@ async function runList(options: GlobalOptions): Promise<number> {
   return 0;
 }
 
+function renderOwnerIdentity(
+  emit: Emitter,
+  identity: OwnerIdentity,
+  options: GlobalOptions,
+): void {
+  if (identity.authenticated) {
+    emit.keyValue(
+      "Account",
+      identity.email ?? identity.name ?? identity.address ?? "Unknown",
+      "success",
+    );
+    if (identity.email || identity.name) {
+      emit.keyValue(
+        /^0x[a-f0-9]{40}$/i.test(identity.address ?? "")
+          ? "Wallet"
+          : "Account ID",
+        identity.address ?? "Unknown",
+        "muted",
+      );
+    }
+    emit.keyValue(
+      "Sign-in method",
+      identity.loginMethod ?? "Not reported by Account",
+      "muted",
+    );
+    emit.keyValue(
+      "Auth",
+      `Authenticated (expires in ${formatExpiresIn(identity.expires_at!)})`,
+      "success",
+    );
+    emit.keyValue("Account URL", identity.accountUrl, "muted");
+    emit.keyValue("Network", resolveNetwork(options.network).name, "muted");
+  } else if (identity.authentication === "personal_server") {
+    emit.keyValue("Account", "Not logged in", "muted");
+    if (identity.address) emit.keyValue("Wallet", identity.address, "muted");
+    emit.keyValue("Auth", "Personal Server session only", "muted");
+    emit.keyValue(
+      "Server URL",
+      identity.personalServerUrl ?? "Unknown",
+      "muted",
+    );
+  } else {
+    emit.keyValue("Account", "Not logged in", "muted");
+    emit.keyValue("Auth", "Run `vana login` to authenticate", "muted");
+  }
+}
+
+async function runWhoami(options: GlobalOptions): Promise<number> {
+  const identity = await queryOwnerIdentity(loadCredentials());
+  const network = resolveNetwork(options.network);
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify({ ...identity, network: network.name, chainId: network.chainId })}\n`,
+    );
+  } else {
+    const emit = createEmitter(options);
+    emit.title("Vana account");
+    emit.blank();
+    renderOwnerIdentity(emit, identity, options);
+    if (!identity.authenticated) emit.next("vana login");
+  }
+  return CliExitCode.OK;
+}
+
 async function runStatus(options: GlobalOptions): Promise<number> {
-  const { status, nextSteps } = await queryStatus();
+  const { status, nextSteps, otherServers } = await queryStatus();
   const state = await readCliState();
 
   // Build per-source health map from stored state
@@ -3050,15 +3126,19 @@ async function runStatus(options: GlobalOptions): Promise<number> {
   // The server answering here may be another account's, still running after
   // a login switch: it is listed as such, never as this account's.
   const authCreds = loadCredentials();
-  const other = foreignServer(
+  const selectedOther = foreignServer(
     {
       state: status.personalServer,
       url: status.personalServerUrl ?? null,
       owner: status.personalServerOwner ?? null,
     },
     authCreds,
+    { inspection: true },
   );
-  const ownRunning = status.personalServer === "available" && !other;
+  const others = statusOtherServers(selectedOther, otherServers);
+  const other = others[0] ?? null;
+  const ownRunning = status.personalServer === "available" && !selectedOther;
+  const identity = await queryOwnerIdentity(authCreds, { refresh: false });
   const ownDir =
     authCreds && !isExpired(authCreds)
       ? ownCliServerDir(
@@ -3066,6 +3146,8 @@ async function runStatus(options: GlobalOptions): Promise<number> {
           authCreds.account.address,
         )
       : null;
+  const recoveryCommand =
+    !ownRunning && (other || ownDir) ? serverStartCommand(options) : null;
 
   const accessRequests =
     ownRunning && status.personalServerUrl
@@ -3073,7 +3155,6 @@ async function runStatus(options: GlobalOptions): Promise<number> {
       : [];
 
   if (options.json) {
-    const jsonAuthCreds = authCreds;
     const compactJson = {
       runtime: status.runtime,
       personalServer: ownRunning ? status.personalServer : "unavailable",
@@ -3087,13 +3168,11 @@ async function runStatus(options: GlobalOptions): Promise<number> {
         ? { url: other.url, owner: other.owner, notThisAccount: true }
         : null,
       pendingSyncCount: status.pendingSyncCount ?? 0,
-      auth: jsonAuthCreds
-        ? {
-            authenticated: !isExpired(jsonAuthCreds),
-            address: jsonAuthCreds.account.address,
-            expires_at: jsonAuthCreds.account.expires_at,
-          }
-        : { authenticated: false },
+      otherPersonalServers: others.map((server) => ({
+        ...server,
+        notThisAccount: true,
+      })),
+      auth: identity,
       sources: {
         connected: status.summary?.connectedCount ?? 0,
         needsAttention: status.summary?.needsAttentionCount ?? 0,
@@ -3105,7 +3184,7 @@ async function runStatus(options: GlobalOptions): Promise<number> {
         displayName: request.displayName,
         scopes: request.scopes,
       })),
-      next: other ? "vana server start" : (nextSteps[0] ?? null),
+      next: recoveryCommand ?? nextSteps[0] ?? null,
     };
     process.stdout.write(`${JSON.stringify(compactJson)}\n`);
     return 0;
@@ -3129,28 +3208,17 @@ async function runStatus(options: GlobalOptions): Promise<number> {
     emit.keyValue("Personal Server", "not connected", "warning");
   }
 
-  // Auth state
-  if (authCreds && !isExpired(authCreds)) {
-    emit.keyValue("Account", authCreds.account.address, "success");
-    emit.keyValue(
-      "Auth",
-      `Authenticated (expires in ${formatExpiresIn(authCreds.account.expires_at)})`,
-      "success",
-    );
-  } else {
-    emit.keyValue("Account", "Not logged in", "muted");
-    emit.keyValue("Auth", "Run `vana login` to authenticate", "muted");
-  }
+  renderOwnerIdentity(emit, identity, options);
 
-  if (other) {
+  for (const server of others) {
     emit.keyValue(
       "Also running",
-      `${other.url} for ${other.owner} (not this account)`,
+      `${server.url} for ${server.owner} (not this account)`,
       "muted",
     );
   }
-  if (!ownRunning && (other || ownDir)) {
-    emit.detail(ownServerDownLine(Boolean(ownDir)));
+  if (recoveryCommand) {
+    emit.detail(ownServerDownLine(Boolean(ownDir), recoveryCommand));
   }
   const accessRequestLine = pendingRequestsStatusLine(accessRequests);
   if (accessRequestLine) {
@@ -3239,7 +3307,10 @@ async function runStatus(options: GlobalOptions): Promise<number> {
     }
   }
 
-  if (nextSteps.length > 0) {
+  if (recoveryCommand) {
+    emit.blank();
+    emit.next(recoveryCommand);
+  } else if (nextSteps.length > 0) {
     emit.blank();
     const command = extractCommand(nextSteps[0]);
     if (command) {
@@ -3586,13 +3657,15 @@ function networkOfGateway(gatewayUrl: unknown): VanaNetworkName | null {
 function foreignServer(
   server: { state: string; url: string | null; owner: string | null },
   credentials: VanaCredentials | null,
+  options: { inspection?: boolean } = {},
 ): { url: string; owner: string; account: string } | null {
   if (server.state !== "available" || !server.url) return null;
-  if (!credentials || isExpired(credentials)) return null;
-  const mismatch = personalServerOwnerMismatch(
-    server.owner,
-    credentials.account.address,
-  );
+  if (!options.inspection && (!credentials || isExpired(credentials)))
+    return null;
+  const account = options.inspection
+    ? (loadAccountAddressForOwnership() ?? credentials?.account.address)
+    : credentials?.account.address;
+  const mismatch = personalServerOwnerMismatch(server.owner, account);
   return mismatch ? { url: server.url, ...mismatch } : null;
 }
 
@@ -3666,6 +3739,19 @@ async function pendingScopeRequestsForStatus(
   }
 }
 
+function statusOtherServers(
+  selected: { url: string; owner: string } | null,
+  discovered: { url: string; owner: string }[] = [],
+): { url: string; owner: string }[] {
+  const others: { url: string; owner: string }[] = [];
+  for (const server of [...(selected ? [selected] : []), ...discovered]) {
+    if (!others.some((other) => urlsMatch(other.url, server.url))) {
+      others.push({ url: server.url, owner: server.owner });
+    }
+  }
+  return others;
+}
+
 /** This account's own `vana server start` data dir, running or not. */
 function ownCliServerDir(
   network: VanaNetworkName,
@@ -3683,11 +3769,31 @@ function ownCliServerDir(
   }
 }
 
+function serverStartCommand(options: GlobalOptions): string {
+  const environment: [string, string][] = [["VANA_HOME", getVanaHome()]];
+  if (process.env.VANA_ENV === "dev" || process.env.VANA_ENV === "prod") {
+    environment.push(["VANA_ENV", process.env.VANA_ENV]);
+  }
+  if (process.env.VANA_ACCOUNT_URL) {
+    environment.push(["VANA_ACCOUNT_URL", getAccountUrl()]);
+  }
+  const windows = process.platform === "win32";
+  const context = environment.map(([key, value]) => {
+    if (windows) return `$env:${key}='${value.replace(/'/g, "''")}'`;
+    return `${key}='${value.replace(/'/g, "'\\''")}'`;
+  });
+  context.push(
+    `vana server start --network ${resolveNetwork(options.network).name}`,
+  );
+  return context.join(windows ? "; " : " ");
+}
+
 /** What to say when this account's own server is not the one running. */
-function ownServerDownLine(hasOwnServer: boolean): string {
+function ownServerDownLine(hasOwnServer: boolean, command: string): string {
+  const shell = process.platform === "win32" ? " in PowerShell" : "";
   return hasOwnServer
-    ? "Your Personal Server is not running. Start it with `vana server start`."
-    : "No Personal Server of yours is running. Start one with `vana server start`.";
+    ? `Your Personal Server is not running. Start it${shell} with \`${command}\`.`
+    : `No Personal Server of yours is running. Start one${shell} with \`${command}\`.`;
 }
 
 /**
@@ -3735,21 +3841,26 @@ async function runServerStatus(
   statusOptions: { all?: boolean } = {},
 ): Promise<number> {
   const emit = createEmitter(options);
-  const target = await detectPersonalServerTarget();
+  const target = await detectPersonalServerTarget({
+    purpose: "owner-inspection",
+  });
   const credentials = loadCredentials();
   const account = credentials?.account.address;
   // The same check `vana status` makes: the server answering here may be
   // another account's, still running after a login switch. Then nothing
   // below is about it: its URLs are not this account's to hand out.
-  const other = foreignServer(
+  const selectedOther = foreignServer(
     {
       state: target.state,
       url: target.url,
       owner: target.health?.owner ?? null,
     },
     credentials,
+    { inspection: true },
   );
-  const own: PersonalServerTarget = other
+  const others = statusOtherServers(selectedOther, target.otherServers);
+  const other = others[0] ?? null;
+  const own: PersonalServerTarget = selectedOther
     ? { state: "unavailable", url: null, source: null, health: null }
     : target;
   const owner =
@@ -3788,7 +3899,9 @@ async function runServerStatus(
   const otherCliServers = cliServers.filter(
     (server) => server.dir !== dataDir?.path,
   );
-  const otherIdentity = other ? (target.health?.identity ?? null) : null;
+  const otherIdentity = selectedOther
+    ? (target.health?.identity ?? null)
+    : null;
   const isOtherServer = (server: CliServerDir) =>
     Boolean(
       other &&
@@ -3824,12 +3937,13 @@ async function runServerStatus(
           ? {
               url: other.url,
               owner: other.owner,
-              source: target.source,
+              source: selectedOther ? target.source : null,
               identity: otherIdentity,
               pid: cliServers.find(isOtherServer)?.pid ?? null,
-              health: target.health,
+              health: selectedOther ? target.health : null,
             }
           : null,
+        otherServers: others,
         otherLocalServers: otherCliServers.map((server) => ({
           owner: server.owner,
           pid: server.pid,
@@ -3838,7 +3952,7 @@ async function runServerStatus(
         registeredServers: registrations,
         health: own.health,
         scopeCount: totalScopeCount,
-        notThisAccount: other !== null,
+        notThisAccount: selectedOther !== null,
       })}\n`,
     );
     return 0;
@@ -3893,16 +4007,19 @@ async function runServerStatus(
   if (dataDir) {
     emit.keyValue("Data on disk", formatDisplayPath(dataDir.path), "muted");
   }
-  if (other) {
-    const pid = cliServers.find(isOtherServer)?.pid;
+  for (const server of others) {
+    const pid = cliServers.find((local) =>
+      sameAccountAddress(local.owner, server.owner),
+    )?.pid;
     emit.keyValue(
       "Also running",
-      `${other.url} for ${formatAddress(other.owner)}${pid ? ` (pid ${pid})` : ""}, not this account`,
+      `${server.url} for ${formatAddress(server.owner)}${pid ? ` (pid ${pid})` : ""}, not this account`,
       "muted",
     );
   }
   for (const server of otherCliServers) {
-    if (isOtherServer(server)) continue;
+    if (others.some((other) => sameAccountAddress(server.owner, other.owner)))
+      continue;
     emit.keyValue(
       "Also running",
       `vana server start for ${server.owner ? formatAddress(server.owner) : "another account"} (pid ${server.pid})`,
@@ -3941,9 +4058,12 @@ async function runServerStatus(
   }
 
   if (own.state !== "available") {
+    const recoveryCommand = serverStartCommand(options);
     emit.blank();
-    if (other || ownDir) emit.detail(ownServerDownLine(Boolean(ownDir)));
-    emit.next("vana server start");
+    if (other || ownDir) {
+      emit.detail(ownServerDownLine(Boolean(ownDir), recoveryCommand));
+    }
+    emit.next(recoveryCommand);
   }
 
   emit.blank();

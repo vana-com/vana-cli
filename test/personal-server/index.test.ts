@@ -159,6 +159,102 @@ describe("detectPersonalServerTarget", () => {
     await rm(getAuthFilePath(), { force: true });
   });
 
+  it("preserves an explicit destination while owner inspection finds ours separately", async () => {
+    const mine = "0x1234567890abcdef1234567890abcdef12345678";
+    const theirs = "0x99bf14e94de7edb022e08528c5cdb627f73a988d";
+    await saveCredentials({
+      account: {
+        address: mine,
+        session_token: "account-token",
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
+      personal_server: null,
+    });
+    mocks.readCliConfig.mockResolvedValue({
+      personalServerUrl: "http://localhost:8080",
+    });
+    const owners: Record<string, string> = {
+      "http://localhost:8080/health": theirs,
+      "http://localhost:8082/health": mine,
+    };
+    fetchMock.mockImplementation(async (input) => {
+      const owner = owners[String(input)];
+      if (!owner) throw new Error("not running");
+      return Response.json({
+        status: "healthy",
+        version: "1",
+        uptime: 1,
+        owner,
+      });
+    });
+
+    await expect(detectPersonalServerTarget()).resolves.toMatchObject({
+      url: "http://localhost:8080",
+      source: "config",
+      health: { owner: theirs },
+    });
+    await expect(
+      detectPersonalServerTarget({ purpose: "owner-inspection" }),
+    ).resolves.toMatchObject({
+      state: "available",
+      url: "http://localhost:8082",
+      health: { owner: mine },
+      otherServers: [{ url: "http://localhost:8080", owner: theirs }],
+    });
+
+    delete owners["http://localhost:8082/health"];
+    await expect(
+      detectPersonalServerTarget({ purpose: "owner-inspection" }),
+    ).resolves.toMatchObject({
+      url: "http://localhost:8080",
+      source: "config",
+      health: { owner: theirs },
+    });
+  });
+
+  it("owner inspection includes every foreign target once and keeps the owned target selected", async () => {
+    const mine = "0x1234567890abcdef1234567890abcdef12345678";
+    const theirs = "0x9999999999999999999999999999999999999999";
+    await saveCredentials({
+      account: {
+        address: mine,
+        session_token: "account-token",
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
+      personal_server: null,
+    });
+    mocks.readCliConfig.mockResolvedValue({
+      personalServerUrl: "http://127.0.0.1:8080",
+    });
+    mocks.loadPersonalServerSession.mockReturnValue({
+      url: "http://localhost:8081",
+      session_token: "server-token",
+      expires_at: "2099-01-01T00:00:00.000Z",
+    });
+    fetchMock.mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (!["8080", "8081", "8082", "8083"].includes(url.port))
+        throw new Error("not running");
+      return Response.json({
+        status: "healthy",
+        version: "1",
+        uptime: 1,
+        owner: url.port === "8081" ? mine : theirs,
+      });
+    });
+    expect(
+      await detectPersonalServerTarget({ purpose: "owner-inspection" }),
+    ).toMatchObject({
+      url: "http://localhost:8081",
+      health: { owner: mine },
+      otherServers: [
+        { url: "http://127.0.0.1:8080", owner: theirs },
+        { url: "http://localhost:8082", owner: theirs },
+        { url: "http://localhost:8083", owner: theirs },
+      ],
+    });
+  });
+
   it("falls back from an unreachable saved URL to the authenticated personal server URL", async () => {
     mocks.readCliConfig.mockResolvedValue({
       personalServerUrl: "https://dead.example.com",
