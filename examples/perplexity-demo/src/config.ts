@@ -9,6 +9,7 @@ import { createVanaConfig } from "vana-cli/server";
 import path from "node:path";
 import { getDirectEndpoints } from "@opendatalabs/vana-sdk/server";
 import { createShelf } from "./server/delivery.js";
+import { shelfObserverFromEnvironment } from "./server/observability.js";
 
 const environment = process.env.VANA_ENV ?? "prod";
 if (environment !== "dev" && environment !== "prod") {
@@ -99,6 +100,7 @@ for (const value of [process.env.VANA_MAX_FEE, process.env.VANA_MAX_TOTAL]) {
 }
 
 export const shelf = createShelf({
+  observer: shelfObserverFromEnvironment(),
   privateKey: config.privateKey,
   environment,
   approvalUrl: approvalUrl(),
