@@ -47,6 +47,45 @@ export async function listAvailableSkills(
   }));
 }
 
+/** Full instructions and their required resources, readable without installation. */
+export interface SkillContent extends AvailableSkill {
+  instructions: string;
+  resources: Array<{ path: string; content: string }>;
+}
+
+/** Read a skill and its required references without writing cache or agent files. */
+export async function readSkillContent(
+  skillId: string,
+  skillsDir?: string,
+): Promise<SkillContent> {
+  const resolvedDir = skillsDir ?? findSkillsDir() ?? undefined;
+  const registry = await loadSkillsRegistry(resolvedDir);
+  const entry = registry.skills?.find(
+    (item) => item.id.toLowerCase() === skillId.toLowerCase(),
+  );
+  if (!entry) throw new Error(`No skill found with id "${skillId}".`);
+
+  const instructions = (
+    await readSkillFile(entry.files.skill, resolvedDir)
+  ).toString("utf8");
+  const resources = await Promise.all(
+    (entry.files.supplemental ?? []).map(async (file) => ({
+      path: file.startsWith(`${entry.id}/`)
+        ? file.slice(entry.id.length + 1)
+        : file,
+      content: (await readSkillFile(file, resolvedDir)).toString("utf8"),
+    })),
+  );
+  return {
+    id: entry.id,
+    name: entry.name,
+    description: entry.description,
+    version: entry.version,
+    instructions,
+    resources,
+  };
+}
+
 /**
  * Fetch a skill's files to the local cache directory.
  * @returns The path to the cached SKILL.md
@@ -223,12 +262,14 @@ async function copyOrFetchSkillFile(
   const destination = path.join(cacheDir, relativePath);
   await fs.mkdir(path.dirname(destination), { recursive: true });
 
-  if (skillsDir) {
-    const localPath = path.join(skillsDir, relativePath);
-    const content = await fs.readFile(localPath);
-    await fs.writeFile(destination, content);
-    return;
-  }
+  await fs.writeFile(destination, await readSkillFile(relativePath, skillsDir));
+}
+
+async function readSkillFile(
+  relativePath: string,
+  skillsDir?: string,
+): Promise<Buffer> {
+  if (skillsDir) return fs.readFile(path.join(skillsDir, relativePath));
 
   const response = await fetch(`${SKILLS_BASE_URL}/${relativePath}`, {
     headers: { "User-Agent": "vana-cli" },
@@ -236,6 +277,5 @@ async function copyOrFetchSkillFile(
   if (!response.ok) {
     throw new Error(`Failed to download ${relativePath}: ${response.status}`);
   }
-  const content = Buffer.from(await response.arrayBuffer());
-  await fs.writeFile(destination, content);
+  return Buffer.from(await response.arrayBuffer());
 }

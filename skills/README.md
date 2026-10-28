@@ -10,37 +10,43 @@ requires Git and the Node version declared by the selected
 Connector Factory is optional internal automation; this walkthrough does not
 require its repository, hosted browsers, test accounts, or services.
 
-## Install the CLI and skills
+## Install the CLI and read the workflow
 
 Install the CLI using the [Vana CLI installation instructions](../README.md#install).
 For the npm route:
 
 ```sh
 npm install -g vana-cli
-vana --version
 ```
 
-The installer or first interactive `vana` run offers **Connect Data, Create
-Connector and Builder** together. It shows where the instructions will go and
-asks before copying or replacing them. Answer yes once; separate skill install
-commands are not needed. Declining leaves your agent skills untouched. Automated
-or non-interactive installations skip the offer.
+The running agent reads the bundled instructions directly:
 
-The files, including Builder's verification reference, ship with your CLI and
-need no additional download. To revisit a decision or update your installed skills:
+```sh
+vana skills show connect-data --json
+```
+
+The JSON includes the full `instructions` and required `resources` with their
+content. The agent follows them without installing into its harness or starting
+another session. It reads `create-connector` or `builder` the same way when the
+user's goal needs those workflows. Reading does not write a cache or agent
+configuration, and installed releases use their version-matched bundled files.
+
+## Optional installation for future sessions
+
+Persistent installation lets supported harnesses discover the skills in later
+sessions. It is not required for the current task. The installer may offer
+Connect Data, Create Connector and Builder at a human terminal, shows their
+destinations, and asks before copying or replacing files. Declining leaves agent
+skills untouched. Automated installs skip the offer. Revisit your choice with:
 
 ```sh
 vana skills setup
 ```
 
-The CLI installs under `~/.agents/skills/vana-<id>/` and also
-`~/.claude/skills/vana-<id>/` when `~/.claude/` exists. In Claude Code, use
-`/reload-skills` if new skills are not visible. If you install Claude Code later,
-rerun setup. Once installed, the descriptions let the agent select the right
-skills from your data goal; the phrase “use Vana” alone does not discover GitHub.
-
-Individual `vana skills install <id> --json` commands remain available to agents
-that have explicit permission to install a named skill.
+Native setup currently installs under `~/.agents/skills/vana-<id>/` and also
+`~/.claude/skills/vana-<id>/` when `~/.claude/` exists. Individual
+`vana skills install <id> --json` commands remain available to agents with
+explicit permission to install a named skill.
 
 Alternatively, use the [skills.sh installer](https://skills.sh/docs/cli):
 
@@ -211,7 +217,7 @@ optional `vana connectors add`; a one-off trial does not need registration.
 Collection finishes a collection-only request. If your original goal also asks
 an app to use the data, the agent continues through the public Builder skill:
 
-Builder is included in the setup offer. The agent follows its included
+Read `vana skills show builder --json`; the agent follows its included
 [delivery and verification procedure](./builder/reference/verification.md).
 The agent reuses the intended app identity, guides explicit consent, handles
 any agreed spending limit, and verifies the requested read, storage, display

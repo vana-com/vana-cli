@@ -14,7 +14,13 @@ import {
 } from "../core/source-export.js";
 import type { SourceExportReceipt } from "../core/source-export.js";
 
-import { confirm, input, isPromptInputClosed, password } from "./prompts.js";
+import {
+  confirm,
+  input,
+  isPromptInputClosed,
+  password,
+  select,
+} from "./prompts.js";
 import { canOfferSkillSetup, offerSkillSetup } from "../skills/setup.js";
 import { searchSelect } from "./search-select.js";
 import { Command, CommanderError, Option } from "commander";
@@ -164,6 +170,7 @@ import {
 import { readLocalProfile } from "../pdpp/local.js";
 import {
   listAvailableSkills,
+  readSkillContent,
   installSkill,
   readInstalledSkills,
 } from "../skills/index.js";
@@ -375,10 +382,6 @@ export async function runCli(argv = process.argv): Promise<number> {
   }
 
   const normalizedArgv = normalizeArgv(argv);
-  const defaultHelp = normalizedArgv.length <= 2;
-  if (defaultHelp) {
-    normalizedArgv.push("--help");
-  }
   const parsedOptions = extractGlobalOptions(normalizedArgv);
   const cliVersion = getCliVersion();
   const installMethod = getCliInstallMethod();
@@ -433,7 +436,12 @@ Connectors:
   vana connectors add <key> --from <dir>   Register a local Collection Profile connector
   vana connectors list                     Show registered local connectors
 
-Agent:
+Agent quick start:
+  vana skills show connect-data --json    Read collection instructions; no skill installation needed
+  vana skills show create-connector --json   Read connector authoring instructions
+  vana skills show builder --json         Read app integration and verification instructions
+
+Agent setup (optional):
   vana mcp               Start MCP server (for Claude Code, Cursor, etc.)
   vana skills setup        Offer the three public skills for your agent
   vana skills list         List available agent skills
@@ -464,9 +472,11 @@ More:
       "Vana network: mainnet (default) or moksha, the testnet",
     ).choices([...VANA_NETWORKS]),
   );
-  const offerSkills = async () => {
+  program.hook("preAction", (_thisCommand, actionCommand) => {
+    mergeParsedGlobalOptions(parsedOptions, actionCommand as Command);
+  });
+  program.action(async () => {
     if (
-      installMethod !== "development" &&
       canOfferSkillSetup() &&
       !parsedOptions.json &&
       !parsedOptions.noInput &&
@@ -474,16 +484,11 @@ More:
       !parsedOptions.yes &&
       !parsedOptions.quiet
     ) {
-      await offerSkillSetup({ interactive: true });
+      process.exitCode = await runWelcome(parsedOptions);
+    } else {
+      program.outputHelp();
+      process.exitCode = CliExitCode.OK;
     }
-  };
-  program.hook("preAction", async (_thisCommand, actionCommand) => {
-    mergeParsedGlobalOptions(parsedOptions, actionCommand as Command);
-    let command = actionCommand as Command;
-    while (command.parent && command.parent !== program)
-      command = command.parent;
-    if (!["skills", "mcp", "version"].includes(command.name()))
-      await offerSkills();
   });
 
   program
@@ -1281,7 +1286,9 @@ Examples:
 
   skill
     .command("show <name>")
-    .description("Show skill details")
+    .description(
+      "Read full instructions and required references without installing",
+    )
     .action(async (name: string) => {
       process.exitCode = await runCommandWithTelemetry(
         { ...telemetryBaseContext, command: "skills", subcommand: "show" },
@@ -1347,7 +1354,6 @@ Examples:
 
   applyGlobalOptions(program);
 
-  if (defaultHelp) await offerSkills();
   try {
     await program.parseAsync(normalizedArgv);
   } catch (error) {
@@ -8100,6 +8106,42 @@ function isPromptCancelled(error: unknown): boolean {
 // Skill commands
 // ---------------------------------------------------------------------------
 
+async function runWelcome(options: GlobalOptions): Promise<number> {
+  const emit = createEmitter(options);
+  emit.success("Vana is ready.");
+  emit.info("Agent instructions are included; installing skills is optional.");
+  emit.info("All commands: vana --help");
+  emit.info("Optional agent setup: vana skills setup");
+  emit.blank();
+  try {
+    const choice = await select({
+      message: "What would you like to do?",
+      choices: [
+        { value: "connect", name: "Connect my data" },
+        { value: "build", name: "Build an app using Vana data" },
+        { value: "finish", name: "Finish setup" },
+      ],
+      ...vanaPromptTheme,
+    });
+    if (choice === "connect") {
+      if (!accountSessionToPreserve(loadCredentials()?.account)) {
+        const code = await runLogin(options);
+        if (code !== CliExitCode.OK) return code;
+      }
+      return runConnectEntry(options);
+    }
+    if (choice === "build") {
+      emit.info("Start by checking your app identity:");
+      emit.next("vana app whoami");
+      emit.info("For integration instructions: vana skills show builder");
+    }
+    return CliExitCode.OK;
+  } catch (error) {
+    if (isPromptCancelled(error)) return CliExitCode.OK;
+    throw error;
+  }
+}
+
 async function runSkillsGuidedPicker(options: GlobalOptions): Promise<number> {
   const emit = createEmitter(options);
 
@@ -8254,46 +8296,22 @@ async function runSkillShow(
   const emit = createEmitter(options);
 
   try {
-    const skills = await listAvailableSkills();
-    const match = skills.find((s) => s.id.toLowerCase() === name.toLowerCase());
-
-    if (!match) {
-      if (options.json) {
-        process.stdout.write(
-          `${JSON.stringify({ error: `No skill found with id "${name}".` })}\n`,
-        );
-      } else {
-        emit.info(`No skill found with id "${name}".`);
-        emit.blank();
-        emit.next("vana skills list");
-      }
-      return 1;
-    }
-
+    const match = await readSkillContent(name);
     const installed = await readInstalledSkills();
     const isInstalled = installed.some((s) => s.id === match.id);
-
     if (options.json) {
       process.stdout.write(
         `${JSON.stringify({ ...match, installed: isInstalled })}\n`,
       );
-      return 0;
+    } else {
+      process.stdout.write(`${match.instructions.trimEnd()}\n`);
+      for (const resource of match.resources) {
+        process.stdout.write(
+          `\n# Reference: ${resource.path}\n\n${resource.content.trimEnd()}\n`,
+        );
+      }
     }
-
-    const badges: Array<{ text: string; tone?: RenderTone }> = [];
-    if (isInstalled) {
-      badges.push({ text: "installed", tone: "success" });
-    }
-    emit.sourceTitle(match.name, badges);
-    emit.detail(match.description);
-    emit.keyValue("Version", match.version);
-
-    if (!isInstalled) {
-      emit.blank();
-      emit.next(`vana skills install ${match.id}`);
-    }
-
-    return 0;
+    return CliExitCode.OK;
   } catch (error) {
     if (options.json) {
       process.stdout.write(
@@ -8302,7 +8320,7 @@ async function runSkillShow(
     } else {
       emit.info(error instanceof Error ? error.message : String(error));
     }
-    return 1;
+    return CliExitCode.FAILURE;
   }
 }
 

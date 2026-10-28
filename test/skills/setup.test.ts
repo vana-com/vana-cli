@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readSkillContent } from "../../src/skills/registry.js";
 import { offerSkillSetup } from "../../src/skills/setup.js";
 import { readCliState } from "../../src/core/state-store.js";
 
@@ -117,6 +118,43 @@ describe("the public skill setup offer", () => {
     await expect(
       fs.access(path.join(home, ".agents/skills/vana-builder/SKILL.md")),
     ).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("reading workflows without installing skills", () => {
+  it("returns exact instructions and required reference content without home writes", async () => {
+    const content = await readSkillContent("builder");
+    expect(content.instructions).toBe(
+      await fs.readFile(path.join(sourceSkills, "builder/SKILL.md"), "utf8"),
+    );
+    expect(content.resources).toEqual([
+      {
+        path: "reference/verification.md",
+        content: await fs.readFile(
+          path.join(sourceSkills, "builder/reference/verification.md"),
+          "utf8",
+        ),
+      },
+    ]);
+    expect(await fs.readdir(home)).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("fails on a missing required reference without fetching another version or caching", async () => {
+    const bundle = path.join(home, "incomplete-bundle");
+    await fs.cp(sourceSkills, bundle, { recursive: true });
+    await fs.rm(path.join(bundle, "builder/reference/verification.md"));
+    await expect(readSkillContent("builder", bundle)).rejects.toThrow();
+    expect(await fs.readdir(home)).toEqual(["incomplete-bundle"]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports an unknown skill without changing the agent or CLI state", async () => {
+    await expect(readSkillContent("not-a-vana-skill")).rejects.toThrow(
+      'No skill found with id "not-a-vana-skill".',
+    );
+    expect(await fs.readdir(home)).toEqual([]);
     expect(fetch).not.toHaveBeenCalled();
   });
 });

@@ -306,6 +306,7 @@ vi.mock("../../src/cli/search-select.js", () => ({
 
 vi.mock("../../src/skills/index.js", () => ({
   listAvailableSkills: vi.fn().mockResolvedValue([]),
+  readSkillContent: vi.fn(),
   installSkill: vi.fn().mockResolvedValue({
     installedPath: "/tmp/skills",
     installedPaths: ["/tmp/skills"],

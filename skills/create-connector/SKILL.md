@@ -8,6 +8,11 @@ description: >
 
 # Create a Collection Profile connector
 
+Read workflows with `vana skills show <id> --json`. The response includes full
+instructions and required reference content; installation into the agent's
+harness is optional. Use `connect-data`, `create-connector` or `builder` as the
+requested goal needs them.
+
 Take the user's source and data goal through implementation, tests, one real
 CLI collection, and a check that the intended Personal Server stored it.
 Continue through those steps from one request. Ask for source/account choices,

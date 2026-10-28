@@ -116,25 +116,37 @@ agent can branch on: `0` done, `1` failed, `2` bad usage, `3` no grant,
 person has to act. The full contract is in
 [docs/CLI-EXIT-CODE-MATRIX.md](./docs/CLI-EXIT-CODE-MATRIX.md).
 
-The installer (or first interactive Vana run) offers **Connect Data, Create
-Connector and Builder together**. It shows the destination folders and asks
-before installing or replacing skills. Say yes once, then give Claude Code or
-your agent an ordinary Vana request. No skill files are copied without consent.
+For a request such as “Use Vana to collect my highlights from Readwise,” the
+agent installs the CLI if needed, then reads the bundled workflow:
 
-Skills ship with the CLI version; this setup needs no extra download or private
-repository. npm may run install hooks without a terminal, so its offer can appear
-when you first run `vana`. Automated, JSON and non-interactive runs skip the offer.
+```bash
+vana skills show connect-data --json
+```
 
-To revisit your choice or update the three installed skills after a CLI upgrade:
+The response includes `instructions` and the content of required `resources`,
+plus skill metadata and installed status. Reading them does not install skills,
+write a cache or change agent configuration. The running agent can continue
+immediately. Use `create-connector` for a missing source and `builder` for app
+integration. `vana --help` lists these entry points. Files match the CLI version
+and need no additional download or private repository.
+
+For humans, interactive `vana` offers “Connect my data,” “Build an app using
+Vana data,” and “Finish setup.” Explicit commands and automated runs skip that
+menu. Connecting guides sign-in when needed and reuses the source picker.
+
+Persistent skill installation is optional convenience for future agent sessions.
+The installer may offer it at a human terminal; it names destination folders,
+defaults to no and copies or replaces skills only after confirmation. Revisit it:
 
 ```bash
 vana skills setup
 ```
 
 Individual installs remain available with `vana skills install <name>`, including
-optional `agent-access`. Claude Code is detected by `~/.claude/`; restart skill
-discovery with `/reload-skills` if needed. If you set up Claude Code later, rerun
-`vana skills setup` to add its copies.
+optional `agent-access`. The public skills also work with `npx skills`; that
+installer is not required to use Vana. Current native setup targets the shared
+`~/.agents/skills/` directory and Claude Code when `~/.claude/` exists. Neither
+path is a prerequisite for reading workflows through the CLI.
 
 For a complete walkthrough, use [Build and collect a connector with an agent](./skills/README.md).
 It pairs one starting prompt with the commands the agent runs, human sign-in,

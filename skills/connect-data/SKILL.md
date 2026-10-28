@@ -8,6 +8,11 @@ description: >
 
 # Connect personal data
 
+Read workflows with `vana skills show <id> --json`. The response includes full
+instructions and required reference content; installation into the agent's
+harness is optional. Use `connect-data`, `create-connector` or `builder` as the
+requested goal needs them.
+
 Use the Vana CLI for discovery, collection, owner identity and results. The
 person completes provider sign-in and human checks in the browser when needed.
 App access to collected data is a separate Builder workflow.

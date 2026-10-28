@@ -10,6 +10,11 @@ description: >
 
 # Builder
 
+Read workflows with `vana skills show <id> --json`. The response includes full
+instructions and required reference content; installation into the agent's
+harness is optional. Use `connect-data`, `create-connector` or `builder` as the
+requested goal needs them.
+
 The `vana app` command group is the builder side of Vana: register once,
 ask a person for access, read what they approved, pay the fee from escrow.
 Every command takes `--json` and returns one outcome object; branch on the

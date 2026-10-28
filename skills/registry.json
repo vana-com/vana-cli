@@ -4,7 +4,7 @@
       "id": "connect-data",
       "name": "Connect Data",
       "description": "How to connect platforms and collect personal data using the vana CLI",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "files": {
         "skill": "connect-data/SKILL.md"
       }
@@ -13,7 +13,7 @@
       "id": "builder",
       "name": "Builder",
       "description": "Request permission, read Vana data and verify delivery in the consuming app",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "files": {
         "skill": "builder/SKILL.md",
         "supplemental": ["builder/reference/verification.md"]
@@ -32,7 +32,7 @@
       "id": "create-connector",
       "name": "Create Connector",
       "description": "Build and test PDP-Connect Collection Profile connectors from a local source checkout",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "files": {
         "skill": "create-connector/SKILL.md"
       }

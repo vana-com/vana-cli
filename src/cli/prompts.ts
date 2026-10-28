@@ -12,6 +12,7 @@
 
 import {
   confirm as inquirerConfirm,
+  select as inquirerSelect,
   input as inquirerInput,
   password as inquirerPassword,
 } from "@inquirer/prompts";
@@ -116,6 +117,17 @@ export function password(
 ): Promise<string> {
   return withInputClosedGuard(
     (guarded) => inquirerPassword(config, guarded),
+    context,
+  );
+}
+
+/** A finite choice; closed input aborts through the same guard as other prompts. */
+export function select<T>(
+  config: Parameters<typeof inquirerSelect<T>>[0],
+  context?: PromptContext,
+): Promise<T> {
+  return withInputClosedGuard(
+    (guarded) => inquirerSelect(config, guarded),
     context,
   );
 }

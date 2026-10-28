@@ -48,9 +48,7 @@ export async function offerSkillSetup(
       await installSkill(id, skillsDir);
     }
     await updateCliConfig({ skillsPromptCompleted: true });
-    process.stderr.write(
-      "Installed the three Vana skills. In Claude Code, use /reload-skills if they are not visible.\n",
-    );
+    process.stderr.write("Vana skills installed.\n");
     return CliExitCode.OK;
   } catch (error) {
     if (error instanceof Error && error.name === "ExitPromptError") {
