@@ -30,14 +30,10 @@
     {
       "id": "create-connector",
       "name": "Create Connector",
-      "description": "How to build, test, validate, and contribute a new data connector",
+      "description": "Build and test PDP-Connect Collection Profile connectors from a local source checkout",
       "version": "1.0.0",
       "files": {
-        "skill": "create-connector/SKILL.md",
-        "supplemental": [
-          "create-connector/reference/PAGE-API.md",
-          "create-connector/reference/PATTERNS.md"
-        ]
+        "skill": "create-connector/SKILL.md"
       }
     },
     {
