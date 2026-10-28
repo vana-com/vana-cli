@@ -47,6 +47,10 @@ export function registerAppCommands(
     .command("request")
     .description("Ask a person for access and wait for the grant")
     .option(
+      "--resume <setupId>",
+      "Continue a saved consent request without changing it",
+    )
+    .option(
       "--scopes <list>",
       "Comma-separated scopes to request (with --question, defaults to --derived)",
     )
@@ -77,10 +81,17 @@ export function registerAppCommands(
     .option("--app-name <name>", "App name shown during approval")
     .option("--app-url <url>", "App homepage shown during approval")
     .action(
-      async (commandOptions: Record<string, string | boolean | undefined>) => {
+      async (
+        commandOptions: Record<string, string | boolean | undefined>,
+        command: Command,
+      ) => {
         process.exitCode = await runAppRequest({
           ...getOptions(),
           ...commandOptions,
+          mergeGrant:
+            command.getOptionValueSource("mergeGrant") === "cli"
+              ? (commandOptions.mergeGrant as boolean)
+              : undefined,
         });
       },
     );

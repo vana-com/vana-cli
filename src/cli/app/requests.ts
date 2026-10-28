@@ -32,9 +32,11 @@ import {
   createRequestsStore,
   type RequestsStore,
   type StoredRequestStatus,
+  type StoredRequest,
+  type StoredRequestIntent,
 } from "../../core/requests-store.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
-import { resolveSourceKey } from "./request.js";
+import { resolveSourceKey, resumeCommand } from "./request.js";
 
 export interface RequestsDeps {
   resolveKey?: typeof resolveAppKey;
@@ -164,10 +166,30 @@ export async function runAppRequestsList(
     }
   }
 
-  const entries = (deps.requests ?? createRequestsStore()).list({
-    appAddress,
-    network: network.name,
-  });
+  let entries: StoredRequest[];
+  let setups: StoredRequestIntent[];
+  try {
+    const requests = deps.requests ?? createRequestsStore();
+    entries = requests.list({ appAddress, network: network.name });
+    setups = requests
+      .listIntents()
+      .filter(
+        (entry) =>
+          !entry.requestId &&
+          (!appAddress ||
+            entry.appAddress.toLowerCase() === appAddress.toLowerCase()) &&
+          entry.network === network.name &&
+          entry.env === network.env &&
+          entry.gatewayUrl === network.gatewayUrl,
+      );
+  } catch {
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "internal",
+      message: "Cannot read saved request state. No request was sent.",
+      network: network.name,
+    });
+  }
   const withGrant = entries.filter((entry) => entry.grantId);
   const client = withGrant.length
     ? (deps.createClient ?? createGatewayClient)(network.gatewayUrl)
@@ -191,18 +213,32 @@ export async function runAppRequestsList(
     status: "done",
     code: "ok",
     message:
-      entries.length === 0
-        ? "No access requests from this machine yet."
-        : `${entries.length} access request${entries.length === 1 ? "" : "s"}${gone.length ? `; ${gone.length} grant${gone.length === 1 ? " is" : "s are"} no longer in force` : ""}.`,
+      setups.length > 0
+        ? `${entries.length} access requests; ${setups.length} unfinished request creation${setups.length === 1 ? "" : "s"}.`
+        : entries.length === 0
+          ? "No access requests from this machine yet."
+          : `${entries.length} access request${entries.length === 1 ? "" : "s"}${gone.length ? `; ${gone.length} grant${gone.length === 1 ? " is" : "s are"} no longer in force` : ""}.`,
     remedy:
-      entries.length === 0
-        ? "vana app request --scopes <scope>"
-        : gone.length
-          ? "vana app requests show <id>"
-          : undefined,
+      setups.length > 0
+        ? resumeCommand(setups[0], options)
+        : entries.length === 0
+          ? "vana app request --scopes <scope>"
+          : gone.length
+            ? "vana app requests show <id>"
+            : undefined,
     network: network.name,
     data: {
       count: entries.length,
+      ...(setups.length > 0
+        ? {
+            setups: setups.map((entry) => ({
+              setupId: entry.setupId,
+              app: entry.app.name,
+              scopes: entry.scopes,
+              createdAt: entry.createdAt,
+            })),
+          }
+        : {}),
       requests: entries.map((entry) => {
         const check = checks.get(entry.requestId) ?? null;
         return {
@@ -234,7 +270,50 @@ export async function runAppRequestsShow(
   }
   const { network } = resolved;
   const requests = deps.requests ?? createRequestsStore();
-  const stored = requests.get(requestId);
+  let stored: StoredRequest | null;
+  try {
+    stored = requests.get(requestId);
+    if (!stored) {
+      const intent = requests.getIntent(requestId);
+      if (intent) {
+        const app = (deps.resolveKey ?? resolveAppKey)({});
+        if (
+          intent.appAddress.toLowerCase() !== app.address.toLowerCase() ||
+          intent.network !== network.name ||
+          intent.env !== network.env ||
+          intent.gatewayUrl !== network.gatewayUrl
+        ) {
+          return emitAppOutcome(options, {
+            status: "failed",
+            code: "bad_usage",
+            message:
+              "This saved consent intent belongs to another app or environment.",
+            network: network.name,
+          });
+        }
+        if (!intent.requestId)
+          return emitAppOutcome(options, {
+            status: "failed",
+            code: "not_ready",
+            message:
+              "Consent creation is unfinished; inspection does not submit it.",
+            remedy: resumeCommand(intent, options),
+            network: network.name,
+            data: { setupId: intent.setupId, scopes: intent.scopes },
+          });
+        requestId = intent.requestId;
+        stored = requests.get(requestId);
+      }
+    }
+  } catch {
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "internal",
+      message:
+        "Cannot inspect the saved request with this identity or local state.",
+      network: network.name,
+    });
+  }
 
   if (!stored) {
     return emitAppOutcome(options, {

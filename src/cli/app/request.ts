@@ -11,6 +11,7 @@
  * so a `--no-input` run is findable afterwards.
  */
 
+import { randomUUID } from "node:crypto";
 import {
   createGatewayClient,
   type GatewayClient,
@@ -34,7 +35,10 @@ import {
   type RequestsStore,
   type StoredRequest,
   type StoredRequestStatus,
+  type StoredRequestIntent,
+  requestIntentHash,
 } from "../../core/requests-store.js";
+import { checkGrant } from "./requests.js";
 import { readAppProfile } from "../../core/app-profile.js";
 import {
   assertNoGrantUnionConflict,
@@ -47,6 +51,8 @@ import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
 
 export interface RequestCommandOptions extends AppCommandOptions {
   scopes?: string;
+  /** Continue one saved consent intent without changing its payload. */
+  resume?: string;
   /** Live grant entries to give up instead of carrying them over. */
   removeScopes?: string;
   /** Whose live grant to extend, when this machine cannot tell. */
@@ -334,9 +340,33 @@ export async function runAppRequest(
   options: RequestCommandOptions,
   deps: RequestDeps = {},
 ): Promise<number> {
+  const requests = deps.requests ?? createRequestsStore();
+  let saved: StoredRequestIntent | null = null;
+  try {
+    if (options.resume) saved = requests.getIntent(options.resume);
+  } catch {
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "internal",
+      message: "Cannot read saved consent recovery state. No request was sent.",
+    });
+  }
+  if (options.resume && !saved) {
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "bad_usage",
+      message: `No saved consent intent ${options.resume}.`,
+      remedy: "vana app requests list",
+    });
+  }
   let network: ResolvedNetwork;
   try {
-    network = resolveNetwork(options.network);
+    network = saved
+      ? resolveNetwork(
+          options.network ?? process.env.VANA_NETWORK ?? saved.network,
+          { ...process.env, VANA_ENV: process.env.VANA_ENV ?? saved.env },
+        )
+      : resolveNetwork(options.network);
   } catch (error) {
     if (error instanceof UnknownNetworkError) {
       return emitAppOutcome(options, {
@@ -346,6 +376,42 @@ export async function runAppRequest(
       });
     }
     throw error;
+  }
+  if (saved) {
+    let key: ResolvedAppKey;
+    try {
+      key = (deps.resolveKey ?? resolveAppKey)({});
+    } catch {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "bad_usage",
+        message: "Restore the saved app identity before resuming consent.",
+        network: network.name,
+      });
+    }
+    const payloadConflict = REQUEST_PAYLOAD_OPTIONS.some(
+      (name) =>
+        options[name] !== undefined &&
+        options[name] !== saved.requestOptions[name],
+    );
+    if (
+      key.address.toLowerCase() !== saved.appAddress.toLowerCase() ||
+      network.name !== saved.network ||
+      network.env !== saved.env ||
+      network.gatewayUrl !== saved.gatewayUrl ||
+      network.approvalUrl !== saved.approvalBaseUrl ||
+      payloadConflict
+    ) {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "bad_usage",
+        message:
+          "Cannot resume with a different app, environment, network or request payload.",
+        network: network.name,
+        data: { setupId: saved.setupId },
+      });
+    }
+    return runConsentIntent(saved, options, network, key, requests, deps, true);
   }
 
   const sourceScopes = splitList(options.sources);
@@ -447,7 +513,6 @@ export async function runAppRequest(
       network: network.name,
     });
   }
-  const requests = deps.requests ?? createRequestsStore();
   let plan: GrantUnionPlan;
   try {
     plan = await planGrantUnion({
@@ -470,7 +535,12 @@ export async function runAppRequest(
         network: network.name,
       });
     }
-    throw error;
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "internal",
+      message: "Cannot prepare consent recovery state. No request was sent.",
+      network: network.name,
+    });
   }
   // A question's source may not also be a raw read on the same request (the
   // service refuses it: the person is told the app will not see the
@@ -491,11 +561,30 @@ export async function runAppRequest(
     process.stderr.write(describePlan(plan));
   }
 
-  const controller = (deps.createController ?? createDirectDataController)({
-    // The dev host set serves moksha; production serves both networks.
-    env: network.env === "dev" ? "dev" : "production",
+  const input: StoredRequestIntent["input"] = {
+    ...(removeScopes.length ? { removeScopes } : {}),
+    returnUrl: options.returnUrl ?? "https://github.com/vana-com/vana-cli",
+    ...(options.question && options.derived
+      ? {
+          questions: [
+            {
+              derivedScope: options.derived,
+              sourceScopes,
+              question: options.question,
+            },
+          ],
+        }
+      : {}),
+    idempotencyKey: randomUUID(),
+  };
+  const payload = {
+    setupId: `setup_${randomUUID()}`,
+    createdAt: new Date().toISOString(),
+    appAddress: key.address,
     network: network.name,
-    appPrivateKey: key.privateKey,
+    env: network.env,
+    gatewayUrl: network.gatewayUrl,
+    approvalBaseUrl: network.approvalUrl,
     app: {
       id: options.appId ?? "vana-cli",
       name: options.appName ?? profile.name ?? "Vana CLI",
@@ -504,59 +593,215 @@ export async function runAppRequest(
     },
     source: resolveSourceKey(scopes, options.derived, sourceScopes),
     scopes: requestScopes,
-  });
-
-  let created;
+    input,
+    requestOptions: Object.fromEntries(
+      REQUEST_PAYLOAD_OPTIONS.flatMap((name) => {
+        return options[name] === undefined ? [] : [[name, options[name]]];
+      }),
+    ),
+    grantData: grantUnionData(plan),
+  };
+  const intent: StoredRequestIntent = {
+    ...payload,
+    payloadHash: requestIntentHash(payload),
+  };
   try {
-    // `removeScopes` tells the approval page to leave those entries out of
-    // the union it signs. No `owner` is passed: the union above is already
-    // merged into the controller's scopes, so the controller sends them as is.
-    created = await controller.createAccessRequest({
-      ...(removeScopes.length > 0 ? { removeScopes } : {}),
-      returnUrl: options.returnUrl ?? "https://github.com/vana-com/vana-cli",
-      ...(options.question && options.derived
-        ? {
-            questions: [
-              {
-                derivedScope: options.derived,
-                sourceScopes,
-                question: options.question,
-              } as never,
-            ],
-          }
-        : {}),
-    });
-  } catch (error) {
+    const unfinished = requests
+      .listIntents()
+      .find(
+        (entry) =>
+          !entry.requestId &&
+          entry.appAddress.toLowerCase() === key.address.toLowerCase() &&
+          entry.network === network.name &&
+          entry.env === network.env &&
+          entry.gatewayUrl === network.gatewayUrl &&
+          JSON.stringify(entry.requestOptions) ===
+            JSON.stringify(intent.requestOptions),
+      );
+    if (unfinished)
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "not_ready",
+        message:
+          "This consent creation is unfinished. Resume it instead of creating another request.",
+        remedy: resumeCommand(unfinished, options),
+        network: network.name,
+        data: { setupId: unfinished.setupId },
+      });
+    requests.saveIntent(intent);
+  } catch {
     return emitAppOutcome(options, {
       status: "failed",
-      code: "gateway_unreachable",
-      message: `Could not create the access request: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      code: "internal",
+      message: "Cannot save consent recovery state. No request was sent.",
       network: network.name,
     });
   }
+  if (!options.json && !options.quiet)
+    process.stderr.write(
+      `Saved request: ${intent.setupId}\nCreating approval request...\n`,
+    );
+  return runConsentIntent(intent, options, network, key, requests, deps, false);
+}
 
-  // Persist before anything can go wrong, so --no-input runs are findable.
-  const stored: StoredRequest = {
-    requestId: created.requestId,
-    appAddress: key.address,
+const REQUEST_PAYLOAD_OPTIONS = [
+  "scopes",
+  "removeScopes",
+  "owner",
+  "mergeGrant",
+  "question",
+  "derived",
+  "sources",
+  "returnUrl",
+  "appId",
+  "appName",
+  "appUrl",
+] as const;
+
+/** Render a context-bound consent recovery command without request mutations. */
+export function resumeCommand(
+  intent: StoredRequestIntent,
+  options: RequestCommandOptions,
+): string {
+  const prefix =
+    process.platform === "win32"
+      ? `$env:VANA_ENV='${intent.env}';`
+      : `VANA_ENV=${intent.env}`;
+  return `${prefix} vana app request --network ${intent.network} --resume ${intent.setupId}${options.noInput ? " --no-input" : ""}${options.json ? " --json" : ""}`;
+}
+
+async function runConsentIntent(
+  intent: StoredRequestIntent,
+  options: RequestCommandOptions,
+  network: ResolvedNetwork,
+  key: ResolvedAppKey,
+  requests: RequestsStore,
+  deps: RequestDeps,
+  resuming: boolean,
+): Promise<number> {
+  const requestScopes = intent.scopes;
+  const controller = (deps.createController ?? createDirectDataController)({
+    env: network.env === "dev" ? "dev" : "production",
     network: network.name,
-    gatewayUrl: network.gatewayUrl,
+    appPrivateKey: key.privateKey,
+    app: intent.app,
+    source: intent.source,
     scopes: requestScopes,
-    ...(removeScopes.length > 0 ? { removeScopes } : {}),
-    approvalUrl: created.approvalUrl,
-    createdAt: new Date().toISOString(),
-    status: "pending",
-    updatedAt: new Date().toISOString(),
-    ...(created.expiresAt ? { expiresAt: created.expiresAt } : {}),
-    ...(options.question && options.derived
-      ? { questions: [{ derivedScope: options.derived, sourceScopes }] }
-      : {}),
-  };
-  requests.save(stored);
-
-  if (options.noInput) {
+  });
+  let created: { requestId: string; approvalUrl: string; expiresAt?: string };
+  let originalApprovedScopes: string[] | undefined;
+  if (intent.requestId) {
+    let stored: StoredRequest | null;
+    try {
+      stored = requests.get(intent.requestId);
+    } catch {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "internal",
+        message: "Cannot read the saved request. No replacement was created.",
+        remedy: resumeCommand(intent, options),
+        network: network.name,
+        data: { setupId: intent.setupId, requestId: intent.requestId },
+      });
+    }
+    if (
+      !stored ||
+      stored.appAddress.toLowerCase() !== key.address.toLowerCase() ||
+      stored.gatewayUrl !== network.gatewayUrl ||
+      stored.network !== network.name ||
+      JSON.stringify(stored.scopes) !== JSON.stringify(intent.scopes)
+    )
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "internal",
+        message:
+          "Saved consent identity is inconsistent. No replacement was created.",
+        network: network.name,
+      });
+    originalApprovedScopes = stored.approvedScopes;
+    created = stored;
+  } else {
+    try {
+      const response = await controller.createAccessRequest(intent.input);
+      if (
+        (response.appAddress &&
+          response.appAddress.toLowerCase() !==
+            intent.appAddress.toLowerCase()) ||
+        (response.network && response.network !== network.name)
+      )
+        throw new Error("Conflicting created request identity");
+      created = response;
+    } catch {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "not_ready",
+        message:
+          "The approval request may already exist. Resume the saved intent; do not create a replacement.",
+        remedy: resumeCommand(intent, options),
+        network: network.name,
+        data: { setupId: intent.setupId },
+      });
+    }
+    const stored: StoredRequest = {
+      requestId: created.requestId,
+      appAddress: key.address,
+      network: network.name,
+      gatewayUrl: network.gatewayUrl,
+      scopes: requestScopes,
+      ...(intent.input.removeScopes
+        ? { removeScopes: intent.input.removeScopes }
+        : {}),
+      approvalUrl: created.approvalUrl,
+      createdAt: intent.createdAt,
+      status: "pending",
+      updatedAt: new Date().toISOString(),
+      ...(created.expiresAt ? { expiresAt: created.expiresAt } : {}),
+      ...(intent.input.questions
+        ? {
+            questions: intent.input.questions.map(
+              ({ derivedScope, sourceScopes }) => ({
+                derivedScope,
+                sourceScopes,
+              }),
+            ),
+          }
+        : {}),
+    };
+    try {
+      requests.save(stored, intent.setupId);
+    } catch {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "internal",
+        message:
+          "Cannot save the created request. Resume the same saved intent.",
+        remedy: resumeCommand(intent, options),
+        network: network.name,
+        data: { setupId: intent.setupId, requestId: created.requestId },
+      });
+    }
+  }
+  let recoveredStatus:
+    | Awaited<ReturnType<typeof controller.getAccessRequestStatus>>
+    | undefined;
+  if (resuming) {
+    try {
+      recoveredStatus = await controller.getAccessRequestStatus(
+        created.requestId,
+      );
+    } catch {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "not_ready",
+        message:
+          "The saved request's current status could not be checked. No replacement was created.",
+        remedy: resumeCommand(intent, options),
+        network: network.name,
+        data: { setupId: intent.setupId, requestId: created.requestId },
+      });
+    }
+  }
+  if (options.noInput && !TERMINAL.has(recoveredStatus?.status ?? "")) {
     return emitAppOutcome(options, {
       status: "failed",
       code: "confirmation_required",
@@ -564,16 +809,21 @@ export async function runAppRequest(
       remedy: `send them ${created.approvalUrl}, then: vana app requests show ${created.requestId}`,
       network: network.name,
       data: {
+        setupId: intent.setupId,
         requestId: created.requestId,
         approvalUrl: created.approvalUrl,
         scopes: requestScopes,
         expiresAt: created.expiresAt ?? null,
-        ...grantUnionData(plan),
+        ...intent.grantData,
       },
     });
   }
 
-  if (!options.json && !options.quiet) {
+  if (
+    !options.json &&
+    !options.quiet &&
+    !TERMINAL.has(recoveredStatus?.status ?? "")
+  ) {
     process.stderr.write(
       `\n  Approve at  ${created.approvalUrl}\n  Request     ${created.requestId}\n  Waiting for approval...\n\n`,
     );
@@ -585,25 +835,41 @@ export async function runAppRequest(
   const deadline =
     now() + Number(options.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
 
-  while (now() < deadline) {
+  while (recoveredStatus || now() < deadline) {
     let status;
     try {
-      status = await controller.getAccessRequestStatus(created.requestId);
+      status =
+        recoveredStatus ??
+        (await controller.getAccessRequestStatus(created.requestId));
+      recoveredStatus = undefined;
     } catch {
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
 
     if (TERMINAL.has(status.status)) {
-      requests.update(created.requestId, {
-        status: status.status as StoredRequestStatus,
-        ...(status.grantId ? { grantId: status.grantId } : {}),
-        ...(status.scopes ? { approvedScopes: status.scopes } : {}),
-        ...(status.delivery ? { delivery: status.delivery } : {}),
-        ...(status.personalServerUrl
-          ? { personalServerUrl: status.personalServerUrl }
-          : {}),
-      });
+      try {
+        requests.update(created.requestId, {
+          status: status.status as StoredRequestStatus,
+          ...(status.grantId ? { grantId: status.grantId } : {}),
+          ...(status.scopes && !originalApprovedScopes
+            ? { approvedScopes: status.scopes }
+            : {}),
+          ...(status.delivery ? { delivery: status.delivery } : {}),
+          ...(status.personalServerUrl
+            ? { personalServerUrl: status.personalServerUrl }
+            : {}),
+        });
+      } catch {
+        return emitAppOutcome(options, {
+          status: "failed",
+          code: "internal",
+          message: "Cannot save consent status. Resume the same request.",
+          remedy: resumeCommand(intent, options),
+          network: network.name,
+          data: { setupId: intent.setupId, requestId: created.requestId },
+        });
+      }
 
       if (status.status === "denied" || status.status === "expired") {
         return emitAppOutcome(options, {
@@ -611,14 +877,42 @@ export async function runAppRequest(
           code: "grant_invalid",
           message: `The request was ${status.status}.`,
           network: network.name,
-          data: { requestId: created.requestId, ...grantUnionData(plan) },
+          data: { requestId: created.requestId, ...intent.grantData },
         });
       }
 
-      const approvedScopes = status.scopes ?? requestScopes;
+      if (resuming) {
+        const grant = status.grantId
+          ? await checkGrant(
+              (deps.createClient ?? createGatewayClient)(network.gatewayUrl),
+              status.grantId,
+              originalApprovedScopes ?? status.scopes ?? requestScopes,
+            )
+          : null;
+        if (!grant || grant.state !== "active")
+          return emitAppOutcome(options, {
+            status: "failed",
+            code:
+              grant && grant.state !== "unverified"
+                ? "grant_invalid"
+                : "not_ready",
+            message:
+              "The recovered approval does not have a verified current grant.",
+            remedy: resumeCommand(intent, options),
+            network: network.name,
+            data: {
+              setupId: intent.setupId,
+              requestId: created.requestId,
+              grant,
+            },
+          });
+      }
+      const approvedScopes =
+        originalApprovedScopes ?? status.scopes ?? requestScopes;
       const nextScope =
-        options.derived && approvedScopes.includes(options.derived)
-          ? options.derived
+        typeof intent.requestOptions.derived === "string" &&
+        approvedScopes.includes(intent.requestOptions.derived)
+          ? intent.requestOptions.derived
           : approvedScopes[0];
       return emitAppOutcome(options, {
         status: "done",
@@ -629,12 +923,13 @@ export async function runAppRequest(
           : undefined,
         network: network.name,
         data: {
+          setupId: intent.setupId,
           requestId: created.requestId,
           grantId: status.grantId ?? null,
           scopes: approvedScopes,
           delivery: status.delivery ?? "personal_server",
           personalServerUrl: status.personalServerUrl ?? null,
-          ...grantUnionData(plan),
+          ...intent.grantData,
         },
       });
     }
@@ -650,7 +945,7 @@ export async function runAppRequest(
     data: {
       requestId: created.requestId,
       approvalUrl: created.approvalUrl,
-      ...grantUnionData(plan),
+      ...intent.grantData,
     },
   });
 }

@@ -15,6 +15,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 import { getVanaHome } from "./paths.js";
 
 export type StoredRequestStatus =
@@ -57,12 +59,76 @@ export interface StoredRequest {
 interface RequestsFile {
   version: 1;
   requests: StoredRequest[];
+  intents?: StoredRequestIntent[];
+}
+
+const intentSchema = z.object({
+  setupId: z.string().regex(/^setup_[a-f0-9-]+$/),
+  createdAt: z.string(),
+  appAddress: z.string(),
+  network: z.enum(["moksha", "mainnet"]),
+  env: z.enum(["dev", "prod"]),
+  gatewayUrl: z.string(),
+  approvalBaseUrl: z.string(),
+  app: z.object({ id: z.string(), name: z.string(), homepageUrl: z.string() }),
+  source: z.string(),
+  scopes: z.array(z.string()),
+  input: z.object({
+    returnUrl: z.string(),
+    idempotencyKey: z.string().uuid(),
+    removeScopes: z.array(z.string()).optional(),
+    questions: z
+      .array(
+        z.object({
+          derivedScope: z.string(),
+          sourceScopes: z.array(z.string()),
+          question: z.string(),
+        }),
+      )
+      .optional(),
+  }),
+  requestOptions: z.record(z.string(), z.union([z.string(), z.boolean()])),
+  grantData: z.record(z.string(), z.unknown()),
+  payloadHash: z.string(),
+  requestId: z.string().optional(),
+});
+
+/** Frozen consent creation, saved before the remote request ID exists. */
+export type StoredRequestIntent = z.infer<typeof intentSchema>;
+
+/** Fingerprint only immutable request identity and payload, never credentials. */
+export function requestIntentHash(
+  intent: Omit<StoredRequestIntent, "payloadHash">,
+): string {
+  const {
+    setupId: _id,
+    createdAt: _date,
+    grantData: _grant,
+    requestId: _remote,
+    ...payload
+  } = intent;
+  function canonical(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, entry]) => [key, canonical(entry)]),
+      );
+    return value;
+  }
+  return createHash("sha256")
+    .update(JSON.stringify(canonical(payload)))
+    .digest("hex");
 }
 
 const EMPTY: RequestsFile = { version: 1, requests: [] };
 
 export interface RequestsStore {
-  save(request: StoredRequest): void;
+  save(request: StoredRequest, setupId?: string): void;
+  saveIntent(intent: StoredRequestIntent): void;
+  getIntent(setupId: string): StoredRequestIntent | null;
+  listIntents(): StoredRequestIntent[];
   /** Merge fields into an existing entry; no-op when it is unknown. */
   update(requestId: string, patch: Partial<StoredRequest>): void;
   get(requestId: string): StoredRequest | null;
@@ -77,24 +143,77 @@ export function createRequestsStore(filePath?: string): RequestsStore {
     try {
       const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as RequestsFile;
       if (parsed?.version !== 1 || !Array.isArray(parsed.requests)) {
-        return structuredClone(EMPTY);
+        throw new Error("Invalid request store");
       }
+      parsed.intents = (parsed.intents ?? []).map((entry) => {
+        const intent = intentSchema.parse(entry);
+        const { payloadHash, ...payload } = intent;
+        if (requestIntentHash(payload) !== payloadHash)
+          throw new Error("Saved request payload changed");
+        return intent;
+      });
       return parsed;
-    } catch {
-      return structuredClone(EMPTY);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        return structuredClone(EMPTY);
+      throw error;
     }
   }
 
   function write(state: RequestsFile): void {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(state, null, 2) + "\n", {
-      mode: 0o600,
-    });
+    const directory = path.dirname(file);
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    try {
+      const fd = fs.openSync(temporary, "wx", 0o600);
+      try {
+        fs.writeFileSync(fd, JSON.stringify(state, null, 2) + "\n");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(temporary, file);
+      if (process.platform !== "win32") {
+        const fd = fs.openSync(directory, "r");
+        try {
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+    } finally {
+      fs.rmSync(temporary, { force: true });
+    }
   }
 
   return {
-    save(request: StoredRequest): void {
+    saveIntent(intent) {
+      const parsed = intentSchema.parse(intent);
       const state = read();
+      if (state.intents?.some((entry) => entry.setupId === parsed.setupId))
+        throw new Error("Request intent already exists");
+      state.intents = [...(state.intents ?? []), parsed];
+      write(state);
+    },
+    getIntent(setupId) {
+      return read().intents?.find((entry) => entry.setupId === setupId) ?? null;
+    },
+    listIntents() {
+      return read().intents ?? [];
+    },
+    save(request: StoredRequest, setupId?: string): void {
+      const state = read();
+      if (setupId) {
+        const intent = state.intents?.find(
+          (entry) => entry.setupId === setupId,
+        );
+        if (
+          !intent ||
+          (intent.requestId && intent.requestId !== request.requestId)
+        )
+          throw new Error("Conflicting request identity");
+        intent.requestId = request.requestId;
+      }
       const index = state.requests.findIndex(
         (entry) => entry.requestId === request.requestId,
       );
