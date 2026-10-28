@@ -74,7 +74,8 @@ async function dependencies() {
   );
   await access(executable);
   const motelBinary =
-    process.env.MOTEL_BINARY ?? path.join(os.homedir(), ".local/bin/motel");
+    process.env.SHELF_MOTEL_BINARY ??
+    path.join(os.homedir(), ".local/bin/motel");
   await access(motelBinary);
   return { next, playwright, executable, motelBinary };
 }

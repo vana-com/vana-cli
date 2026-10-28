@@ -3,7 +3,7 @@
 Use this procedure for actual Account/Web consent, real provider collection and
 changed connector output. The controlled helper is consumer proof only. Start
 with the [existing example README](../../../../examples/perplexity-demo/README.md)
-and Unity's [evidence rules](../../../../../unity-surfaces/.agents/skills/us-verify-data-connection-workflow/references/evidence-and-reruns.md).
+and the public Builder [delivery and evidence rules](../../../../skills/builder/reference/verification.md).
 Retained reports keep their original time and scope.
 
 ## Establish readiness and authority
@@ -75,7 +75,9 @@ Retained reports keep their original time and scope.
    VANA_ENV=dev node dist/cli/bin.js connect perplexity --from /absolute/path/to/edited/data-connectors --streams conversations --network moksha --yes --ipc
    ```
 
-   Handle human input through Connect Data. Preserve provider refresh limits and
+   Handle human input through the public Connect Data skill. Install with
+   `vana skills install connect-data --json` if needed and read the returned
+   `installedPath`'s `SKILL.md`. Preserve provider refresh limits and
    cursors. Verify the actual emitted record and successful ingestion into the
    same owner-bound server. A copied export or edited JSON cannot pass this clause.
 

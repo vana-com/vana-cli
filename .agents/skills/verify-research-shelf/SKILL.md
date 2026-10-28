@@ -1,15 +1,20 @@
 ---
 name: verify-research-shelf
-description: Verify Research Shelf delivery, persistence, acknowledgement, same-grant refresh and recovery for PRD steps 4 and 5. Use for a local browser proof, verifier failure control, or live CLI-to-consumer acceptance.
+description: Verify the Research Shelf example's delivery, persistence, acknowledgement, same-grant refresh and recovery. Use for contributor browser checks, failure controls or explicitly authorized live acceptance.
 ---
 
 # Verify Research Shelf
 
 Read the [feature map](features/README.md). Select the requested claim and lane
-before launching. This skill owns the CLI example's runtime and browser driver.
-Unity's [workflow verifier](../../../../unity-surfaces/.agents/skills/us-verify-data-connection-workflow/SKILL.md)
-owns cross-app acceptance and evidence rules. Product behavior remains in
-`examples/perplexity-demo`.
+before launching. This contributor skill owns the example's runtime, browser
+driver and example-specific acceptance checks. The public Builder skill owns
+the [delivery and evidence rules](../../../skills/builder/reference/verification.md).
+All required instructions and scripts are in this repository. Product behavior
+remains in `examples/perplexity-demo`.
+
+For ordinary data use, follow the installed public Connect Data and Builder
+skills. This example verifier is optional development tooling, not part of
+the `vana skills install` catalog. It does not require private app repositories.
 
 ## Select the proof
 
@@ -56,6 +61,10 @@ node .agents/skills/verify-research-shelf/scripts/verify.mjs --doctor
 A usable instance needs app source, compiled CLI exports, installed Next, SDK and
 browser driver, an installed Chromium executable and the installed Motel CLI. A listening port alone is
 insufficient. The helper also checks its launched app before driving.
+Use `SHELF_VERIFY_CHROMIUM` for an installed Chromium path and
+`SHELF_MOTEL_BINARY` for an installed Motel path outside `~/.local/bin/motel`.
+Doctor and launch use that same Motel setting. Missing dependencies are a
+setup blocker; they are not a reason to read private app repositories.
 
 ## Drive
 
@@ -87,7 +96,7 @@ The adapter exports only validated metadata and queries the real collector back.
 For the live collection wrapper and shared context, read [live acceptance](references/live-acceptance.md). Adapter self-tests run with:
 
 ```sh
-node --test .agents/skills/verify-research-shelf/scripts/motel.test.mjs .agents/skills/verify-research-shelf/scripts/observe-collection.test.mjs
+node --test .agents/skills/verify-research-shelf/scripts/doctor.test.mjs .agents/skills/verify-research-shelf/scripts/motel.test.mjs .agents/skills/verify-research-shelf/scripts/observe-collection.test.mjs
 ```
 
 ## Evidence
@@ -114,5 +123,7 @@ own temporary connector edit and configuration, preserving payment history.
 
 `node .agents/skills/verify-research-shelf/scripts/verify.mjs --help` lists driver
 modes. Keep helper invocations and feature recipes aligned with the app and SDK.
-Use Pstack's `maintain-verification-skill` for upkeep. Re-exercise changed claims
-and negative controls before carrying forward evidence.
+Update these instructions alongside their scripts and example. Re-exercise
+changed claims and negative controls before carrying forward evidence. For an
+instructions-only change, check links and commands and have a fresh agent follow
+the affected procedure using only this public checkout and declared prerequisites.

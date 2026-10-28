@@ -1,12 +1,11 @@
 ---
 name: builder
 description: >
-  Get a person's permission to use their data, then read it and pay for it,
-  from the terminal. Use when: (1) an app or agent needs data that belongs
-  to someone else, (2) the user says "ask them for access", "read their
-  Spotify", "what did they approve", (3) anything involving a Vana grant,
-  escrow, or a data-access fee. Not for collecting your own data, that is
-  the connect-data skill.
+  Get permission for an app or agent to use a person's Vana data, read it,
+  and verify the requested result. Use for consuming-app integration,
+  including the developer's own collected data, grants, escrow, fees,
+  saved app delivery and connector iteration. Source collection belongs
+  to connect-data.
 ---
 
 # Builder
@@ -16,6 +15,19 @@ ask a person for access, read what they approved, pay the fee from escrow.
 Every command takes `--json` and returns one outcome object; branch on the
 exit code, read `code` for the reason and `remedy` for the next command.
 
+Start from the person's intended result and continue through the app handoff
+and verification they requested. Select the commands yourself; the person
+handles account choices, sign-in, consent and any spending decision. Use the
+intended app's existing backend key, owner, Account deployment and network.
+An app name does not select its credentials. Keep keys server-side and out of
+chat, browser code and saved reports.
+
+For an app integration, read [delivery and verification](reference/verification.md)
+before requesting access. It covers readiness, real approval, bounded reads,
+durable storage, display, recovery and same-grant iteration for any consumer.
+The instructions and required references are public. The user's app supplies
+its own storage and UI; no reference app or observability service is required.
+
 ## The loop
 
 ```bash
@@ -24,6 +36,7 @@ vana app request --scopes spotify.savedTracks          # ask a person
 vana app read spotify.savedTracks --grant <id> --pay   # read and pay
 ```
 
+Check `vana app whoami --json` first and reuse an appropriate registration.
 Register with the name the person should see on the approval page, such as
 your agent's name. The CLI remembers it for this app key; without it the
 request shows as "Vana CLI".
@@ -36,23 +49,24 @@ vana app ask "Which genres fill their saved tracks?" \
 ```
 
 `request` prints an approval URL and waits. The person opens it, approves,
-and the grant id comes back to the terminal. Nothing else in the loop needs
-a browser.
+and the grant id comes back to the terminal. The read command returns data;
+an app integration must also verify its own save and display.
+The `--pay` examples require an agreed fee-asset limit before execution.
 
 ## Exit codes
 
 Branch on these instead of parsing text.
 
-| Code | Meaning                             | What to do                                                          |
-| ---- | ----------------------------------- | ------------------------------------------------------------------- |
-| 0    | done                                | continue                                                            |
-| 1    | failed                              | read `message`, do not retry blindly                                |
-| 2    | bad usage                           | fix the command                                                     |
-| 3    | no grant, or it does not cover this | `vana app request` again                                            |
-| 4    | payment required                    | add `--pay`, or fund escrow                                         |
-| 5    | no server answered                  | the owner's Personal Server is offline; not your fault, retry later |
-| 6    | not ready yet                       | wait and repeat, using any interval the payload names               |
-| 7    | a person has to act                 | surface the URL to a human                                          |
+| Code | Meaning                             | What to do                                                             |
+| ---- | ----------------------------------- | ---------------------------------------------------------------------- |
+| 0    | done                                | continue                                                               |
+| 1    | failed                              | read `message`, do not retry blindly                                   |
+| 2    | bad usage                           | fix the command                                                        |
+| 3    | no grant, or it does not cover this | `vana app request` again                                               |
+| 4    | payment required                    | inspect the quote and obtain a spending limit before paying or funding |
+| 5    | no server answered                  | the owner's Personal Server is offline; not your fault, retry later    |
+| 6    | not ready yet                       | wait and repeat, using any interval the payload names                  |
+| 7    | a person has to act                 | surface the URL to a human                                             |
 
 ## Asking for access
 
@@ -96,6 +110,13 @@ reports a `grantId` that id stays available offline. Both commands check
 each grant at the gateway: `data.grant.state` is `revoked` or `replaced`
 (one grant per owner and app, so a later approval replaces its scopes) when
 it no longer holds, and `unverified` when the gateway did not answer.
+
+If creation was interrupted, use the saved recovery command instead of
+creating another request. Builds with `request --resume` expose the saved
+setup ID through `vana app requests list --json`. Check `vana app request --help`
+before using the option on an older installed CLI. Resume preserves the app,
+environment, network and original payload; an unavailable service does not
+authorize a replacement request or another payment.
 
 ## Asking a question instead of reading raw data
 
@@ -219,6 +240,11 @@ their Vana Account and opens its Fund page.
 vana app whoami --json                                   # who am I, registered?
 vana app onchain spotify.savedTracks --owner 0x... --json    # version, hashes, deletion
 ```
+
+Match the result to the user's goal using the [verification procedure](reference/verification.md).
+A grant proves permission; a read proves receipt; neither proves the consuming
+app saved or displayed it. Verify those outcomes at the actual app. Keep
+collection, consent, reading, storage and display as separate observed results.
 
 ## Networks
 

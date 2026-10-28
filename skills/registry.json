@@ -12,10 +12,11 @@
     {
       "id": "builder",
       "name": "Builder",
-      "description": "Ask a person for access to their data, then read it and pay for it from the terminal",
-      "version": "1.0.0",
+      "description": "Request permission, read Vana data and verify delivery in the consuming app",
+      "version": "1.1.0",
       "files": {
-        "skill": "builder/SKILL.md"
+        "skill": "builder/SKILL.md",
+        "supplemental": ["builder/reference/verification.md"]
       }
     },
     {

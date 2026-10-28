@@ -198,8 +198,20 @@ To refresh the local connector after a deliberate code change, rerun the same
 records reached the same server. For repeated development, the skill explains
 optional `vana connectors add`; a one-off trial does not need registration.
 
-Collection finishes this walkthrough. Giving another app access is a separate
-step using the Builder skill, explicit approval, and app persistence checks.
+Collection finishes a collection-only request. If your original goal also asks
+an app to use the data, the agent continues through the public Builder skill:
+
+```sh
+vana skills install builder --json
+```
+
+Read its returned `installedPath`'s `SKILL.md` and follow its included
+[delivery and verification procedure](./builder/reference/verification.md).
+The agent reuses the intended app identity, guides explicit consent, handles
+any agreed spending limit, and verifies the requested read, storage, display
+and persistence in your app. You do not need another implementation prompt,
+a reference app, Motel or access to private Vana repositories.
+
 Local success also does not publish the connector or make it appear in native
 Vana apps. Automatic testnet setup, native delivery, and publication retain
 their own requirements in the builder path.
