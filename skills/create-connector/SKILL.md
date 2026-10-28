@@ -1,233 +1,192 @@
 ---
 name: create-connector
 description: >
-  Build, test, validate, and contribute a new data connector for any web
-  platform. Use when: the user wants to create a connector, a requested
-  platform has no connector yet, or a connector needs updating.
+  Build or update a PDP-Connect Collection Profile connector and test it
+  through the Vana CLI from a local source checkout. Use when a requested
+  data source has no connector or its collection code needs changing.
 ---
 
-# Creating a Connector
+# Create a Collection Profile connector
 
-Build a data connector for a platform that isn't in the registry yet.
+Keep connector implementations in PDP-Connect's `data-connectors` repository.
+Use its maintained runtime and development tools, then use Vana to prove
+owner-side collection and ingestion. A local registration does not publish a
+connector or deliver it to native Vana apps.
 
-## Prerequisites
+## Prepare the source checkout
 
-- `reference/PAGE-API.md` -- full `page` object API
-- `reference/PATTERNS.md` -- data extraction approaches and code examples
-
-All `node scripts/...` commands refer to `skills/vana-connect/scripts/` in the data-connectors repo. Use the `vana` CLI to exercise connectors; only fall back to raw scripts when debugging connector internals.
-
-## Connector Format
-
-Scripts are plain JavaScript (CJS), no imports, no require. The runner injects a `page` object. The script body must be an async IIFE preceded by a blank line (the runner matches `\n(async`).
-
-```javascript
-(async () => {
-  // connector logic here
-  await page.setData("result", { "platform.scope": data });
-})();
-```
-
-## Reference Connectors
-
-| Platform  | Strategy        | Rung | Notes                                |
-| --------- | --------------- | ---- | ------------------------------------ |
-| Reddit    | In-page fetch   | 1    | OAuth-like endpoints, JSON responses |
-| Twitter/X | Network capture | 2    | GraphQL via captureNetwork           |
-| Instagram | In-page fetch   | 1    | Cookie auth, pagination              |
-| LinkedIn  | In-page fetch   | 1    | Voyager API, CSRF token required     |
-| GitHub    | DOM extraction  | 3    | Server-rendered, no client API       |
-| Spotify   | In-page fetch   | 1    | Well-documented public API           |
-
-Look at existing connectors in `~/.vana/connectors/` for working examples.
-
----
-
-## Step 1 -- Research the Platform
-
-Map the platform's login flow, data APIs, and auth mechanism before writing code.
-
-### Verify by inspecting, not by guessing
-
-Navigate to the platform's login page and take a screenshot before writing any login code. List every login option visible on the page (email, Google, Apple, SSO, etc.) and ask the user which one they use. Your training data about a platform's auth flow may be outdated.
-
-### Web search queries
-
-- `"<platform> API endpoints"`, `"<platform> graphql endpoint"`
-- `"<platform> internal API"`, `"<platform> developer API"`
-- `"<platform> data export"`, `"<platform> GDPR data download"`
-- `"<platform> scraper github"` -- open-source scrapers reveal known API patterns
-
-### What to identify
-
-- **Login URL** and **available login methods** (inspect the actual page)
-- **Login form selectors** -- `input[name="..."]`, `input[type="password"]`, `button[type="submit"]`. Note multi-step flows.
-- **Logged-in indicator** -- CSS selector or API response confirming auth. Becomes `connectSelector` in metadata.
-- **Data endpoints** -- REST, GraphQL, or DOM targets
-- **Auth mechanism** -- cookies, CSRF tokens, bearer tokens, session storage
-- **Data categories** -- each becomes a `platform.scope` key (e.g. `reddit.profile`)
-
-### Extraction strategy
-
-Pick the approach with the best user experience. See `reference/PATTERNS.md` for details and code examples. Max 2 attempts per approach before moving to the next.
-
----
-
-## Step 2 -- Scaffold and Implement
+Use the person's intended checkout, preserving its existing changes. If a
+checkout is needed, choose a suitable parent directory and run:
 
 ```bash
-node scripts/scaffold.cjs <platform> [company]
+git clone https://github.com/PDP-Connect/data-connectors.git
+cd data-connectors
 ```
 
-### Auth pattern
+All upstream paths below are relative to that repository root. Read its
+`AGENTS.md` and these maintained references from the selected checkout:
 
-Two credential sources: `process.env` (automated runs) and `page.requestInput()` (interactive). Try env first, fall back to requestInput. If the platform has multiple login options (discovered via screenshot in Step 1), include a `method` field listing the options you observed:
+- [AUTHORING.md](https://github.com/PDP-Connect/data-connectors/blob/main/AUTHORING.md) for layout and authoring gates.
+- [Collection Profile](https://github.com/PDP-Connect/data-connectors/blob/main/docs/spec/collection-profile.md) for manifest and wire contracts.
+- [Runtime note](https://github.com/PDP-Connect/data-connectors/blob/main/packages/polyfill-connectors/docs/collection-profile-runtime.md) for current APIs and known gaps.
+- [Connector checklist](https://github.com/PDP-Connect/data-connectors/blob/main/packages/polyfill-connectors/CONNECTOR-CHECKLIST.md) for tests, fixtures and evidence levels.
+- [TESTING.md](https://github.com/PDP-Connect/data-connectors/blob/main/TESTING.md) for supported test lanes and host requirements.
 
-```javascript
-let username = process.env.USER_LOGIN_PLATFORMNAME || "";
-let password = process.env.USER_PASSWORD_PLATFORMNAME || "";
-
-if (!username || !password) {
-  const creds = await page.requestInput({
-    message: "Enter your Platform credentials.",
-    schema: {
-      type: "object",
-      properties: {
-        method: {
-          type: "string",
-          title: "Login method",
-          description: "List the options you found on the login page",
-        },
-        username: { type: "string", title: "Email or username" },
-        password: { type: "string", title: "Password" },
-      },
-      required: ["username", "password"],
-    },
-  });
-  username = creds.username;
-  password = creds.password;
-  // Use creds.method to route to the right login flow
-}
-```
-
-### Login implementation
-
-```javascript
-const loginStr = JSON.stringify(username);
-const passStr = JSON.stringify(password);
-
-await page.goto("https://platform.com/login");
-await page.sleep(2000);
-
-await page.evaluate(`
-  (() => {
-    const u = document.querySelector('input[name="username"], input[type="email"]');
-    const p = document.querySelector('input[type="password"]');
-    if (u) { u.focus(); u.value = ${loginStr}; u.dispatchEvent(new Event('input', {bubbles:true})); }
-    if (p) { p.focus(); p.value = ${passStr}; p.dispatchEvent(new Event('input', {bubbles:true})); }
-  })()
-`);
-await page.sleep(500);
-await page.evaluate(`document.querySelector('button[type="submit"]')?.click()`);
-await page.sleep(3000);
-```
-
-**Adaptations:**
-
-- **Multi-step login**: split into two evaluate+sleep sequences with a navigation between.
-- **React/Vue apps** that ignore `.value =`: use the native setter pattern:
-  ```javascript
-  const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-    window.HTMLInputElement.prototype, 'value'
-  ).set;
-  nativeInputValueSetter.call(input, ${loginStr});
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  ```
-- **2FA**: use `page.requestInput()` to ask for the code.
-
-### Key rules
-
-- `page.evaluate()` takes a string, not a function. Pass variables via `JSON.stringify()`.
-- Use ARIA roles, data attributes, semantic HTML for selectors. The validator flags obfuscated class names.
-- Rate-limit API calls with `page.sleep(300-1000)` between requests.
-- Use scoped result keys: `platform.scope` format (e.g. `spotify.playlists`).
-- Include `exportSummary: { count, label, details }` in the result.
-
-### Page API quick reference
-
-```
-page.goto(url)                                Navigate
-page.evaluate(jsString)                       Run JS in browser, return result
-page.sleep(ms)                                Wait
-page.requestInput({ message, schema })        Ask user for data (credentials, 2FA)
-page.setData(key, value)                      'result' for data, 'error' for failures
-page.setProgress({ phase, message })          Progress reporting
-page.closeBrowser()                           Close browser, extract cookies
-page.httpFetch(url, options?)                  Node.js HTTP (auto-injects cookies)
-page.captureNetwork({ key, urlPattern })      Intercept network requests
-page.getCapturedResponse(key)                 Retrieve captured response
-page.screenshot()                             Base64 JPEG screenshot
-```
-
-Full API: `reference/PAGE-API.md`
-
----
-
-## Step 3 -- Test
-
-Run the connector and validate in one step:
+Check `packages/polyfill-connectors/package.json` for the required Node
+version before installing. From the upstream repository root:
 
 ```bash
-node scripts/validate.cjs <company>/<name>-playwright.js && \
-  vana connect <platform> && \
-  node scripts/validate.cjs <company>/<name>-playwright.js --check-result ~/.vana/last-result.json
+node --version
+npm ci
 ```
 
-The validator checks structure, output quality, debug code, data cleanliness, schema descriptions, and login method diversity. Fix all reported issues and re-run.
+Upstream uses npm workspaces and `package-lock.json`. Use pnpm for development
+inside `vana-cli`; keep the repositories' installation commands separate.
 
-If an extraction approach fails after 2 attempts, move to the next rung (see `reference/PATTERNS.md`). Use `page.screenshot()` to see what the browser shows.
+Resolve the Vana CLI entry point before changing directories. For local CLI
+changes, build the actual `vana-cli` checkout with `pnpm build` and invoke its
+absolute `dist/cli/bin.js` path in place of `vana` below.
 
----
+## Implement the smallest useful stream
 
-## Step 4 -- Enrich Schemas
-
-Schemas are an API contract — app developers build against them.
-
-### Generate the skeleton
+For a new connector, choose a lowercase snake_case key and use upstream's
+initializer from `packages/polyfill-connectors`:
 
 ```bash
-node scripts/generate-schemas.cjs ~/.vana/last-result.json <platform> [output-dir]
+cd packages/polyfill-connectors
+node --import tsx bin/connector-init.ts <key> --display-name "<Source name>" --stream <stream>
 ```
 
-### Enrich from what you know
+Add `--browser` to that invocation when browser sign-in is required. The
+initializer refuses existing paths. For updates, skip initialization and
+preserve the connector's key and scope names. Generated records are synthetic;
+replace the provider placeholders before claiming real collection.
 
-- Add `description` to every field and `format` hints where applicable (`date-time`, `uri`, `email`). The validator checks description coverage.
-- Mark fields `required` only if guaranteed for all users. Use `additionalProperties: true`.
-- Write a meaningful top-level `description` — not "GitHub profile data" but "GitHub user profile including bio, follower counts, and repository statistics."
+Inspect a current implementation with the same auth and collection mechanism.
+For example, `connectors/perplexity/` uses browser sign-in and
+`connectors/netflix_export/` reads an owner-provided file.
 
-Before (from `generate-schemas.cjs`):
+Keep `index.ts`, `manifest.json`, parsers, record validation, tests and reviewed
+scrubbed fixtures together under `connectors/<key>/`. Follow upstream's
+versioning and generated-index rules when adding or changing a connector.
 
-```json
-{ "type": "string" }
-```
+Use `packages/polyfill-connectors/src/connector-runtime.ts` and its existing
+authentication and browser helpers. `runConnector()` owns protocol messages, interaction
+handling, counters and terminal outcomes. Connector code owns provider access,
+parsing, stream records and cursor logic. Follow the current helper signatures
+and imports rather than implementing a parallel runner.
 
-After (enriched):
+Declare the actual runtime bindings, permitted hosts, interactions, streams,
+record schemas and stable primary keys in `manifest.json`. Implement record
+validation against those schemas. Keep the requested stream set and incremental
+state meaningful; a checkpoint must not claim unread data was collected.
 
-```json
-{
-  "type": "string",
-  "format": "date-time",
-  "description": "When the issue was created (ISO 8601)"
-}
-```
+Inspect the provider's current sign-in and data access behavior. Let the
+person perform sign-in and human checks. Start with one useful stream and
+tests using synthetic or reviewed scrubbed input before a real-account run.
 
----
+## Check the implementation
 
-## Step 5 -- Register and Contribute
+Return to the upstream repository root. Refresh the implementation index after
+adding a connector or changing its manifest:
 
 ```bash
-node scripts/register.cjs <company>/<name>-playwright.js
-node scripts/validate.cjs <company>/<name>-playwright.js --contribute
+npm run connector-implementation-index:generate
+npm run connector-implementation-index:check
 ```
 
-The validator runs all checks including secret scanning before creating a PR. All checks must pass — the validator is the quality gate.
+If `options_schema` or `reason_display_messages` changed, regenerate the
+library metadata before verification:
+
+```bash
+npm run polyfill-library-metadata:generate
+```
+
+Then run the verify gate:
+
+```bash
+npm run verify --workspace @pdpp/polyfill-connectors
+```
+
+Run the generated scaffold's Node test through upstream's sandbox:
+
+```bash
+scripts/test-sandbox/test-sandbox -- node --import tsx --test connectors/<key>/pilot-fixture.test.ts
+```
+
+Use the same per-file command for relevant Node parser and collection tests.
+Follow `TESTING.md` for existing Vitest tests and full suite lanes. A scaffold
+test proves its generated shape; provider behavior needs its own tests and run.
+
+The local developer runner lives in `packages/polyfill-connectors`. Replace
+`<key>` and `<stream>` with the connector key and a manifest stream name:
+
+```bash
+cd packages/polyfill-connectors
+node --import tsx bin/connector-dev.ts <key> --streams <stream> --summary-out /absolute/path/to/run-summary.json
+```
+
+This runs real collection and can ask for sign-in. Use a terminal for its
+interactive prompts. Inspect the streamed result and the saved summary. It
+does not ingest records into a Vana Personal Server.
+
+After a successful run that wrote state, test incremental behavior with:
+
+```bash
+node --import tsx bin/connector-dev.ts <key> --streams <stream> --seed-last-state --summary-out /absolute/path/to/next-summary.json
+```
+
+The runner stores state under `packages/polyfill-connectors/runs/<key>/`
+relative to the repository root. Respect provider refresh limits. Keep real
+records and run artifacts out of commits; passing fixture tests alone does
+not establish real-account support or justify a lifecycle promotion.
+
+## Prove the Vana integration
+
+Preserve the intended owner, Account deployment and server context. These
+examples use Moksha. Check identity and server readiness before collecting:
+
+```bash
+vana whoami --network moksha --json
+vana status --network moksha --json
+vana connect <key> --from /absolute/path/to/data-connectors --streams <stream> --network moksha --json --ipc
+```
+
+The checkout must have its own installed `tsx` and a manifest whose
+`connector_key` matches the selected key. Handle IPC and browser input using the
+Connect Data skill. If needed, install it with
+`vana skills install connect-data --json` and read `SKILL.md` under the
+returned `installedPath`.
+
+Inspect the collected result without another provider run:
+
+```bash
+vana data show <key>
+vana data path <key>
+vana logs <key>
+```
+
+For repeated local development, register the checkout deliberately:
+
+```bash
+vana connectors add <key> --from /absolute/path/to/data-connectors
+vana connectors list
+vana connect <key> --streams <stream> --network moksha --json --ipc
+```
+
+A saved local entry runs unsigned checkout source on subsequent collection,
+including schedules and MCP. Each run reports `Running <key> from <dir>` and
+emits `local-connector`. An existing key collision needs an explicit decision
+before `--force`, because the override shares that connector's state and scopes.
+Remove a development registration when it is no longer wanted:
+
+```bash
+vana connectors remove <key>
+```
+
+Report which checks ran, whether a real provider run occurred, and whether
+Vana collected locally or ingested into the intended server. App reading,
+saving and display remain a separate Builder workflow with explicit consent.
+Publishing, signed release and account-scoped native delivery are separate
+work. Use upstream's contribution and artifact instructions when requested;
+do not describe this local loop as an automated publication command.
