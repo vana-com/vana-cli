@@ -97,7 +97,14 @@ Install the skills that teach an agent each half:
 vana skills install builder        # ask for access, read, pay
 vana skills install agent-access   # give your own agent (OpenClaw, Hermes) scoped, paid access
 vana skills install connect-data   # collect your own data
+vana skills install create-connector # build or change a source connector
 ```
+
+For a complete walkthrough, use [Build and collect a connector with an agent](./skills/README.md).
+It pairs one starting prompt with the commands the agent runs, human sign-in,
+visible progress, and checks that the data reached your Personal Server.
+It also documents installation through `npx skills` and works without access
+to the private Connector Factory.
 
 There is also an MCP server over stdio for clients that prefer tools:
 
