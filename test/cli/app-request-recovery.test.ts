@@ -53,6 +53,11 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if (String(_url).includes("/api/v1/moksha-test-credits"))
+        return Response.json(
+          { error: { code: "balance_sufficient" } },
+          { status: 422 },
+        );
       if (init?.method === "POST") {
         const body = String(init.body);
         bodies.push(body);

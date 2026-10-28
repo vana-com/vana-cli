@@ -91,10 +91,32 @@ const intentSchema = z.object({
   grantData: z.record(z.string(), z.unknown()),
   payloadHash: z.string(),
   requestId: z.string().optional(),
+  funding: z
+    .object({
+      accountUrl: z.string().url(),
+      idempotencyKey: z.string().uuid(),
+    })
+    .optional(),
+  fundingProgress: z
+    .object({
+      status: z.enum(["pending", "funded", "not_needed", "failed"]),
+      operationId: z.string().min(1).max(128).optional(),
+    })
+    .optional(),
 });
 
-/** Frozen consent creation, saved before the remote request ID exists. */
+/** Frozen setup and consent identity, saved before any funding or consent POST. */
 export type StoredRequestIntent = z.infer<typeof intentSchema>;
+
+/** A concurrent command owns the request journal; no mutation was performed. */
+export class RequestsStoreBusyError extends Error {}
+
+/** Another command already saved this unfinished setup. */
+export class UnfinishedSetupError extends Error {
+  constructor(readonly intent: StoredRequestIntent) {
+    super("Resume the existing unfinished setup.");
+  }
+}
 
 /** Fingerprint only immutable request identity and payload, never credentials. */
 export function requestIntentHash(
@@ -105,6 +127,7 @@ export function requestIntentHash(
     createdAt: _date,
     grantData: _grant,
     requestId: _remote,
+    fundingProgress: _funding,
     ...payload
   } = intent;
   function canonical(value: unknown): unknown {
@@ -127,6 +150,11 @@ const EMPTY: RequestsFile = { version: 1, requests: [] };
 export interface RequestsStore {
   save(request: StoredRequest, setupId?: string): void;
   saveIntent(intent: StoredRequestIntent): void;
+  /** Retain the service operation before polling or creating consent. */
+  updateFunding(
+    setupId: string,
+    progress: NonNullable<StoredRequestIntent["fundingProgress"]>,
+  ): NonNullable<StoredRequestIntent["fundingProgress"]>;
   getIntent(setupId: string): StoredRequestIntent | null;
   listIntents(): StoredRequestIntent[];
   /** Merge fields into an existing entry; no-op when it is unknown. */
@@ -139,6 +167,62 @@ export interface RequestsStore {
 export function createRequestsStore(filePath?: string): RequestsStore {
   const file = filePath ?? path.join(getVanaHome(), "app", "requests.json");
 
+  // Linking a complete owner file creates the lock atomically, including its
+  // pid. A crash cannot leave a half-written owner or lose another writer's key.
+  function withWriteLock<T>(mutate: () => T): T {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const lock = `${file}.lock`;
+    const owner = `${lock}.${randomUUID()}`;
+    const token = JSON.stringify({ pid: process.pid, token: randomUUID() });
+    let acquired = false;
+    try {
+      fs.writeFileSync(owner, token, { flag: "wx", mode: 0o600 });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          fs.linkSync(owner, lock);
+          acquired = true;
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          let pid: number;
+          let previous: string;
+          try {
+            previous = fs.readFileSync(lock, "utf8");
+            pid = z
+              .object({ pid: z.number().int().positive() })
+              .parse(JSON.parse(previous)).pid;
+          } catch {
+            throw new RequestsStoreBusyError(
+              "Cannot identify the request journal's writer.",
+            );
+          }
+          try {
+            process.kill(pid, 0);
+            throw new RequestsStoreBusyError(
+              "Another command is updating request state.",
+            );
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH")
+              throw new RequestsStoreBusyError(
+                "Another command is updating request state.",
+              );
+          }
+          if (fs.readFileSync(lock, "utf8") !== previous)
+            throw new RequestsStoreBusyError(
+              "The request journal's writer changed.",
+            );
+          fs.unlinkSync(lock);
+        }
+      }
+      if (!acquired)
+        throw new RequestsStoreBusyError("Cannot lock request state.");
+      return mutate();
+    } finally {
+      if (acquired) fs.unlinkSync(lock);
+      fs.rmSync(owner, { force: true });
+    }
+  }
+
   function read(): RequestsFile {
     try {
       const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as RequestsFile;
@@ -150,6 +234,13 @@ export function createRequestsStore(filePath?: string): RequestsStore {
         const { payloadHash, ...payload } = intent;
         if (requestIntentHash(payload) !== payloadHash)
           throw new Error("Saved request payload changed");
+        if (
+          intent.fundingProgress &&
+          (!intent.funding ||
+            (["funded", "failed"].includes(intent.fundingProgress.status) &&
+              !intent.fundingProgress.operationId))
+        )
+          throw new Error("Invalid saved funding progress");
         return intent;
       });
       return parsed;
@@ -188,56 +279,97 @@ export function createRequestsStore(filePath?: string): RequestsStore {
 
   return {
     saveIntent(intent) {
-      const parsed = intentSchema.parse(intent);
-      const state = read();
-      if (state.intents?.some((entry) => entry.setupId === parsed.setupId))
-        throw new Error("Request intent already exists");
-      state.intents = [...(state.intents ?? []), parsed];
-      write(state);
+      return withWriteLock(() => {
+        const parsed = intentSchema.parse(intent);
+        const state = read();
+        if (state.intents?.some((entry) => entry.setupId === parsed.setupId))
+          throw new Error("Request intent already exists");
+        const unfinished = state.intents?.find(
+          (entry) =>
+            !entry.requestId &&
+            entry.appAddress.toLowerCase() ===
+              parsed.appAddress.toLowerCase() &&
+            entry.network === parsed.network &&
+            entry.env === parsed.env &&
+            entry.gatewayUrl === parsed.gatewayUrl &&
+            JSON.stringify(entry.requestOptions) ===
+              JSON.stringify(parsed.requestOptions),
+        );
+        if (unfinished) throw new UnfinishedSetupError(unfinished);
+        state.intents = [...(state.intents ?? []), parsed];
+        write(state);
+      });
     },
     getIntent(setupId) {
       return read().intents?.find((entry) => entry.setupId === setupId) ?? null;
+    },
+    updateFunding(setupId, progress) {
+      return withWriteLock(() => {
+        const state = read();
+        const intent = state.intents?.find(
+          (entry) => entry.setupId === setupId,
+        );
+        if (
+          !intent?.funding ||
+          (intent.fundingProgress?.operationId &&
+            intent.fundingProgress.operationId !== progress.operationId)
+        )
+          throw new Error("Conflicting funding identity");
+        if (
+          intent.fundingProgress &&
+          intent.fundingProgress.status !== "pending"
+        )
+          return intent.fundingProgress;
+        intent.fundingProgress =
+          intentSchema.shape.fundingProgress.parse(progress);
+        write(state);
+        return intent.fundingProgress!;
+      });
     },
     listIntents() {
       return read().intents ?? [];
     },
     save(request: StoredRequest, setupId?: string): void {
-      const state = read();
-      if (setupId) {
-        const intent = state.intents?.find(
-          (entry) => entry.setupId === setupId,
+      return withWriteLock(() => {
+        const state = read();
+        if (setupId) {
+          const intent = state.intents?.find(
+            (entry) => entry.setupId === setupId,
+          );
+          if (
+            !intent ||
+            (intent.requestId && intent.requestId !== request.requestId)
+          )
+            throw new Error("Conflicting request identity");
+          intent.requestId = request.requestId;
+        }
+        const index = state.requests.findIndex(
+          (entry) => entry.requestId === request.requestId,
         );
-        if (
-          !intent ||
-          (intent.requestId && intent.requestId !== request.requestId)
-        )
-          throw new Error("Conflicting request identity");
-        intent.requestId = request.requestId;
-      }
-      const index = state.requests.findIndex(
-        (entry) => entry.requestId === request.requestId,
-      );
-      if (index >= 0) {
-        state.requests[index] = request;
-      } else {
-        state.requests.push(request);
-      }
-      write(state);
+        if (index >= 0) {
+          state.requests[index] = request;
+        } else {
+          state.requests.push(request);
+        }
+        write(state);
+      });
     },
     update(requestId: string, patch: Partial<StoredRequest>): void {
-      const state = read();
-      const index = state.requests.findIndex(
-        (entry) => entry.requestId === requestId,
-      );
-      if (index < 0) {
-        return;
-      }
-      state.requests[index] = {
-        ...state.requests[index],
-        ...patch,
-        updatedAt: new Date().toISOString(),
-      };
-      write(state);
+      return withWriteLock(() => {
+        const state = read();
+        const index = state.requests.findIndex(
+          (entry) => entry.requestId === requestId,
+        );
+        if (index < 0) {
+          return;
+        }
+        state.requests[index] = {
+          ...state.requests[index],
+          ...patch,
+          updatedAt: new Date().toISOString(),
+        };
+        write(state);
+      });
     },
     get(requestId: string): StoredRequest | null {
       return (

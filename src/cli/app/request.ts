@@ -7,8 +7,10 @@
  * exits 7, so an agent can hand the link to a human and come back later
  * with `vana app requests show <id>`.
  *
- * The request is persisted the moment it is created, before any approval,
- * so a `--no-input` run is findable afterwards.
+ * Moksha setup first saves a funding key and obtains usable test credit.
+ * Claiming and pending funding return the saved setup ID for --resume;
+ * consent is created only after funding is ready. Mainnet skips that step.
+ * Both setup and consent are findable after a --no-input run.
  */
 
 import { randomUUID } from "node:crypto";
@@ -37,6 +39,8 @@ import {
   type StoredRequestStatus,
   type StoredRequestIntent,
   requestIntentHash,
+  RequestsStoreBusyError,
+  UnfinishedSetupError,
 } from "../../core/requests-store.js";
 import { checkGrant } from "./requests.js";
 import { readAppProfile } from "../../core/app-profile.js";
@@ -48,10 +52,11 @@ import {
   type GrantUnion,
 } from "../../core/grant-union.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
+import { prepareTestCredit } from "./test-credit.js";
 
 export interface RequestCommandOptions extends AppCommandOptions {
   scopes?: string;
-  /** Continue one saved consent intent without changing its payload. */
+  /** Continue saved setup and consent without changing their identity. */
   resume?: string;
   /** Live grant entries to give up instead of carrying them over. */
   removeScopes?: string;
@@ -80,11 +85,17 @@ export interface RequestDeps {
   now?: () => number;
   readProfile?: typeof readAppProfile;
   createClient?: (gatewayUrl: string) => GrantUnionClient;
+  /** Account transport for test-credit requests and operation status. */
+  fetchTestCredit?: typeof fetch;
 }
 
 type GrantUnionClient = Pick<
   GatewayClient,
-  "getGrant" | "listGrantsByUser" | "getBuilder"
+  | "getGrant"
+  | "listGrantsByUser"
+  | "getBuilder"
+  | "isRegisteredBuilder"
+  | "registerBuilder"
 >;
 
 /**
@@ -348,14 +359,14 @@ export async function runAppRequest(
     return emitAppOutcome(options, {
       status: "failed",
       code: "internal",
-      message: "Cannot read saved consent recovery state. No request was sent.",
+      message: "Cannot read saved setup recovery state. No request was sent.",
     });
   }
   if (options.resume && !saved) {
     return emitAppOutcome(options, {
       status: "failed",
       code: "bad_usage",
-      message: `No saved consent intent ${options.resume}.`,
+      message: `No saved setup ${options.resume}.`,
       remedy: "vana app requests list",
     });
   }
@@ -385,7 +396,7 @@ export async function runAppRequest(
       return emitAppOutcome(options, {
         status: "failed",
         code: "bad_usage",
-        message: "Restore the saved app identity before resuming consent.",
+        message: "Restore the saved app identity before resuming setup.",
         network: network.name,
       });
     }
@@ -400,6 +411,7 @@ export async function runAppRequest(
       network.env !== saved.env ||
       network.gatewayUrl !== saved.gatewayUrl ||
       network.approvalUrl !== saved.approvalBaseUrl ||
+      (saved.funding && saved.funding.accountUrl !== network.accountUrl) ||
       payloadConflict
     ) {
       return emitAppOutcome(options, {
@@ -600,6 +612,14 @@ export async function runAppRequest(
       }),
     ),
     grantData: grantUnionData(plan),
+    ...(network.name === "moksha"
+      ? {
+          funding: {
+            accountUrl: network.accountUrl,
+            idempotencyKey: randomUUID(),
+          },
+        }
+      : {}),
   };
   const intent: StoredRequestIntent = {
     ...payload,
@@ -623,24 +643,41 @@ export async function runAppRequest(
         status: "failed",
         code: "not_ready",
         message:
-          "This consent creation is unfinished. Resume it instead of creating another request.",
+          "This setup is unfinished. Resume it instead of creating another request.",
         remedy: resumeCommand(unfinished, options),
         network: network.name,
         data: { setupId: unfinished.setupId },
       });
     requests.saveIntent(intent);
-  } catch {
+  } catch (error) {
+    if (error instanceof UnfinishedSetupError)
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "not_ready",
+        message:
+          "This setup is unfinished. Resume it instead of creating another request.",
+        remedy: resumeCommand(error.intent, options),
+        network: network.name,
+        data: { setupId: error.intent.setupId },
+      });
+    if (error instanceof RequestsStoreBusyError)
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "not_ready",
+        message:
+          "Another CLI command is updating setup state. Retry this command.",
+        network: network.name,
+      });
     return emitAppOutcome(options, {
       status: "failed",
       code: "internal",
-      message: "Cannot save consent recovery state. No request was sent.",
+      message:
+        "Cannot save setup recovery state. No funding or consent request was sent.",
       network: network.name,
     });
   }
   if (!options.json && !options.quiet)
-    process.stderr.write(
-      `Saved request: ${intent.setupId}\nCreating approval request...\n`,
-    );
+    process.stderr.write(`Saved setup: ${intent.setupId}\n`);
   return runConsentIntent(intent, options, network, key, requests, deps, false);
 }
 
@@ -688,6 +725,19 @@ async function runConsentIntent(
     source: intent.source,
     scopes: requestScopes,
   });
+  const fundingOutcome = await prepareTestCredit({
+    intent,
+    network,
+    key,
+    requests,
+    options,
+    resumeCommand: resumeCommand(intent, options),
+    fetchFn: deps.fetchTestCredit,
+    createClient: deps.createClient,
+    sleep: deps.sleep,
+    now: deps.now,
+  });
+  if (fundingOutcome) return emitAppOutcome(options, fundingOutcome);
   let created: { requestId: string; approvalUrl: string; expiresAt?: string };
   let originalApprovedScopes: string[] | undefined;
   if (intent.requestId) {

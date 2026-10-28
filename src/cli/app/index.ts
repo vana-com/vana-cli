@@ -48,7 +48,7 @@ export function registerAppCommands(
     .description("Ask a person for access and wait for the grant")
     .option(
       "--resume <setupId>",
-      "Continue a saved consent request without changing it",
+      "Continue saved setup, test credit and consent without changing them",
     )
     .option(
       "--scopes <list>",
@@ -75,7 +75,7 @@ export function registerAppCommands(
     .option("--return-url <url>", "Where approval returns the person")
     .option(
       "--timeout <seconds>",
-      "How long to wait for approval (default 600)",
+      "Seconds to wait per setup stage (defaults: credit 120, approval 600)",
     )
     .option("--app-id <id>", "App id shown during approval")
     .option("--app-name <name>", "App name shown during approval")

@@ -214,7 +214,7 @@ export async function runAppRequestsList(
     code: "ok",
     message:
       setups.length > 0
-        ? `${entries.length} access requests; ${setups.length} unfinished request creation${setups.length === 1 ? "" : "s"}.`
+        ? `${entries.length} access requests; ${setups.length} unfinished setup${setups.length === 1 ? "" : "s"}.`
         : entries.length === 0
           ? "No access requests from this machine yet."
           : `${entries.length} access request${entries.length === 1 ? "" : "s"}${gone.length ? `; ${gone.length} grant${gone.length === 1 ? " is" : "s are"} no longer in force` : ""}.`,
@@ -236,6 +236,16 @@ export async function runAppRequestsList(
               app: entry.app.name,
               scopes: entry.scopes,
               createdAt: entry.createdAt,
+              stage:
+                entry.funding &&
+                !["funded", "not_needed"].includes(
+                  entry.fundingProgress?.status ?? "",
+                )
+                  ? "test_credit"
+                  : "consent",
+              ...(entry.funding
+                ? { funding: entry.fundingProgress ?? { status: "pending" } }
+                : {}),
             })),
           }
         : {}),
@@ -296,10 +306,16 @@ export async function runAppRequestsShow(
             status: "failed",
             code: "not_ready",
             message:
-              "Consent creation is unfinished; inspection does not submit it.",
+              "Setup is unfinished; inspection does not submit funding or consent.",
             remedy: resumeCommand(intent, options),
             network: network.name,
-            data: { setupId: intent.setupId, scopes: intent.scopes },
+            data: {
+              setupId: intent.setupId,
+              scopes: intent.scopes,
+              ...(intent.funding
+                ? { funding: intent.fundingProgress ?? { status: "pending" } }
+                : {}),
+            },
           });
         requestId = intent.requestId;
         stored = requests.get(requestId);

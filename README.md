@@ -83,6 +83,31 @@ never implied: a paid read stops with the exact price until you add `--pay`,
 and `--max-fee` caps it. `--network moksha` is the testnet, where fees are
 play money.
 
+On Moksha, `vana app request --network moksha --scopes github.repositories`
+automatically requests free test credit before creating the approval request.
+If the app needs claiming, it prints a Vana Account link; open it and run the
+printed resume command. Credit is deposited directly into the app's escrow.
+The service decides eligibility and limits; the CLI never visits a faucet or
+moves tokens through the app wallet.
+
+Setup is saved before funding starts. If the command is interrupted, use
+`vana app requests list --network moksha` to find its setup ID and resume it:
+
+```bash
+vana app request --network moksha --resume <setupId>
+```
+
+Resume keeps the same app, environment, funding operation and consent request.
+With `--no-input`, pending credit exits 6 with a resume command, and claiming
+or data approval exits 7 with the required link. Interactive runs wait up to
+120 seconds for credit by default (`--timeout` overrides this; it also sets
+the approval wait). `requests show <setupId>` inspects saved progress without
+requesting credit or creating consent. If the test-credit service is disabled,
+unavailable or at its limit, setup stays resumable and does not report success.
+This path requires the Account test-credit service to be deployed and enabled;
+mainnet requests retain their existing behavior. Saved consent intents from
+older CLI versions resume without adding a funding step.
+
 ## For agents
 
 Every command takes `--json` and `--no-input`, and exits with a code an
