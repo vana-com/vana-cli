@@ -20,17 +20,27 @@ npm install -g vana-cli
 vana --version
 ```
 
-Install the two skills through the CLI:
+The installer or first interactive `vana` run offers **Connect Data, Create
+Connector and Builder** together. It shows where the instructions will go and
+asks before copying or replacing them. Answer yes once; separate skill install
+commands are not needed. Declining leaves your agent skills untouched. Automated
+or non-interactive installations skip the offer.
+
+The files, including Builder's verification reference, ship with your CLI and
+need no additional download. To revisit a decision or update your installed skills:
 
 ```sh
-vana skills install connect-data --json
-vana skills install create-connector --json
+vana skills setup
 ```
 
-Each response gives `installedPath`. The CLI installs to
-`~/.agents/skills/vana-connect-data` and `vana-create-connector`, and also to
-Claude Code's skill directory when detected. Have your agent read `SKILL.md`
-at the returned path. Refresh its skill discovery if it was already running.
+The CLI installs under `~/.agents/skills/vana-<id>/` and also
+`~/.claude/skills/vana-<id>/` when `~/.claude/` exists. In Claude Code, use
+`/reload-skills` if new skills are not visible. If you install Claude Code later,
+rerun setup. Once installed, the descriptions let the agent select the right
+skills from your data goal; the phrase “use Vana” alone does not discover GitHub.
+
+Individual `vana skills install <id> --json` commands remain available to agents
+that have explicit permission to install a named skill.
 
 Alternatively, use the [skills.sh installer](https://skills.sh/docs/cli):
 
@@ -201,11 +211,7 @@ optional `vana connectors add`; a one-off trial does not need registration.
 Collection finishes a collection-only request. If your original goal also asks
 an app to use the data, the agent continues through the public Builder skill:
 
-```sh
-vana skills install builder --json
-```
-
-Read its returned `installedPath`'s `SKILL.md` and follow its included
+Builder is included in the setup offer. The agent follows its included
 [delivery and verification procedure](./builder/reference/verification.md).
 The agent reuses the intended app identity, guides explicit consent, handles
 any agreed spending limit, and verifies the requested read, storage, display

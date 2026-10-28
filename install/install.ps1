@@ -172,6 +172,8 @@ try {
 
   Write-Host ""
   Write-Host "Installed vana to $WrapperPath"
+  # The CLI asks before copying skills and skips redirected/automated sessions.
+  & $WrapperPath skills setup
   Write-Host "Next step:"
   Write-Host "  vana status"
 }
