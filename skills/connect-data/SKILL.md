@@ -1,9 +1,9 @@
 ---
 name: connect-data
 description: >
-  Collect a person's own data with the Vana CLI. Use when they ask to connect
-  a source, refresh collected data, or inspect collection results. Route a
-  missing connector to the create-connector skill.
+  Collect a person's own data with the Vana CLI. Use for requests such as
+  "use Vana to connect my data", source collection or refresh, and inspection
+  of collected results. Route a missing connector to create-connector.
 ---
 
 # Connect personal data
@@ -11,6 +11,15 @@ description: >
 Use the Vana CLI for discovery, collection, owner identity and results. The
 person completes provider sign-in and human checks in the browser when needed.
 App access to collected data is a separate Builder workflow.
+
+Start from the person's data goal, such as "Use Vana to collect my highlights".
+Select and load the required skills yourself. Continue through discovery,
+any necessary connector authoring, collection, and result inspection. The
+person does not need to name a skill, choose a helper, or supply another
+implementation prompt. Ask for account/data choices and human authentication.
+The public
+[walkthrough](https://github.com/vana-com/vana-cli/blob/main/skills/README.md)
+pairs the user's part with the commands.
 
 ## Select the CLI and owner context
 
@@ -80,8 +89,8 @@ an empty or unavailable catalog alone does not establish that.
 
 ## Collect and handle human input
 
-Run collection in a background process you can inspect while the person
-signs in:
+For an agent-controlled browser or protected local credential handoff, run
+collection in a background process you can inspect while the person signs in:
 
 ```bash
 vana connect <source> --json --ipc
@@ -89,6 +98,20 @@ vana connect <source> --json --ipc
 
 For a Collection Profile source, select only the requested manifest stream
 names with `--streams <stream,stream>`. An explicit source is required.
+For a local implementation, add `--from /absolute/path/to/data-connectors`
+without registering a persistent override for a one-off trial.
+
+For a person entering a token or password, give them the exact interactive
+command to run in their own terminal, with the real source/path/streams and
+selected network. Explain where to paste the secret and that hidden input
+does not echo. Verify secret fields have password metadata in the connector's
+interaction schema. Keep the secret out of chat, command arguments, scripts,
+and logs. A credential form in the chat is not the local terminal prompt.
+
+Keep progress visible. In agent mode, relay meaningful stage/count events;
+in human mode, leave the CLI's progress on the terminal. `vana connect`
+collects and ingests in one run. The upstream developer runner is optional
+diagnostics, not a prerequisite that collects from the provider a second time.
 
 Read the emitted events until the process finishes. A Collection Profile
 connector can request browser sign-in through `headed-required` and then a
@@ -98,10 +121,12 @@ source as unsupported by agents.
 For `needs-input` events with `pendingInputPath` and `responseInputPath`:
 
 1. Read the exact pending file and its requested fields.
-2. Have the person complete browser sign-in, a human check, or the requested
-   credential input. Never solve a provider's human check for them.
-3. Write JSON to the exact response path using a file API. Restrict credential
-   files to the current user; keep secrets out of shell arguments and logs.
+2. Have the person complete browser sign-in or a human check. For secret
+   fields, use an available protected local input channel. If none is available,
+   stop/cancel this waiting run and hand over the interactive terminal command.
+3. Write the resulting JSON to the exact response path using a file API.
+   Restrict credential files to the current user; keep secrets out of chat,
+   shell arguments, and logs.
 4. For a Collection Profile manual action with no fields, write `{}` only
    after the person confirms completion. To decline, write `{"status":"cancelled"}`.
 5. Continue reading events. Further prompts may follow, and input can expire.
@@ -128,6 +153,9 @@ vana logs <source>
 Summarize the requested records, any skipped streams, and whether ingestion
 succeeded. Preserve saved results and follow the reported recovery action on
 failure. Do not rerun automatically just to obtain a cleaner transcript.
+Inspect private records locally and report counts/status instead of copying
+payloads into chat or a repository. Compare recognizable records and any
+independent provider counts before claiming completeness.
 
 If the person wants an app to consume the data, load its installed Builder
 skill. Install it if necessary with `vana skills install builder --json`, then
