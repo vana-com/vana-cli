@@ -4,6 +4,7 @@ import { buildWeb3SignedHeader } from "@opendatalabs/vana-sdk/auth/web3-signed-b
 import { privateKeyToAccount } from "viem/accounts";
 import { z } from "zod";
 import type { ResolvedNetwork } from "./network.js";
+import { NATIVE_ASSET } from "./assets.js";
 
 const CREATE_PATH = "/api/v1/moksha-test-credits";
 const operationSchema = z.object({
@@ -26,6 +27,7 @@ export type TestCreditOperation = z.infer<typeof operationSchema>;
 export type TestCreditResponse =
   | { status: "operation"; operation: TestCreditOperation }
   | { status: "not_needed" }
+  | { status: "pending" }
   | { status: "refused"; code: string; retryAfterSeconds?: number };
 
 /**
@@ -96,8 +98,43 @@ export async function requestTestCredit(input: {
     response.status === 422 &&
     error.success &&
     error.data.error.code === "balance_sufficient"
-  )
-    return { status: "not_needed" };
+  ) {
+    // Eligibility includes pending deposits to prevent another top-up. Only
+    // finalized credit is spendable; reconcile existing deposits before setup
+    // treats the refusal as readiness. This never transfers or pays funds.
+    const synced = await (input.fetchFn ?? fetch)(
+      `${input.network.gatewayUrl}/v1/escrow/balance/sync?account=${encodeURIComponent(account.address)}`,
+      {
+        method: "POST",
+        cache: "no-store",
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    if (!synced.ok) throw new Error("Cannot reconcile existing test credit.");
+    const balance = z
+      .object({
+        account: z.string(),
+        balances: z.array(
+          z.object({
+            asset: z.string(),
+            availableAmount: z.string().regex(/^\d+$/),
+            pendingAmount: z.string().regex(/^\d+$/),
+          }),
+        ),
+      })
+      .parse(await synced.json());
+    if (balance.account.toLowerCase() !== account.address.toLowerCase())
+      throw new Error("Conflicting test-credit balance identity.");
+    const native = balance.balances.find(
+      (entry) => entry.asset.toLowerCase() === NATIVE_ASSET,
+    );
+    return native &&
+      BigInt(native.availableAmount) > 0n &&
+      BigInt(native.pendingAmount) === 0n
+      ? { status: "not_needed" }
+      : { status: "pending" };
+  }
   const retryAfter = Number(response.headers.get("retry-after"));
   return {
     status: "refused",

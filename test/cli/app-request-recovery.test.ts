@@ -53,6 +53,17 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if (String(_url).includes("/v1/escrow/balance/sync"))
+        return Response.json({
+          account: account.address,
+          balances: [
+            {
+              asset: "0x0000000000000000000000000000000000000000",
+              availableAmount: "1000000000000000000",
+              pendingAmount: "0",
+            },
+          ],
+        });
       if (String(_url).includes("/api/v1/moksha-test-credits"))
         return Response.json(
           { error: { code: "balance_sufficient" } },

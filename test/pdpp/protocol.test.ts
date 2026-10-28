@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   runCollectionProfile,
@@ -250,14 +250,31 @@ describe("runCollectionProfile", () => {
       emit({ type: "DONE", status: "succeeded", records_emitted: 0 });
       await waitForStdinClose();
     `);
-    const outcome = await run(file, {
-      idleTimeoutMs: 200,
-      onInteraction: () =>
-        new Promise<InteractionReply>((resolve) =>
-          setTimeout(() => resolve({ status: "success" }), 600),
-        ),
-    }).promise;
-    expect(outcome.status).toBe("succeeded");
+    let waiting!: () => void;
+    const interactionStarted = new Promise<void>((resolve) => {
+      waiting = resolve;
+    });
+    let answer!: (reply: InteractionReply) => void;
+    const reply = new Promise<InteractionReply>((resolve) => {
+      answer = resolve;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const execution = run(file, {
+        idleTimeoutMs: 200,
+        onInteraction: () => {
+          waiting();
+          return reply;
+        },
+      });
+      // Child startup is real IO; advance time only once the person can act.
+      await interactionStarted;
+      await vi.advanceTimersByTimeAsync(600);
+      answer({ status: "success" });
+      expect((await execution.promise).status).toBe("succeeded");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("cancels on abort", async () => {

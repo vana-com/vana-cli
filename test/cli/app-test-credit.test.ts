@@ -23,6 +23,8 @@ const txHash = `0x${"a".repeat(64)}`;
 let directory: string;
 let stdout: string;
 let operationStatus: string;
+let pendingBalance: string;
+let availableBalance: string;
 let refusal: string | undefined;
 let lost: boolean;
 let posts: string[];
@@ -46,6 +48,8 @@ beforeEach(() => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), "vana-test-credit-"));
   stdout = "";
   operationStatus = "submitted";
+  pendingBalance = "0";
+  availableBalance = "1000000000000000000";
   refusal = undefined;
   lost = false;
   posts = [];
@@ -67,6 +71,23 @@ beforeEach(() => {
   fetchCredit = vi.fn(
     async (url: string | URL | Request, init?: RequestInit) => {
       const target = new URL(String(url));
+      if (target.pathname === "/v1/escrow/balance/sync") {
+        expect(target.origin).toBe("https://dp-rpc-dev.vana.org");
+        expect(target.searchParams.get("account")?.toLowerCase()).toBe(
+          account.address.toLowerCase(),
+        );
+        expect(new Headers(init?.headers).has("authorization")).toBe(false);
+        return Response.json({
+          account: account.address,
+          balances: [
+            {
+              asset: "0x0000000000000000000000000000000000000000",
+              availableAmount: availableBalance,
+              pendingAmount: pendingBalance,
+            },
+          ],
+        });
+      }
       const body = init?.body
         ? new Uint8Array(init.body as Uint8Array)
         : undefined;
@@ -470,10 +491,7 @@ it("resumes a pre-funding v1 consent intent without adding a credit request", as
 });
 
 it("does not transmit anything while another live command holds the request journal", async () => {
-  fs.writeFileSync(
-    path.join(directory, "requests.json.lock"),
-    JSON.stringify({ pid: process.pid }),
-  );
+  installLockOwner(process.pid);
   expect((await invoke(fresh)).exitCode).toBe(6);
   expect(fetchCredit).not.toHaveBeenCalled();
   expect(createConsent).not.toHaveBeenCalled();
@@ -494,10 +512,7 @@ it("recovers the saved funding after its journal writer was interrupted", async 
   const first = await invoke(fresh);
   const departed = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" });
   expect(departed.status).toBe(0);
-  fs.writeFileSync(
-    path.join(directory, "requests.json.lock"),
-    JSON.stringify({ pid: departed.pid }),
-  );
+  installLockOwner(departed.pid);
   operationStatus = "confirmed";
   expect((await invoke({ resume: String(first.data?.setupId) })).exitCode).toBe(
     7,
@@ -505,4 +520,55 @@ it("recovers the saved funding after its journal writer was interrupted", async 
   expect(posts).toHaveLength(1);
   expect(polls).toBe(1);
   expect(createConsent).toHaveBeenCalledTimes(1);
+});
+
+it("does not mistake balance_sufficient with an unsettled deposit for usable credit", async () => {
+  refusal = "balance_sufficient";
+  pendingBalance = "1000000000000000000";
+  availableBalance = "0";
+  const first = await invoke(fresh);
+  expect(first.exitCode).toBe(6);
+  expect(createConsent).not.toHaveBeenCalled();
+  const setupId = String(first.data?.setupId);
+  expect(store().getIntent(setupId)?.fundingProgress?.status).toBe("pending");
+  pendingBalance = "0";
+  availableBalance = "1000000000000000000";
+  expect((await invoke({ resume: setupId })).exitCode).toBe(7);
+  expect(posts).toEqual([posts[0], posts[0]]);
+  expect(operations.size).toBe(0);
+});
+
+function installLockOwner(pid: number) {
+  const lock = path.join(directory, "requests.json.lock");
+  fs.mkdirSync(lock);
+  const owner = path.join(lock, "fixture-owner.json");
+  fs.writeFileSync(owner, JSON.stringify({ pid }));
+  return owner;
+}
+
+it("does not steal a newer writer's lock while recovering a dead writer", async () => {
+  const departed = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" });
+  expect(departed.status).toBe(0);
+  const oldOwner = installLockOwner(departed.pid);
+  const lock = path.dirname(oldOwner);
+  const unlink = fs.unlinkSync;
+  let replaced = false;
+  vi.spyOn(fs, "unlinkSync").mockImplementation((file) => {
+    if (String(file) === oldOwner && !replaced) {
+      replaced = true;
+      unlink(oldOwner);
+      fs.rmdirSync(lock);
+      fs.mkdirSync(lock);
+      fs.writeFileSync(
+        path.join(lock, "successor.json"),
+        JSON.stringify({ pid: process.pid }),
+      );
+    }
+    unlink(file);
+  });
+  await invoke(fresh);
+  expect(replaced).toBe(true);
+  expect(fetchCredit).not.toHaveBeenCalled();
+  expect(store().listIntents()).toHaveLength(0);
+  expect(fs.existsSync(path.join(lock, "successor.json"))).toBe(true);
 });

@@ -167,59 +167,100 @@ export interface RequestsStore {
 export function createRequestsStore(filePath?: string): RequestsStore {
   const file = filePath ?? path.join(getVanaHome(), "app", "requests.json");
 
-  // Linking a complete owner file creates the lock atomically, including its
-  // pid. A crash cannot leave a half-written owner or lose another writer's key.
+  // Publish a nonempty owner directory atomically. Renaming cannot replace
+  // another nonempty lock, and cleanup removes only the observed owner's file.
   function withWriteLock<T>(mutate: () => T): T {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     const lock = `${file}.lock`;
-    const owner = `${lock}.${randomUUID()}`;
-    const token = JSON.stringify({ pid: process.pid, token: randomUUID() });
+    const token = `${randomUUID()}.json`;
+    const prepared = `${lock}.${randomUUID()}.tmp`;
+    fs.mkdirSync(prepared, { mode: 0o700 });
     let acquired = false;
+    const removeEmptyLock = () => {
+      try {
+        fs.rmdirSync(lock);
+      } catch (error) {
+        if (
+          !["ENOENT", "ENOTEMPTY", "EEXIST"].includes(
+            (error as NodeJS.ErrnoException).code ?? "",
+          )
+        )
+          throw error;
+      }
+    };
     try {
-      fs.writeFileSync(owner, token, { flag: "wx", mode: 0o600 });
-      for (let attempt = 0; attempt < 2; attempt += 1) {
+      fs.writeFileSync(
+        path.join(prepared, token),
+        JSON.stringify({ pid: process.pid }),
+        { flag: "wx", mode: 0o600 },
+      );
+      for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-          fs.linkSync(owner, lock);
+          fs.renameSync(prepared, lock);
           acquired = true;
           break;
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          if (
+            !["EEXIST", "ENOTEMPTY", "EPERM"].includes(
+              (error as NodeJS.ErrnoException).code ?? "",
+            )
+          )
+            throw error;
+          let owners: string[];
           let pid: number;
-          let previous: string;
           try {
-            previous = fs.readFileSync(lock, "utf8");
+            owners = fs.readdirSync(lock);
+            if (owners.length === 0) {
+              removeEmptyLock();
+              continue;
+            }
+            if (owners.length !== 1) throw new Error("Invalid lock owners");
             pid = z
               .object({ pid: z.number().int().positive() })
-              .parse(JSON.parse(previous)).pid;
-          } catch {
+              .parse(
+                JSON.parse(fs.readFileSync(path.join(lock, owners[0]), "utf8")),
+              ).pid;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
             throw new RequestsStoreBusyError(
               "Cannot identify the request journal's writer.",
             );
           }
           try {
             process.kill(pid, 0);
-            throw new RequestsStoreBusyError(
-              "Another command is updating request state.",
-            );
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "ESRCH")
               throw new RequestsStoreBusyError(
                 "Another command is updating request state.",
               );
+            try {
+              fs.unlinkSync(path.join(lock, owners[0]));
+            } catch (unlinkError) {
+              if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT")
+                throw unlinkError;
+            }
+            // A successor's owner file makes this fail harmlessly with
+            // ENOTEMPTY, even if it acquired the lock after the stale read.
+            removeEmptyLock();
+            continue;
           }
-          if (fs.readFileSync(lock, "utf8") !== previous)
-            throw new RequestsStoreBusyError(
-              "The request journal's writer changed.",
-            );
-          fs.unlinkSync(lock);
+          throw new RequestsStoreBusyError(
+            "Another command is updating request state.",
+          );
         }
       }
       if (!acquired)
         throw new RequestsStoreBusyError("Cannot lock request state.");
       return mutate();
     } finally {
-      if (acquired) fs.unlinkSync(lock);
-      fs.rmSync(owner, { force: true });
+      try {
+        if (acquired) {
+          fs.unlinkSync(path.join(lock, token));
+          removeEmptyLock();
+        }
+      } finally {
+        fs.rmSync(prepared, { recursive: true, force: true });
+      }
     }
   }
 

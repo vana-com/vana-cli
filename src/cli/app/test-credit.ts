@@ -163,15 +163,17 @@ export async function prepareTestCredit(input: {
     let progress: NonNullable<StoredRequestIntent["fundingProgress"]> =
       result.status === "not_needed"
         ? { status: "not_needed" }
-        : {
-            status:
-              result.operation.status === "confirmed"
-                ? "funded"
-                : result.operation.status === "failed"
-                  ? "failed"
-                  : "pending",
-            operationId: result.operation.id,
-          };
+        : result.status === "pending"
+          ? { status: "pending" }
+          : {
+              status:
+                result.operation.status === "confirmed"
+                  ? "funded"
+                  : result.operation.status === "failed"
+                    ? "failed"
+                    : "pending",
+              operationId: result.operation.id,
+            };
     try {
       progress = requests.updateFunding(intent.setupId, progress);
       intent.fundingProgress = progress;
