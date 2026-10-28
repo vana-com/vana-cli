@@ -15,6 +15,7 @@ import {
 import type { SourceExportReceipt } from "../core/source-export.js";
 
 import { confirm, input, isPromptInputClosed, password } from "./prompts.js";
+import { canOfferSkillSetup, offerSkillSetup } from "../skills/setup.js";
 import { searchSelect } from "./search-select.js";
 import { Command, CommanderError, Option } from "commander";
 
@@ -374,7 +375,8 @@ export async function runCli(argv = process.argv): Promise<number> {
   }
 
   const normalizedArgv = normalizeArgv(argv);
-  if (normalizedArgv.length <= 2) {
+  const defaultHelp = normalizedArgv.length <= 2;
+  if (defaultHelp) {
     normalizedArgv.push("--help");
   }
   const parsedOptions = extractGlobalOptions(normalizedArgv);
@@ -433,6 +435,7 @@ Connectors:
 
 Agent:
   vana mcp               Start MCP server (for Claude Code, Cursor, etc.)
+  vana skills setup        Offer the three public skills for your agent
   vana skills list         List available agent skills
   vana skills install      Install a skill for your agent
 
@@ -461,8 +464,26 @@ More:
       "Vana network: mainnet (default) or moksha, the testnet",
     ).choices([...VANA_NETWORKS]),
   );
-  program.hook("preAction", (_thisCommand, actionCommand) => {
+  const offerSkills = async () => {
+    if (
+      installMethod !== "development" &&
+      canOfferSkillSetup() &&
+      !parsedOptions.json &&
+      !parsedOptions.noInput &&
+      !parsedOptions.ipc &&
+      !parsedOptions.yes &&
+      !parsedOptions.quiet
+    ) {
+      await offerSkillSetup({ interactive: true });
+    }
+  };
+  program.hook("preAction", async (_thisCommand, actionCommand) => {
     mergeParsedGlobalOptions(parsedOptions, actionCommand as Command);
+    let command = actionCommand as Command;
+    while (command.parent && command.parent !== program)
+      command = command.parent;
+    if (!["skills", "mcp", "version"].includes(command.name()))
+      await offerSkills();
   });
 
   program
@@ -1218,6 +1239,26 @@ Examples:
   });
 
   skill
+    .command("setup")
+    .description("Offer Connect Data, Create Connector and Builder together")
+    .action(async () => {
+      process.exitCode = await offerSkillSetup({
+        interactive:
+          canOfferSkillSetup() &&
+          !parsedOptions.json &&
+          !parsedOptions.noInput &&
+          !parsedOptions.ipc &&
+          !parsedOptions.yes,
+        force: true,
+      });
+      if (parsedOptions.json) {
+        process.stdout.write(
+          `${JSON.stringify({ status: "skipped", reason: "interactive_confirmation_required", remedy: "vana skills setup" })}\n`,
+        );
+      }
+    });
+
+  skill
     .command("list")
     .description("List available agent skills")
     .option("--json", "Output as JSON")
@@ -1306,6 +1347,7 @@ Examples:
 
   applyGlobalOptions(program);
 
+  if (defaultHelp) await offerSkills();
   try {
     await program.parseAsync(normalizedArgv);
   } catch (error) {
@@ -2787,16 +2829,6 @@ async function runConnect(
     }
 
     renderer?.bell();
-
-    // Offer skill install on first successful connect (ask once)
-    if (
-      !state.config?.skillsPromptCompleted &&
-      !options.json &&
-      !options.noInput &&
-      process.stdin.isTTY
-    ) {
-      await maybePromptSkillInstall(emit);
-    }
 
     // Emit for --json consumers (unchanged)
     emit.event({
@@ -8067,50 +8099,6 @@ function isPromptCancelled(error: unknown): boolean {
 // ---------------------------------------------------------------------------
 // Skill commands
 // ---------------------------------------------------------------------------
-
-const BASE_SKILL_ID = "connect-data";
-
-async function maybePromptSkillInstall(
-  emit: ReturnType<typeof createEmitter>,
-): Promise<void> {
-  try {
-    const skills = await listAvailableSkills();
-    const baseSkill = skills.find((s) => s.id === BASE_SKILL_ID);
-    if (!baseSkill) return;
-
-    const installed = await readInstalledSkills();
-    if (installed.some((s) => s.id === BASE_SKILL_ID)) {
-      await updateCliConfig({ skillsPromptCompleted: true });
-      return;
-    }
-
-    emit.blank();
-    const shouldInstall = await confirm({
-      message:
-        "Install a skill so your coding agent knows how to use your connected data?",
-      default: true,
-      ...vanaPromptTheme,
-    });
-
-    if (shouldInstall) {
-      try {
-        await installSkill(BASE_SKILL_ID);
-        emit.success(`Installed skill: ${baseSkill.name}`);
-      } catch {
-        // Non-fatal.
-      }
-      const remaining = skills.filter((s) => s.id !== BASE_SKILL_ID);
-      if (remaining.length > 0) {
-        emit.next("vana skills");
-      }
-    }
-
-    await updateCliConfig({ skillsPromptCompleted: true });
-  } catch {
-    // Prompt cancelled or error — mark as completed to avoid re-asking.
-    await updateCliConfig({ skillsPromptCompleted: true });
-  }
-}
 
 async function runSkillsGuidedPicker(options: GlobalOptions): Promise<number> {
   const emit = createEmitter(options);

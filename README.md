@@ -91,14 +91,25 @@ agent can branch on: `0` done, `1` failed, `2` bad usage, `3` no grant,
 person has to act. The full contract is in
 [docs/CLI-EXIT-CODE-MATRIX.md](./docs/CLI-EXIT-CODE-MATRIX.md).
 
-Install the skills that teach an agent each half:
+The installer (or first interactive Vana run) offers **Connect Data, Create
+Connector and Builder together**. It shows the destination folders and asks
+before installing or replacing skills. Say yes once, then give Claude Code or
+your agent an ordinary Vana request. No skill files are copied without consent.
+
+Skills ship with the CLI version; this setup needs no extra download or private
+repository. npm may run install hooks without a terminal, so its offer can appear
+when you first run `vana`. Automated, JSON and non-interactive runs skip the offer.
+
+To revisit your choice or update the three installed skills after a CLI upgrade:
 
 ```bash
-vana skills install builder        # ask for access, read, pay
-vana skills install agent-access   # give your own agent (OpenClaw, Hermes) scoped, paid access
-vana skills install connect-data   # collect your own data
-vana skills install create-connector # build or change a source connector
+vana skills setup
 ```
+
+Individual installs remain available with `vana skills install <name>`, including
+optional `agent-access`. Claude Code is detected by `~/.claude/`; restart skill
+discovery with `/reload-skills` if needed. If you set up Claude Code later, rerun
+`vana skills setup` to add its copies.
 
 For a complete walkthrough, use [Build and collect a connector with an agent](./skills/README.md).
 It pairs one starting prompt with the commands the agent runs, human sign-in,

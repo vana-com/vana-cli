@@ -80,9 +80,7 @@ export async function fetchSkillToCache(
         supplementalPath,
         resolvedCacheDir,
         skillsDir ?? findSkillsDir() ?? undefined,
-      ).catch(() => {
-        // Supplemental file fetch failure is non-fatal.
-      });
+      );
     }
   }
 
@@ -136,13 +134,9 @@ export async function installSkill(
           ? supplementalRelPath.slice(skillDirPrefix.length)
           : path.basename(supplementalRelPath);
         const installedPath = path.join(installDir, relFromSkillDir);
-        try {
-          await fs.mkdir(path.dirname(installedPath), { recursive: true });
-          const fileContent = await fs.readFile(cachedPath);
-          await fs.writeFile(installedPath, fileContent);
-        } catch {
-          // Non-fatal if supplemental file is missing from cache.
-        }
+        await fs.mkdir(path.dirname(installedPath), { recursive: true });
+        const fileContent = await fs.readFile(cachedPath);
+        await fs.writeFile(installedPath, fileContent);
       }
     }
 
@@ -204,8 +198,11 @@ async function loadSkillsRegistry(skillsDir?: string): Promise<SkillsRegistry> {
         "utf8",
       );
       return JSON.parse(localRegistry) as SkillsRegistry;
-    } catch {
-      // Fall through to remote fetch.
+    } catch (error) {
+      // A selected local bundle must be complete; never mix release versions.
+      throw new Error("Could not load the local skills registry.", {
+        cause: error,
+      });
     }
   }
 
@@ -228,13 +225,9 @@ async function copyOrFetchSkillFile(
 
   if (skillsDir) {
     const localPath = path.join(skillsDir, relativePath);
-    try {
-      const content = await fs.readFile(localPath);
-      await fs.writeFile(destination, content);
-      return;
-    } catch {
-      // Fall through to remote fetch.
-    }
+    const content = await fs.readFile(localPath);
+    await fs.writeFile(destination, content);
+    return;
   }
 
   const response = await fetch(`${SKILLS_BASE_URL}/${relativePath}`, {

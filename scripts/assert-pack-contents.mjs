@@ -1,6 +1,13 @@
 import { spawnSync } from "node:child_process";
 
 const requiredPaths = [
+  "scripts/postinstall.mjs",
+  "dist/skills/setup.js",
+  "dist/skills/bundled/registry.json",
+  "dist/skills/bundled/connect-data/SKILL.md",
+  "dist/skills/bundled/create-connector/SKILL.md",
+  "dist/skills/bundled/builder/SKILL.md",
+  "dist/skills/bundled/builder/reference/verification.md",
   "dist/cli/bin.js",
   "dist/cli/index.js",
   "dist/runtime/managed-playwright.js",
