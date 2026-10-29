@@ -1,3 +1,19 @@
+# BUI-936 claim confirmation update, 30 October 2026
+
+Update existing PR #109 against main v0.47.0, preserving the original claim
+commit and main's newer registration behavior. Retain network-scoped profile
+reads/writes; the claim-link regression now checks distinct mainnet/Moksha
+names with an opposing environment default. The old lookup fails that check.
+
+The tested implementation passes 983 tests across 70 files, TypeScript,
+ESLint, formatting, build and built claim help; 43 focused claim/mainnet/profile
+checks also pass. This is local fixture proof. The prior live dev acceptance
+belongs to the original PR head; no live claim or funding was repeated here.
+
+The user now authorizes pushing this tested update to PR #109. Keep #106
+blocked on BUI-945, and keep #109 open without auto-merge, merge or release.
+Return the primary checkout to clean `callum/session-2026-10-30` after delivery.
+
 # BUI-951 implementation record
 
 ## Scope and ownership

@@ -68,21 +68,31 @@ removes (`--remove-scopes` to give one up). `read` stops at
 exit 4 with the exact price before spending anything; add `--pay` to settle
 it from escrow and `--max-fee` to cap it. The rest of the group:
 
-| Command                                              | What it does                                                                    |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `vana app ask "<q>" --sources a,b --derived <scope>` | ask a question computed on the person's own server, without reading the sources |
-| `vana app status <derived-scope>`                    | is the answer coming, and when                                                  |
-| `vana app lineage <scope>`                           | what an answer was computed from, redacted where it must be                     |
-| `vana app whoami`                                    | app address, key source, network, registration state                            |
-| `vana app claim`                                     | a link that adds the app to its owner's Vana Account, to fund its escrow        |
-| `vana app requests list\|show <id>`                  | what was asked, what was approved                                               |
-| `vana app escrow balance\|fund`                      | what the app can spend, and funding it                                          |
-| `vana app onchain <scope> --owner <addr>`            | data point version, hashes, deletion state                                      |
+| Command                                              | What it does                                                                     |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `vana app ask "<q>" --sources a,b --derived <scope>` | ask a question computed on the person's own server, without reading the sources  |
+| `vana app status <derived-scope>`                    | is the answer coming, and when                                                   |
+| `vana app lineage <scope>`                           | what an answer was computed from, redacted where it must be                      |
+| `vana app whoami`                                    | app address, key source, network, registration state                             |
+| `vana app claim`                                     | link the app to your Vana Account and confirm ownership; `--resume` continues it |
+| `vana app requests list\|show <id>`                  | what was asked, what was approved                                                |
+| `vana app escrow balance\|fund`                      | what the app can spend, and funding it                                           |
+| `vana app onchain <scope> --owner <addr>`            | data point version, hashes, deletion state                                       |
 
 Everything defaults to **mainnet**, where your data and apps live. Paying is
 never implied: a paid read stops with the exact price until you add `--pay`,
 and `--max-fee` caps it. `--network moksha` is the testnet, where fees are
 play money.
+
+For a first-time app, run `vana app register --network moksha`, then
+`vana app claim --network moksha`. Sign in with `vana login` if needed. Claim
+opens the existing Account page only from an interactive terminal and waits
+for Account to confirm ownership. In `--json` or `--no-input` mode it returns
+exit 7 with `data.claimUrl` and a resume command. After the browser step, run
+`vana app claim --network moksha --resume --json`. Exit 0 means Account
+confirmed the app is linked; a timeout or unavailable service is not success.
+Resume keeps the original app and Account. Claiming does not fund the app or
+request access to data.
 
 ## Make an existing app available on mainnet
 
