@@ -209,9 +209,13 @@ gas, so the app wallet needs only the token, not VANA. `--self-pay-gas`
 sends it from the app wallet instead. A native VANA deposit always pays its
 own gas.
 
-To have a person fund it from their browser instead, run
-`vana app claim --json` and send them `data.claimUrl`: it adds this app to
-their Vana Account and opens its Fund page.
+To link the app to the signed-in person's Account, run
+`vana app claim --network <network> --json`. If needed, use `vana login` first. Exit 7 returns
+`data.claimUrl` for the person to open. After they complete the existing
+Account page, run `vana app claim --network <network> --resume --json`.
+Only exit 0 with `data.ownership: "owned"` confirms the link. Pending or
+unavailable confirmation is not completion. The Account page also provides
+funding; claiming itself does not move funds.
 
 ## Checking your work
 

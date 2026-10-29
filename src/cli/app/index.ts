@@ -224,19 +224,34 @@ export function registerAppCommands(
 
   app
     .command("claim")
-    .description(
-      "Print a link that adds this app to its owner's Vana Account, to fund its escrow",
-    )
+    .description("Link this app to your Vana Account and confirm ownership")
     .option(
       "--app-name <name>",
       "Name the owner sees in their Account (remembered; defaults to the one from register)",
     )
-    .action(async (commandOptions: { appName?: string }) => {
-      process.exitCode = await runAppClaim({
-        ...getOptions(),
-        appName: commandOptions.appName,
-      });
-    });
+    .option("--resume", "Resume the saved claim and check Account ownership")
+    .option(
+      "--timeout <seconds>",
+      "Seconds to wait for confirmation at a terminal (default: 120)",
+    )
+    .addHelpText(
+      "after",
+      "\nExamples:\n  vana app claim --network moksha --json\n  vana app claim --network moksha --resume --json\n",
+    )
+    .action(
+      async (commandOptions: {
+        appName?: string;
+        resume?: boolean;
+        timeout?: string;
+      }) => {
+        process.exitCode = await runAppClaim({
+          ...getOptions(),
+          appName: commandOptions.appName,
+          resume: commandOptions.resume,
+          timeout: commandOptions.timeout,
+        });
+      },
+    );
 
   app
     .command("whoami")
