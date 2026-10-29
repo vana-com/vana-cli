@@ -5,6 +5,11 @@ _March 15, 2026_
 Generated review artifacts for the human-mode CLI. These are deterministic
 fixture-based captures — not live runs.
 
+The capture runner uses temporary fixture homes and blocks subprocesses and
+network access inside each CLI invocation. Browser-free fixture execution is
+independent of the simulated login result. An attempted browser launch or live
+request aborts capture without replacing this document.
+
 Refresh with:
 
 ```bash

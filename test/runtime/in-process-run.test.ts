@@ -110,6 +110,47 @@ describe("startInProcessConnectorRun", () => {
     vi.clearAllMocks();
   });
 
+  it.each([
+    { source: "github", noInput: true, outcome: "needs-input" },
+    { source: "shop", noInput: false, outcome: "legacy-auth" },
+  ])(
+    "captures $source fixture input without resolving or launching a browser",
+    async ({ source, noInput, outcome }) => {
+      const previous = process.env.VANA_DEMO_NO_BROWSER;
+      const previousFast = process.env.VANA_DEMO_FAST_SUCCESS;
+      process.env.VANA_DEMO_NO_BROWSER = "1";
+      delete process.env.VANA_DEMO_FAST_SUCCESS;
+      createFakeRuntime();
+      try {
+        const { startInProcessConnectorRun } =
+          await import("../../src/runtime/playwright/in-process-run.js");
+        const handle = startInProcessConnectorRun({
+          request: {
+            connectorPath: path.resolve(
+              `docs/vhs/fixtures/demo-data-connectors/connectors/${source}/${source}-playwright.js`,
+            ),
+            source,
+            noInput,
+          },
+          logPath: path.join(os.tmpdir(), "vana-transcript-needs-input.log"),
+        });
+        const events = [];
+        for await (const event of handle.events()) events.push(event);
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: outcome,
+          }),
+        );
+        expect(resolveBrowserPath).not.toHaveBeenCalled();
+        expect(launchPersistentContext).not.toHaveBeenCalled();
+        expect(importChromeCookies).not.toHaveBeenCalled();
+      } finally {
+        restoreEnv("VANA_DEMO_NO_BROWSER", previous);
+        restoreEnv("VANA_DEMO_FAST_SUCCESS", previousFast);
+      }
+    },
+  );
+
   it("emits needs-input for requestInput in no-input mode", async () => {
     createFakeRuntime();
     const connectorPath = await writeConnector(`

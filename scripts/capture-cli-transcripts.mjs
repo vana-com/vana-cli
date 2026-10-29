@@ -14,6 +14,14 @@ async function main() {
   const tempRoot = await fsp.mkdtemp(
     path.join(os.tmpdir(), "vana-transcripts-"),
   );
+  try {
+    await captureTranscripts(tempRoot);
+  } finally {
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function captureTranscripts(tempRoot) {
   const workingHome = path.join(tempRoot, "home");
   const freshHome = path.join(tempRoot, "fresh-home");
   await prepareFixtures(workingHome);
@@ -22,21 +30,33 @@ async function main() {
   const binDir = path.join(tempRoot, "bin");
   await prepareDemoBin(binDir);
 
+  // Do not inherit personal VANA_HOME, auth, CDP, or Node preload overrides.
+  const baseEnv = Object.fromEntries(
+    ["PATH", "SystemRoot", "WINDIR", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL"]
+      .filter((key) => process.env[key] !== undefined)
+      .map((key) => [key, process.env[key]]),
+  );
   const seededEnv = {
-    ...process.env,
+    ...baseEnv,
     HOME: workingHome,
+    USERPROFILE: workingHome,
+    VANA_HOME: path.join(workingHome, ".vana"),
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    VANA_DEMO_NO_BROWSER: "1",
     VANA_DEMO_FAST_SUCCESS: "1",
     // Demo runs use fixture connectors; they must not report as real usage.
     VANA_TELEMETRY_DISABLED: "1",
-    ...(connectorsDir ? { VANA_DATA_CONNECTORS_DIR: connectorsDir } : {}),
+    VANA_DATA_CONNECTORS_DIR: connectorsDir,
   };
   const freshEnv = {
-    ...process.env,
+    ...baseEnv,
     HOME: freshHome,
+    USERPROFILE: freshHome,
+    VANA_HOME: path.join(freshHome, ".vana"),
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    VANA_DEMO_NO_BROWSER: "1",
     VANA_TELEMETRY_DISABLED: "1",
-    ...(connectorsDir ? { VANA_DATA_CONNECTORS_DIR: connectorsDir } : {}),
+    VANA_DATA_CONNECTORS_DIR: connectorsDir,
   };
   const seededInputEnv = {
     ...seededEnv,
@@ -149,8 +169,6 @@ async function main() {
   process.stdout.write(
     `[transcript] wrote ${path.relative(repoRoot, transcriptsMd)}\n`,
   );
-
-  await fsp.rm(tempRoot, { recursive: true, force: true });
 }
 
 function escapeRegex(s) {
@@ -173,7 +191,7 @@ async function prepareDemoBin(binDir) {
   const launcherPath = path.join(binDir, "vana");
   const launcher = `#!/usr/bin/env bash
 set -euo pipefail
-exec node "${path.join(repoRoot, "dist", "cli", "bin.js")}" "$@"
+exec "${process.execPath}" --import "${path.join(repoRoot, "scripts", "transcript-isolation.mjs")}" "${path.join(repoRoot, "dist", "cli", "bin.js")}" "$@"
 `;
   await fsp.writeFile(launcherPath, launcher, "utf8");
   await fsp.chmod(launcherPath, 0o755);
@@ -186,14 +204,20 @@ function run(argv, env, allowFailure = false) {
       env,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
     });
   } catch (error) {
     const stdout = error.stdout?.toString?.() ?? "";
     const stderr = error.stderr?.toString?.() ?? "";
-    if (allowFailure) {
+    if (
+      allowFailure &&
+      typeof error.status === "number" &&
+      !error.signal &&
+      !`${stdout}${stderr}`.includes("VANA_TRANSCRIPT_ISOLATION:")
+    ) {
       return `${stdout}${stderr}`.trimEnd() + "\n";
     }
-    throw new Error(`${stdout}${stderr}`.trim());
+    throw new Error(`${stdout}${stderr}`.trim() || error.message);
   }
 }
 
@@ -210,12 +234,9 @@ function resolveDataConnectorsDir() {
     return fixtureRepo;
   }
 
-  if (process.env.VANA_DATA_CONNECTORS_DIR) {
-    return process.env.VANA_DATA_CONNECTORS_DIR;
-  }
-
-  const siblingRepo = path.resolve(repoRoot, "..", "data-connectors");
-  return fs.existsSync(siblingRepo) ? siblingRepo : null;
+  throw new Error(
+    "Transcript capture requires docs/vhs/fixtures/demo-data-connectors/registry.json.",
+  );
 }
 
 main().catch((error) => {

@@ -23,6 +23,12 @@ async function main() {
   if (!registryExists) {
     await seedDemoDataConnectors();
   }
+  // Local connector discovery requires this directory as well as registry.json.
+  // Empty directories do not survive checkout; recreate it for checked-in fixtures.
+  await fs.mkdir(
+    path.join(demoDataConnectorsRoot, "skills", "vana-connect", "scripts"),
+    { recursive: true },
+  );
   await seedDemoHome();
 
   process.stdout.write(
