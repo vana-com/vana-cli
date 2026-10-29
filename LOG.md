@@ -148,6 +148,6 @@ instruction JSON now pass. The candidate package SHA256 is
 The manual publisher points at only that exact patch artifact; it will not be
 rerun while the npm namespace permission remains unchanged.
 
-## BUI-938 dev demo delivery
+## BUI-938 CLI release
 
-Merge latest released CLI 0.45.2 and public Factory 0.0.2 instructions into dev, retaining BUI-938 same-key/same-Account mainnet registration and dev server fee policy. Latest user demand authorizes an installable dev CLI prerelease for the demo; main/stable publication remains held. Combined suite: 974 passing tests. Dev canary publishes npm after validation independently of native builds; macOS native builds use existing release signing/notarization, have a distinct dev version, and do not sync Homebrew. Existing dev Account and Personal Server changes remain deployed. No new apps, funding, paid reads or personal data are required.
+The user clarified the deployment boundary: publish a normal stable CLI containing BUI-938 and the latest Factory tools; Account and Web remain on dev. Remove the temporary CLI dev-prerelease workflow changes. The combined CLI passes 974 tests, types, lint/format and package checks. The existing demo's registration and free fake-data read both passed through the published candidate. Promote the CLI only through its normal main release workflow; do not promote Unity/Account or Personal Server main. Demo commands select VANA_ENV=dev. BUI-945 is not a prerequisite for own-app free reads.
