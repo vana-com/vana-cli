@@ -126,3 +126,24 @@ Final combined CLI validation passes typecheck, ESLint, formatting and all 952
 tests. The public tarball was downloaded anonymously and installed with private
 checkout/config reads denied; its capabilities report version 0.0.1 and supported
 API/export routes. The downloaded hash matches the frozen licensed artifact.
+
+## Exact public compatibility patch guidance
+
+The public-only acceptance found a supported-schema gap after installation,
+preparation and all static checks passed. Factory 0.0.2 will enforce the standard
+minLength and boolean additionalProperties assertions used by the valid public
+manifest. Update only the exact public install pin and bounded schema guidance,
+then release through the existing route. Preserve the connector's constraints;
+no weakening of verification or provider access is authorized.
+
+The existing npm credential rejected the @vana namespace. Public tarball
+installation works independently. Update the manual publisher's pinned artifact
+and hash for the new version, but do not repeat registry publication without a
+permission change. Active CLI and #106 remain outside both isolated trees.
+
+The exact public-pin regression failed before repair. All 45 focused CLI tests,
+full validation (952 tests, typecheck, ESLint and formatting), build and emitted
+instruction JSON now pass. The candidate package SHA256 is
+089a528f4a7a302d2dae9a0724e4b25f62ada14c61eb7728507c4139875a30d9.
+The manual publisher points at only that exact patch artifact; it will not be
+rerun while the npm namespace permission remains unchanged.
