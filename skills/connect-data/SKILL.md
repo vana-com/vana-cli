@@ -80,17 +80,43 @@ vana sources <source> --json
 When changing a local connector, read its manifest from the path reported by
 `connectors list`.
 
-If the source is missing or needs a code change, load the Create Connector
-skill. If it is not installed, run:
+If the source is missing or needs a code change, read Create Connector:
 
 ```bash
-vana skills install create-connector --json
+vana skills show create-connector --json
 ```
 
-Read `SKILL.md` inside the returned `installedPath`. That skill owns the
+Read its returned `instructions` and required `resources`. That skill owns the
 current PDP-Connect authoring and local-checkout workflow. Check upstream's
 existing connectors before deciding a provider needs a new implementation;
 an empty or unavailable catalog alone does not establish that.
+
+Reuse discovery already completed in this task rather than repeating the same
+search. Connector creation returns a directory, connector key and selected
+streams to this collection workflow; it does not require Vana sign-in.
+
+## Prepare Vana before collection
+
+Once the connector is available, establish the Vana account and intended server
+BEFORE requesting source credentials or running the provider. Reuse a valid
+session. If signed out, run `vana login --json`, relay the returned browser URI,
+and wait for the person to finish signing in there. No code is entered in the
+terminal. Then check `vana whoami --json` and `vana status --json` in the same
+home, Account deployment and network. JSON login does not start a server or
+approve its CLI session. Follow the reported server-start or approval command;
+an existing server owned by another account is not this person's destination.
+If `VANA_PS_URL` or `VANA_PERSONAL_SERVER_URL` explicitly selects a server, use
+the collection command's reported sign-in remedy: it targets Account sign-in
+and preserves the selected server in the collection retry command.
+
+Every collection entry checks readiness. Automated runs return `needs_input`
+(exit 7) for Vana sign-in or server approval, or `personal_server_unavailable`
+(exit 5) for an unavailable/unverified destination, with `reason` and `remedy`.
+Follow the remedy, then retry the ORIGINAL collection command including `--from`,
+`--streams` and its context. These outcomes precede connector credential prompts
+and provider reads. A bare `VANA_SESSION_TOKEN` has no verified owner identity;
+use a saved Account sign-in instead. Do not collect anonymously and try to
+assign the export to an account later.
 
 ## Collect and handle human input
 
@@ -162,7 +188,7 @@ Inspect private records locally and report counts/status instead of copying
 payloads into chat or a repository. Compare recognizable records and any
 independent provider counts before claiming completeness.
 
-If the person wants an app to consume the data, load its installed Builder
-skill. Install it if necessary with `vana skills install builder --json`, then
-read `SKILL.md` under the returned `installedPath`. Keep app identity, explicit
+If the person wants an app to consume the data, read
+`vana skills show builder --json` and follow its instructions and resources.
+Keep app identity, explicit
 consent and paid app reads separate from owner-side collection.

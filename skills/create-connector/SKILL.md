@@ -25,19 +25,20 @@ shows the commands beside the user's part of each step.
 
 ## Select the source and checkout
 
-Use the installed Connect Data skill for CLI discovery, identity, server
-readiness, authentication, and result inspection. Install it if needed:
+Read Connect Data for CLI discovery, identity, server readiness,
+authentication, and result inspection:
 
 ```sh
-vana skills install connect-data --json
+vana skills show connect-data --json
 ```
 
-Read `SKILL.md` at the returned `installedPath`. Preserve the person's owner,
+Read its returned `instructions` and required `resources`. Preserve the person's owner,
 network, `VANA_HOME`, and Account deployment. Use the same CLI entry point
 throughout. For local CLI work, build the actual checkout with `pnpm build`
 and use its absolute `dist/cli/bin.js` path in place of `vana`.
 
-Check both `vana sources --json` and upstream's current connectors before
+Reuse completed discovery from the current task. Otherwise check both
+`vana sources --json` and upstream's current connectors before
 creating one. A catalog failure is not evidence of an unsupported provider.
 Use an existing implementation when it satisfies the requested data goal.
 
@@ -137,6 +138,13 @@ shape, not provider behavior. Report a missing checker or disabled sandbox
 accurately; fix the actual prerequisite or leave that check unverified.
 
 ## Collect once through Vana
+
+Return the built connector's absolute checkout directory, source key and selected
+streams to the original task. Follow Connect Data's account/server preparation
+before running a real-account collection: Vana sign-in, server readiness and
+CLI approval precede source-token entry or provider reads. Writing and testing
+the connector itself does not require Vana sign-in. Readiness failures include a
+recovery command; preserve the original source/path/streams through that recovery.
 
 Have the person use the interactive CLI for secrets. Supply the exact command
 with real key, checkout, stream, and selected network, not a token placeholder

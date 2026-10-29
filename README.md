@@ -130,9 +130,20 @@ immediately. Use `create-connector` for a missing source and `builder` for app
 integration. `vana --help` lists these entry points. Files match the CLI version
 and need no additional download or private repository.
 
-For humans, interactive `vana` offers “Connect my data,” “Build an app using
-Vana data,” and “Finish setup.” Explicit commands and automated runs skip that
-menu. Connecting guides sign-in when needed and reuses the source picker.
+For humans, interactive `vana` offers “Collect or manage my data,” “Use or share
+data,” “Build or test a connector,” and “Manage my Personal Server.” Explicit
+commands and automated runs skip that menu. Source search shows up to 12 rows;
+Ctrl+O opens “Source not listed” from anywhere, and Enter continues from a
+search with no matches without asking you to retype its name. Missing sources link to the
+[connector guide](./skills/create-connector/SKILL.md).
+
+Browsing sources and building a connector do not require sign-in. Before live
+collection, the CLI requires a known Vana account and a ready, approved Personal
+Server, then requests source credentials. Interactive terminals guide those
+steps; automated modes return a reason and a recovery command without prompting
+or contacting the provider. Keep the original source, checkout and streams when
+retrying after setup. A server that fails after collection starts can still
+leave an owner-attributed local export for later sync.
 
 Persistent skill installation is optional convenience for future agent sessions.
 The installer may offer it at a human terminal; it names destination folders,

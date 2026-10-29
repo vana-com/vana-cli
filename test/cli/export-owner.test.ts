@@ -63,6 +63,7 @@ describe("account-bound queued exports at the CLI boundary", () => {
   let owner: string | null;
   let rejectUploads: boolean;
   let uploads: Upload[];
+  let stored: Map<string, unknown>;
   let stateAtUpload: any;
   let rejectScope: string | undefined;
   let uploadGate: (() => Promise<void>) | undefined;
@@ -176,6 +177,7 @@ describe("account-bound queued exports at the CLI boundary", () => {
     checkout = path.join(root, "connector");
     executionFile = path.join(root, "executions.log");
     uploads = [];
+    stored = new Map();
     rejectUploads = false;
     rejectScope = undefined;
     uploadGate = undefined;
@@ -186,6 +188,49 @@ describe("account-bound queued exports at the CLI boundary", () => {
         response.end(
           JSON.stringify({ status: "healthy", owner, version: "fake" }),
         );
+      } else if (request.url === "/.well-known/openid-configuration") {
+        response.end(
+          JSON.stringify({
+            device_authorization_endpoint: `${url}/oauth/device`,
+            token_endpoint: `${url}/oauth/token`,
+          }),
+        );
+      } else if (request.url === "/oauth/device") {
+        response.end(
+          JSON.stringify({
+            device_code: "synthetic-device",
+            user_code: "TEST-CODE",
+            verification_uri: `${url}/device`,
+            verification_uri_complete: `${url}/device?user_code=TEST-CODE`,
+            expires_in: 60,
+            interval: 0,
+          }),
+        );
+      } else if (request.url === "/oauth/token") {
+        response.end(
+          JSON.stringify({
+            access_token: `fake-account-${owner}`,
+            address: owner,
+            expires_in: 3600,
+            personal_server_url: url,
+            personal_server_session_token: `fake-ps-${owner}`,
+          }),
+        );
+      } else if (
+        request.method === "GET" &&
+        request.url?.startsWith("/v1/data?")
+      ) {
+        if (request.headers.authorization !== `Bearer fake-ps-${owner}`) {
+          response.writeHead(401);
+          response.end('{"error":"approval required"}');
+        } else response.end('{"scopes":[],"total":0}');
+      } else if (
+        request.method === "GET" &&
+        request.url?.startsWith("/v1/data/")
+      ) {
+        const result = stored.get(request.url);
+        response.writeHead(result ? 200 : 404);
+        response.end(JSON.stringify(result ?? {}));
       } else if (
         request.method === "POST" &&
         request.url?.startsWith("/v1/data/")
@@ -200,6 +245,7 @@ describe("account-bound queued exports at the CLI boundary", () => {
         stateAtUpload = await state();
         const rejected = rejectUploads || request.url === rejectScope;
         await uploadGate?.();
+        if (!rejected) stored.set(request.url!, JSON.parse(body));
         response.writeHead(rejected ? 503 : 201);
         response.end(rejected ? '{"error":"interrupted upload"}' : "{}");
       } else {
@@ -378,32 +424,85 @@ await new Promise((resolve) => input.once("close", resolve));
     expect((await state()).sources.fake.exportReceipt).toEqual(queued.receipt);
   });
 
-  it("preserves fresh accountless upload to an explicit destination without assigning its owner to later retry", async () => {
+  it("refuses accountless collection even with explicit server credentials", async () => {
     owner = A;
     const extra = { VANA_PS_TOKEN: "fake-explicit-ps-token" };
     const collected = await run(
       ["connect", "fake", "--from", checkout, "--no-input", "--json"],
       extra,
     );
-    expect(collected.code, collected.stdout + collected.stderr).toBe(0);
-    expect(uploads).toHaveLength(1);
-    expect(uploads[0].authorization).toBe("Bearer fake-explicit-ps-token");
-    expect((await state()).sources.fake.exportReceipt.owner).toBeNull();
-    rejectUploads = true;
-    uploads = [];
-    await run(
-      ["connect", "fake", "--from", checkout, "--no-input", "--json"],
-      extra,
-    );
-    expect(uploads).toHaveLength(1);
-    expect((await state()).sources.fake.dataState).toBe("ingest_failed");
-    await login(A);
-    rejectUploads = false;
-    uploads = [];
-    const synced = await run(["server", "sync", "--no-input", "--json"]);
-    expect(synced.code).toBe(5);
-    expect(JSON.parse(synced.stdout).error).toBe("pending_exports_blocked");
+    expect(collected.code, collected.stdout + collected.stderr).toBe(7);
+    expect(JSON.parse(collected.stdout)).toMatchObject({
+      reason: "vana_sign_in_required",
+      status: "needs_input",
+    });
     expect(uploads).toEqual([]);
+    await expect(fs.readFile(executionFile)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("stops before connector execution when the server refuses CLI approval", async () => {
+    await login(A);
+    const authFile = path.join(home, "auth.json");
+    const auth = JSON.parse(await fs.readFile(authFile, "utf8"));
+    auth.personal_server.session_token = "expired-server-token";
+    await write(authFile, auth);
+    const collected = await run([
+      "connect",
+      "fake",
+      "--from",
+      checkout,
+      "--no-input",
+      "--json",
+    ]);
+    expect(collected.code, collected.stdout + collected.stderr).toBe(7);
+    expect(JSON.parse(collected.stdout)).toMatchObject({
+      reason: "personal_server_approval_required",
+      remedy: expect.stringContaining("vana login --server"),
+    });
+    expect(uploads).toEqual([]);
+    await expect(fs.readFile(executionFile)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("collects under the prepared owner and independently reads the saved data from the server", async () => {
+    owner = A;
+    const context = { VANA_ACCOUNT_URL: url };
+    const signedIn = await run(["login", "--json"], {
+      ...context,
+      VANA_PERSONAL_SERVER_URL: "",
+    });
+    expect(signedIn.code, signedIn.stdout + signedIn.stderr).toBe(0);
+    expect(JSON.parse(signedIn.stdout)).toMatchObject({
+      status: "authenticated",
+      address: A,
+    });
+    expect(JSON.parse(signedIn.stderr).uri).toBe(
+      `${url}/device?user_code=TEST-CODE`,
+    );
+    const collected = await run(
+      [
+        "connect",
+        "fake",
+        "--from",
+        checkout,
+        "--streams",
+        "profile",
+        "--no-input",
+        "--json",
+      ],
+      { ...context, FAKE_RECORD_VALUE: "storage-proof" },
+    );
+    expect(collected.code, collected.stdout + collected.stderr).toBe(0);
+    expect(collected.stdout).toContain('"status":"connected_and_ingested"');
+    const response = await fetch(`${url}/v1/data/fake.profile`);
+    expect(response.status).toBe(200);
+    const saved = JSON.stringify(await response.json());
+    expect(saved).toContain(A);
+    expect(saved).toContain("storage-proof");
+    expect((await state()).sources.fake.exportReceipt.owner.address).toBe(A);
   });
 
   it("reports B's automatic and scheduled exclusion of a partially synced A export", async () => {

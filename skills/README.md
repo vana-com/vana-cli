@@ -71,7 +71,7 @@ Ask in ordinary language. For example:
 
 > Use Vana to collect my [data category] from [source] into my Personal Server.
 
-The installed skills tell the agent how to discover the source, build a missing
+The bundled instructions tell the agent how to discover the source, build a missing
 connector, run checks, handle authentication, show progress, and verify storage.
 You do not need to name either skill or choose the underlying tools. Further
 questions are for account selection, the data you want, authentication, or a
@@ -95,10 +95,15 @@ you selected a network, carry `--network mainnet` or `--network moksha` through
 the account, server, and collection commands. `vana app whoami` identifies an
 app, not your owner account.
 
-If you are not signed in, use `vana login`. If you need a server on this
-machine, start one with `vana server start --local`. Check `vana status`
-again before collecting. A local server stores data on this machine and does
-not register a public endpoint.
+Discovery and connector authoring do not require Vana sign-in. Once a connector
+is available, prepare Vana before running the source: sign in with `vana login`
+if needed, select or start the intended owner's server, and complete its CLI
+approval. Agents use `vana login --json` and relay the browser URI; JSON login
+does not perform server setup. Check `vana status` again before collecting.
+For an explicit server environment override, follow collection's sign-in remedy
+so Account sign-in and the collection destination remain separate.
+A local server (`vana server start --local`) stores data on this machine and
+does not register a public endpoint.
 
 The agent checks the upstream connector catalog too. A failed catalog request
 does not mean the source is unsupported. Existing connectors go directly to
@@ -106,48 +111,16 @@ collection. Missing connectors follow the authoring step below.
 
 ## Build a missing connector
 
-The agent follows [Create Connector](./create-connector/SKILL.md). Its detailed
-authoring steps belong in that skill and the upstream authoring guide. The
-main terminal steps are shown here so you can follow its work.
+The agent follows [Create Connector](./create-connector/SKILL.md), the canonical
+task guide for both agents and humans. Link directly to that file rather than
+to a generated heading anchor. The CLI reads that same method with
+`vana skills show create-connector --json`; no skill installation is needed.
 
-From a directory you choose:
-
-```sh
-git clone https://github.com/PDP-Connect/data-connectors.git
-cd data-connectors
-npm ci
-```
-
-Reuse an existing checkout when you have one. The agent checks its Node
-requirements and reads `AGENTS.md`, `AUTHORING.md`, and `TESTING.md` first.
-Upstream uses npm; development in `vana-cli` uses pnpm.
-
-Choose a connector key such as `example_source` and a stream such as `items`.
-From the `data-connectors` root:
-
-```sh
-cd packages/polyfill-connectors
-node --import tsx bin/connector-init.ts example_source --display-name "Example Source" --stream items
-```
-
-The initializer creates starting files, not a working provider integration.
-The agent writes the provider code, record schema, and tests. It prefers an
-official API or data export when suitable. Browser sources use the shared
-browser helpers. Tokens and file imports do not require a browser just to
-follow this walkthrough.
-
-From the `data-connectors` root, the agent runs the relevant connector tests
-and the repository checks required by its current authoring guide, including:
-
-```sh
-npm run connector-implementation-index:generate
-npm run connector-implementation-index:check
-npm run verify --workspace @pdpp/polyfill-connectors
-```
-
-Tests use synthetic or reviewed scrubbed input. Real account access comes in
-the collection step. The agent reports failed checks and missing tools rather
-than treating a partial verification run as a pass.
+The guide owns source research, checkout setup, implementation and checks.
+Connector Factory may supply build tooling, but its integration is separate:
+this public workflow needs no private Factory repository. The return to Vana
+is the checked connector's directory, source key and selected streams. The same
+agent then prepares Vana and continues the original collection request.
 
 ## Collect once through the CLI
 
@@ -231,10 +204,9 @@ their own requirements in the builder path.
 ## Test changes to this walkthrough
 
 When developing `vana-cli`, build that checkout with `pnpm build` and use its
-absolute `dist/cli/bin.js` path instead of `vana`. Install the changed skills
-from that checkout with the native install commands above, or use
-`npx skills add /absolute/path/to/vana-cli --skill connect-data` and the
-equivalent `create-connector` command in a temporary project.
+absolute `dist/cli/bin.js` path instead of `vana`. Read the changed instructions
+with `skills show connect-data --json` and `skills show create-connector --json`
+through that entry point. This tests the bundled files without installing skills.
 
 Before recommending the public install route, repeat discovery and installation
 from outside both repositories, with no `VANA_SKILLS_DIR` override or factory
