@@ -26,14 +26,20 @@ const MOCK_REGISTRY = {
 };
 
 describe("fetchConnectorToCache", () => {
+  const unexpectedFetch = vi.fn<typeof fetch>(async () => {
+    throw new Error("Unexpected network request in local connector fixture");
+  });
+
   beforeEach(async () => {
+    unexpectedFetch.mockClear();
+    vi.stubGlobal("fetch", unexpectedFetch);
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vana-registry-test-"));
     cacheDir = path.join(tempRoot, "connectors");
     dataConnectorsDir = path.join(tempRoot, "data-connectors");
     await fs.mkdir(cacheDir, { recursive: true });
     await fs.mkdir(dataConnectorsDir, { recursive: true });
 
-    // Write local registry and connector script
+    // Include every file the local connector download can read.
     await fs.writeFile(
       path.join(dataConnectorsDir, "registry.json"),
       JSON.stringify(MOCK_REGISTRY),
@@ -44,10 +50,19 @@ describe("fetchConnectorToCache", () => {
       path.join(scriptDir, "github-playwright.js"),
       MOCK_SCRIPT,
     );
+    await fs.writeFile(
+      path.join(scriptDir, "github-playwright.json"),
+      JSON.stringify({ id: "github-playwright", version: "1.2.0" }),
+    );
   });
 
   afterEach(async () => {
-    await fs.rm(tempRoot, { recursive: true, force: true });
+    try {
+      expect(unexpectedFetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("downloads connector when no currentVersion is provided", async () => {

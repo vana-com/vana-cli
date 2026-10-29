@@ -108,3 +108,21 @@ The built CLI exposes its offline instructions even when Factory is absent.
 Instructions name the exact public factory-core 0.0.1 release artifact and the
 real Node 24 / public upstream setup requirements. Publication, fresh-agent
 public-only collection and acceptance evidence remain parent-owned.
+
+The CLI publisher already has a working npm credential inside GitHub Actions.
+Add a manual Factory publication job using that existing secret, the exact
+public tarball and its pinned SHA256. It cannot publish an arbitrary URL or
+artifact. No credential is extracted. Namespace permissions may still prevent
+this registry listing; the public tarball remains independently installable.
+
+PR CI exposed a preexisting registry test's unintended GitHub metadata fetch.
+A rejecting fetch guard plus no-call assertion failed on that exact request.
+Supplying the missing local metadata fixture repairs it without production or
+timeout changes. All twelve registry tests pass under Node 26 and Node 24,
+including the explicit offline failure cases. The same guard now catches any
+future fixture omission instead of silently relying on the external network.
+
+Final combined CLI validation passes typecheck, ESLint, formatting and all 952
+tests. The public tarball was downloaded anonymously and installed with private
+checkout/config reads denied; its capabilities report version 0.0.1 and supported
+API/export routes. The downloaded hash matches the frozen licensed artifact.
