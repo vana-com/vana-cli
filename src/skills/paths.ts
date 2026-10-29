@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { getVanaHome } from "../core/paths.js";
 
@@ -13,10 +14,9 @@ export function getSkillsCacheDir(): string {
 }
 
 /**
- * Walks up from `cwd` looking for a `skills/registry.json` file.
- * Returns the path to the `skills/` directory if found, or `null`.
- *
- * Also checks for the env override `VANA_SKILLS_DIR`.
+ * Resolve an explicit `VANA_SKILLS_DIR`, the release's bundled skills, or
+ * a source checkout's `skills/registry.json` found walking up from `cwd`.
+ * Returns the skills directory, or `null` when none exists.
  */
 export function findSkillsDir(cwd = process.cwd()): string | null {
   const candidates: string[] = [];
@@ -35,6 +35,8 @@ export function findSkillsDir(cwd = process.cwd()): string | null {
   };
 
   pushCandidate(process.env.VANA_SKILLS_DIR);
+  // Installed releases prefer their own version over an unrelated working directory.
+  pushCandidate(fileURLToPath(new URL("./bundled/", import.meta.url)));
 
   let currentDir = path.resolve(cwd);
   while (true) {

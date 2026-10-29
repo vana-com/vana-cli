@@ -173,7 +173,10 @@ try {
   Write-Host ""
   Write-Host "Installed vana to $WrapperPath"
   Write-Host "Next step:"
-  Write-Host "  vana status"
+  Write-Host "  vana"
+  if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected -and -not $env:CI -and -not $env:AGENT) {
+    & $WrapperPath
+  }
 }
 finally {
   if (Test-Path $TempDir) {
