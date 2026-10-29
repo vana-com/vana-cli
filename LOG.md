@@ -1,31 +1,18 @@
-# CLI session reset and BUI-936 continuation, 30 October 2026
+# BUI-936 claim confirmation update, 30 October 2026
 
-The user requested reconciliation of the dirty primary checkout and a clean
-branch from current main, with no push or release. The exact 22-file mixed
-state, including 11 untracked files, is archived locally on
-`callum/archive-cli-mixed-2026-10-30`. Its disposition and byte hashes are in
-`.git/session-resets/2026-10-30.md` and the adjacent JSON manifest.
+Update existing PR #109 against main v0.47.0, preserving the original claim
+commit and main's newer registration behavior. Retain network-scoped profile
+reads/writes; the claim-link regression now checks distinct mainnet/Moksha
+names with an opposing environment default. The old lookup fails that check.
 
-Existing delivery owners cover the useful work: PR #106 owns funding/recovery,
-skills and Motel verification; PR #109 owns claim confirmation; current main
-owns the newer mainnet registration and profile implementation. Historical
-notes stay in the archive rather than replacing this worklog. PR #106 now
-includes current main, but BUI-945 still requires the funded service rollout
-and real top-up/resume proof before merge. CLI main merges trigger a release.
+The tested implementation passes 983 tests across 70 files, TypeScript,
+ESLint, formatting, build and built claim help; 43 focused claim/mainnet/profile
+checks also pass. This is local fixture proof. The prior live dev acceptance
+belongs to the original PR head; no live claim or funding was repeated here.
 
-Prepare PR #109 against current main on the local-only branch
-`callum/claim-confirmation-current-main-2026-10-30`, preserving original
-authorship and main's network-scoped profiles and newer registration behavior.
-No new overlapping PR, funding, credential access, merge, push or release.
-Return the primary checkout to clean `callum/session-2026-10-30` afterward.
-
-The local continuation passes full validation: 983 tests across 70 files,
-TypeScript, ESLint and formatting, plus build and built claim help. The 43
-focused claim/mainnet/profile checks also pass. The existing claim-link test
-now exercises distinct stored mainnet/Moksha names with an opposing environment
-default; restoring the old unscoped lookup makes it fail for the wrong name.
-This is local fixture proof only. No live claim, funding or Account deployment
-was performed, and the existing PR #109 release hold remains in force.
+The user now authorizes pushing this tested update to PR #109. Keep #106
+blocked on BUI-945, and keep #109 open without auto-merge, merge or release.
+Return the primary checkout to clean `callum/session-2026-10-30` after delivery.
 
 # BUI-951 implementation record
 
