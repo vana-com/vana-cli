@@ -25,6 +25,12 @@ for (const name of [
 ]) {
   childProcess[name] = () => refuse("Subprocess execution");
 }
+// Linux connect reads the schedule after collection. Answer the documentation
+// scenario in memory; never execute crontab or permit another shell command.
+childProcess.execSync = (command) => {
+  if (command === "crontab -l 2>/dev/null") return "";
+  return refuse("Subprocess execution");
+};
 net.Socket.prototype.connect = () => refuse("Network access");
 globalThis.fetch = async (input, init) => {
   const url = new URL(input instanceof Request ? input.url : input);

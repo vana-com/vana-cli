@@ -76,6 +76,7 @@ const assert = require('node:assert/strict');
 assert.equal(process.env.VANA_DEMO_NO_BROWSER, '1');
 assert.equal(process.env.VANA_HOME, path.join(process.env.HOME, '.vana'));
 assert.equal(process.env.USERPROFILE, process.env.HOME);
+assert.equal(require('node:child_process').execSync('crontab -l 2>/dev/null'), '');
 assert.equal(process.env.VANA_DATA_CONNECTORS_DIR, path.join(process.cwd(), 'docs/vhs/fixtures/demo-data-connectors'));
 fetch('http://localhost:8080/health').then(response => assert.equal(response.status, 503));
 console.log('ISOLATED FIXTURE OUTPUT');
