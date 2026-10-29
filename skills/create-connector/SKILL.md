@@ -21,7 +21,7 @@ another coding agent or service.
 
 1. Read the bundled instructions. They include the public data-connectors
    checkout, its locked dependency installation and the exact public
-   `@vana/factory-core@0.0.1` release artifact to install locally. No private
+   `@vana/factory-core@0.0.2` release artifact to install locally. No private
    Factory access or internal service is required. Use synthetic or explicitly
    reviewed evidence and a real Node 24 runtime on macOS or Linux; Node 24.22.1
    is recommended for both Factory and the checkout. The instructions set
@@ -42,6 +42,10 @@ another coding agent or service.
    accepted artifacts without network. Changed accepted inputs need a new job.
    Read safe `api.md`, research, profiles and fixtures, then implement in the
    named checkout. Raw captures are private and are not linked for the agent.
+   Factory validates stream schemas with `type`, `properties`, `required`,
+   `items`, `enum`, `format: date-time`, `minLength` and boolean
+   `additionalProperties`. Other assertions need explicit unsupported handling;
+   do not remove constraints to obtain a pass.
 4. Run the returned `actions.check.argv`. Repair failures and check the same
    job again. Use `actions.resume.argv` to refresh work or continue after
    export prerequisites. Resume and check never acquire API evidence. An API
