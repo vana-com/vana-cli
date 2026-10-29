@@ -98,6 +98,11 @@ Account environment does not turn mainnet into a test chain.
 
 This reuses the same key and Account, confirms mainnet registration and Account association without another claim, and preserves Moksha. An interactive run opens Account only for necessary sign-in; noninteractive runs return exit 7 when sign-in is required. Rerun the same command after interruption to reuse completed registration and finish association. Mainnet does not silently create a replacement key or overwrite Moksha metadata.
 
+The command waits up to 90 seconds for the gateway's chain confirmation before
+asking Account to associate mainnet. A pending record is not a confirmed
+registration. If confirmation stays unavailable, exit 6 preserves the operation
+without submitting another registration.
+
 Account migration 030 and its association API must be deployed first. Registration does not transfer data, grants, escrow or connectors, and does not waive fees.
 
 ## For agents

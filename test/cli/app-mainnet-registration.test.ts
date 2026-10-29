@@ -91,6 +91,9 @@ beforeEach(() => {
       }) as GatewayClient,
     fetch: async (url, init) => {
       const parsed = new URL(String(url));
+      if (parsed.origin === mainnet.gatewayUrl) {
+        return Response.json({ data: builder, proof: { status: "confirmed" } });
+      }
       if (parsed.origin !== accountOrigin)
         throw new Error("Wrong Account deployment");
       if (parsed.pathname === "/api/v1/me/app-ownership") {
@@ -220,6 +223,105 @@ describe("one-command mainnet registration", () => {
     });
     expect(deps.store!.getRegistration()).toBeNull();
   });
+  it("waits for the gateway's pending proof in one invocation before asking Account to associate", async () => {
+    vi.useFakeTimers();
+    try {
+      const request = deps.fetch!;
+      let confirmationReads = 0;
+      let pendingProof = true;
+      let associationAttempts = 0;
+      deps.fetch = async (url, init) => {
+        const target = new URL(String(url));
+        if (target.origin === mainnet.gatewayUrl) {
+          pendingProof = ++confirmationReads < 3;
+          return Response.json({
+            data: builder,
+            proof: { status: pendingProof ? "pending" : "confirmed" },
+          });
+        }
+        if (target.pathname === "/api/v1/me/app-registrations") {
+          associationAttempts += 1;
+          if (pendingProof)
+            return Response.json(
+              { error: { code: "gateway_unavailable" } },
+              { status: 503 },
+            );
+        }
+        return request(url, init);
+      };
+      const pending = runAppRegister(options, deps);
+      await vi.runAllTimersAsync();
+      expect(await pending).toBe(0);
+      expect(outcome()).toMatchObject({
+        status: "done",
+        data: { ownership: "owned" },
+      });
+      expect(output.trim().split("\n")).toHaveLength(1);
+      expect(registrations).toBe(1);
+      expect(confirmationReads).toBe(3);
+      expect(associationAttempts).toBe(1);
+      expect(deps.store!.getRegistration()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("retains the operation when confirmation stays pending, without asking Account or registering twice", async () => {
+    vi.useFakeTimers();
+    try {
+      const request = deps.fetch!;
+      let associationAttempts = 0;
+      deps.fetch = async (url, init) => {
+        const target = new URL(String(url));
+        if (target.origin === mainnet.gatewayUrl)
+          return Response.json({ data: builder, proof: { status: "pending" } });
+        if (target.pathname === "/api/v1/me/app-registrations")
+          associationAttempts += 1;
+        return request(url, init);
+      };
+      const pending = runAppRegister(options, deps);
+      await vi.runAllTimersAsync();
+      expect(await pending).toBe(6);
+      expect(outcome().code).toBe("not_ready");
+      expect(registrations).toBe(1);
+      expect(associationAttempts).toBe(0);
+      expect(deps.store!.getRegistration()).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each(["failed", "changed-owner"])(
+    "does not associate a %s confirmation",
+    async (confirmation) => {
+      const request = deps.fetch!;
+      let associations = 0;
+      deps.fetch = async (url, init) => {
+        const target = new URL(String(url));
+        if (target.origin === mainnet.gatewayUrl) {
+          return Response.json({
+            data:
+              confirmation === "changed-owner"
+                ? {
+                    ...builder,
+                    ownerAddress: "0x1111111111111111111111111111111111111111",
+                  }
+                : builder,
+            proof: {
+              status: confirmation === "failed" ? "failed" : "confirmed",
+            },
+          });
+        }
+        if (target.pathname === "/api/v1/me/app-registrations")
+          associations += 1;
+        return request(url, init);
+      };
+      expect(await runAppRegister(options, deps)).toBe(
+        confirmation === "failed" ? 6 : 2,
+      );
+      expect(associations).toBe(0);
+      expect(registrations).toBe(1);
+      expect(deps.store!.getRegistration()).not.toBeNull();
+    },
+  );
   it("resumes Account association after gateway success without registering again", async () => {
     unavailable = true;
     expect(await runAppRegister(options, deps)).toBe(6);

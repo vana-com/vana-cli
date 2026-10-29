@@ -1,4 +1,4 @@
-import { createGatewayClient } from "@opendatalabs/vana-sdk";
+import { createGatewayClient, type Builder } from "@opendatalabs/vana-sdk";
 import { privateKeyToAccount } from "viem/accounts";
 import type { ResolvedAppKey } from "../../core/app-key.js";
 import { readAppProfile, saveAppProfile } from "../../core/app-profile.js";
@@ -234,17 +234,19 @@ export async function runMainnetRegistration(
         "Mainnet registration is not confirmed yet.",
       );
     gatewayRegistered = true;
-    if (
-      builder.granteeAddress.toLowerCase() !== address ||
-      builder.ownerAddress.toLowerCase() !== address ||
-      builder.publicKey.toLowerCase() !== key.publicKey.toLowerCase() ||
-      builder.appUrl !== appUrl
-    ) {
+    if (!matchesRegistration(builder, key, appUrl)) {
       throw new RegistrationError(
         "bad_usage",
         "The existing mainnet registration has different ownership, key or URL. No metadata was changed.",
       );
     }
+    // The SDK unwraps pending records too. Account requires confirmed chain
+    // evidence, so wait on reads before asking it to associate this owner.
+    if (!options.json && !options.quiet) {
+      process.stderr.write("Confirming mainnet registration…\n");
+    }
+    await waitForMainnetConfirmation(network, key, appUrl, request);
+
     // Legacy attribution can already project as owned on mainnet without a
     // scoped production row. Always reconcile that row through Account.
     const expiry = Math.floor(Date.now() / 1000) + 240;
@@ -332,6 +334,74 @@ export async function runMainnetRegistration(
       gatewayRegistered
         ? "Mainnet registration is present; completion could not be confirmed. Rerun to finish."
         : "Registration could not be confirmed. Rerun with the same app and URL.",
+    );
+  }
+}
+
+function matchesRegistration(
+  value: unknown,
+  key: ResolvedAppKey,
+  appUrl: string,
+): value is Builder {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<Builder>;
+  return (
+    typeof record.granteeAddress === "string" &&
+    record.granteeAddress.toLowerCase() === key.address.toLowerCase() &&
+    typeof record.ownerAddress === "string" &&
+    record.ownerAddress.toLowerCase() === key.address.toLowerCase() &&
+    typeof record.publicKey === "string" &&
+    record.publicKey.toLowerCase() === key.publicKey.toLowerCase() &&
+    record.appUrl === appUrl
+  );
+}
+
+async function waitForMainnetConfirmation(
+  network: ResolvedNetwork,
+  key: ResolvedAppKey,
+  appUrl: string,
+  request: typeof fetch,
+): Promise<void> {
+  const deadline = Date.now() + 90_000;
+  const url = `${network.gatewayUrl}/v1/builders/${key.address.toLowerCase()}`;
+  for (;;) {
+    // Only GETs are repeated. A lost or delayed confirmation must never
+    // submit another gateway registration or change the frozen identity.
+    const response = await request(url, {
+      redirect: "error",
+      signal: AbortSignal.timeout(
+        Math.max(1, Math.min(10_000, deadline - Date.now())),
+      ),
+    }).catch(() => null);
+    if (response?.ok) {
+      const body = (await response.json().catch(() => null)) as {
+        data?: unknown;
+        proof?: { status?: unknown };
+      } | null;
+      if (body?.proof?.status === "confirmed") {
+        if (!matchesRegistration(body.data, key, appUrl)) {
+          throw new RegistrationError(
+            "bad_usage",
+            "The confirmed mainnet record has a different key, owner or URL. Account association was not submitted.",
+          );
+        }
+        return;
+      }
+      if (body?.proof?.status === "failed") {
+        throw new RegistrationError(
+          "not_ready",
+          "Mainnet registration failed confirmation. Account association was not submitted.",
+        );
+      }
+    }
+    if (Date.now() >= deadline) {
+      throw new RegistrationError(
+        "not_ready",
+        "Mainnet confirmation is still unavailable after 90 seconds. The operation is saved; no registration was resubmitted.",
+      );
+    }
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Math.min(2000, deadline - Date.now())),
     );
   }
 }
