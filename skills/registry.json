@@ -13,7 +13,7 @@
       "id": "builder",
       "name": "Builder",
       "description": "Ask a person for access to their data, then read it and pay for it from the terminal",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "files": {
         "skill": "builder/SKILL.md"
       }

@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { readAppProfile, saveAppProfile } from "../../src/core/app-profile.js";
+import { resolveNetwork } from "../../src/core/network.js";
 
 describe("app profile", () => {
   const originalHome = process.env.HOME;
@@ -38,6 +39,42 @@ describe("app profile", () => {
     expect(readAppProfile("0xaaa")).toEqual({
       name: "OpenClaw agent",
       url: "https://openclaw.ai",
+    });
+  });
+
+  it("reads historical profiles while isolating network and environment writes", () => {
+    fs.mkdirSync(path.join(home, ".vana", "app"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".vana", "app", "profile.json"),
+      JSON.stringify({
+        "0xaaa": { name: "Legacy", url: "https://legacy.example" },
+      }),
+    );
+    const mainnet = resolveNetwork("mainnet", {});
+    const moksha = resolveNetwork("moksha", {});
+    const dev = resolveNetwork("moksha", { VANA_ENV: "dev" });
+    expect(readAppProfile("0xaaa", mainnet).name).toBe("Legacy");
+    saveAppProfile(
+      "0xaaa",
+      { name: "Production", url: "https://production.example" },
+      mainnet,
+    );
+    saveAppProfile(
+      "0xaaa",
+      { name: "Test", url: "http://localhost:3000" },
+      moksha,
+    );
+    expect(readAppProfile("0xaaa", mainnet)).toEqual({
+      name: "Production",
+      url: "https://production.example",
+    });
+    expect(readAppProfile("0xaaa", moksha)).toEqual({
+      name: "Test",
+      url: "http://localhost:3000",
+    });
+    expect(readAppProfile("0xaaa", dev)).toEqual({
+      name: "Legacy",
+      url: "https://legacy.example",
     });
   });
 });

@@ -7,6 +7,7 @@ import { appOutcomeSchema, emitAppOutcome } from "../../src/cli/app/outcome.js";
 import { builderRegistrationDomainFor } from "../../src/cli/app/register.js";
 import { BUILDER_REGISTRATION_TYPES } from "@opendatalabs/vana-sdk";
 import { resolveNetwork } from "../../src/core/network.js";
+import { readAppProfile } from "../../src/core/app-profile.js";
 import {
   AppKeyMissingError,
   type ResolvedAppKey,
@@ -72,12 +73,10 @@ describe("vana app register", () => {
   });
 
   it("remembers --app-name and --app-url for later requests", async () => {
-    const saveProfile = vi.fn();
     const exitCode = await runAppRegister(
       { json: true, appName: "OpenClaw", appUrl: "https://openclaw.ai" },
       {
         resolveKey: () => resolvedKey,
-        saveProfile,
         createClient: () =>
           clientWith({
             isRegisteredBuilder: async () => true,
@@ -86,7 +85,9 @@ describe("vana app register", () => {
       },
     );
     expect(exitCode).toBe(0);
-    expect(saveProfile).toHaveBeenCalledWith(account.address, {
+    expect(
+      readAppProfile(account.address, resolveNetwork("moksha")),
+    ).toMatchObject({
       name: "OpenClaw",
       url: "https://openclaw.ai",
     });

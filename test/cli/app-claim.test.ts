@@ -15,6 +15,7 @@ import {
   type ResolvedAppKey,
 } from "../../src/core/app-key.js";
 import { resolveNetwork } from "../../src/core/network.js";
+import { readAppProfile } from "../../src/core/app-profile.js";
 
 const KEY =
   "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
@@ -156,21 +157,21 @@ describe("vana app claim", () => {
   });
 
   it("uses and remembers --app-name over the saved name", async () => {
-    const saveProfile = vi.fn();
     await runAppClaim(
       { json: true, network: "mainnet", appName: "My Agent" },
       {
         resolveKey: () => resolvedKey,
         createClient: clientWith(true),
         readProfile: () => ({ name: "Hermes Agent" }),
-        saveProfile,
         openUrl: vi.fn(),
       },
     );
 
     const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
     expect(outcome.data?.appName).toBe("My Agent");
-    expect(saveProfile).toHaveBeenCalledWith(account.address, {
+    expect(
+      readAppProfile(account.address, resolveNetwork("mainnet")),
+    ).toMatchObject({
       name: "My Agent",
     });
   });

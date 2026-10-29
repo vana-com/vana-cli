@@ -55,9 +55,9 @@ signed and notarized by Vana (or Vana Desktop's copy, when installed).
 else's data, with their consent:
 
 ```bash
-vana app register                                  # once per machine
-vana app request --scopes github.repositories      # prints an approval URL, waits
-vana app read github.repositories --grant <id>     # signed read
+vana app register --network moksha                 # create and test the app first
+vana app request --network moksha --scopes github.repositories      # prints an approval URL, waits
+vana app read --network moksha github.repositories --grant <id>     # signed read
 ```
 
 `request` returns the grant id once the person approves. Asking the same
@@ -82,6 +82,18 @@ Everything defaults to **mainnet**, where your data and apps live. Paying is
 never implied: a paid read stops with the exact price until you add `--pay`,
 and `--max-fee` caps it. `--network moksha` is the testnet, where fees are
 play money.
+
+## Make an existing app available on mainnet
+
+After the app is registered and claimed by your Account on Moksha, run:
+
+```bash
+vana app register --network mainnet --app-url https://your-app.example --app-name "Your app"
+```
+
+This reuses the same key and Account, confirms mainnet registration and Account association without another claim, and preserves Moksha. An interactive run opens Account only for necessary sign-in; noninteractive runs return exit 7 when sign-in is required. Rerun the same command after interruption to reuse completed registration and finish association. Mainnet does not silently create a replacement key or overwrite Moksha metadata.
+
+Account migration 030 and its association API must be deployed first. Registration does not transfer data, grants, escrow or connectors, and does not waive fees.
 
 ## For agents
 
