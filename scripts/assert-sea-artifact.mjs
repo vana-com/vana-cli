@@ -34,6 +34,8 @@ const requiredDirectoryEntries = [
   "app/dist/cli/main.js",
   "app/dist/runtime/managed-playwright.js",
   "app/dist/personal-server/local/runtime-pkg/entry.mjs",
+  "app/dist/personal-server/local/runtime-pkg/dev/package.json",
+  "app/dist/personal-server/local/runtime-pkg/dev/package-lock.json",
   "app/dist/personal-server/local/runtime-pkg/derived-config.mjs",
   "app/dist/personal-server/local/runtime-pkg/mcp-approval.mjs",
 ];

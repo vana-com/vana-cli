@@ -96,6 +96,11 @@ For a dev Account check, prefix the command with `VANA_ENV=dev`. This uses
 `--network mainnet` still selects the real mainnet chain and gateway; changing the
 Account environment does not turn mainnet into a test chain.
 
+`VANA_ENV=dev vana server start` installs a separately pinned dev Personal Server
+runtime and enables own-app fee checks against dev Account. A valid app grant is
+still required; eligible same-Account reads are free and other apps remain
+metered. Production retains its stable server pin.
+
 This reuses the same key and Account, confirms mainnet registration and Account association without another claim, and preserves Moksha. An interactive run opens Account only for necessary sign-in; noninteractive runs return exit 7 when sign-in is required. Rerun the same command after interruption to reuse completed registration and finish association. Mainnet does not silently create a replacement key or overwrite Moksha metadata.
 
 The command waits up to 90 seconds for the gateway's chain confirmation before

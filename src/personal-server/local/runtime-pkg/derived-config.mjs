@@ -53,7 +53,7 @@ export function derivedConfig(network, tunnel) {
     // Vana's hosted servers. The server's default is off, and a server that
     // leaves it off serves every granted read for free - no 402, no payment
     // record. The owner's own reads stay free either way.
-    payment: { enabled: true },
+    payment: { enabled: true, ownAppAccountUrl: network.ownAppAccountUrl },
     storage: {
       backend: "vana",
       config: { vana: { apiUrl: network.storageApiUrl } },

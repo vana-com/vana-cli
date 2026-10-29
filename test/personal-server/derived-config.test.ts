@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyDerived,
@@ -12,6 +12,10 @@ import {
   MCP_GRANT_TTL_SECONDS,
   // @ts-expect-error - plain ESM module shipped to the server process
 } from "../../src/personal-server/local/runtime-pkg/derived-config.mjs";
+import {
+  localServerNetwork,
+  localServerRuntimeDir,
+} from "../../src/personal-server/local/config.js";
 import { ensureRuntime } from "../../src/personal-server/local/runtime.js";
 
 const NETWORK = {
@@ -28,6 +32,33 @@ const TUNNEL = {
 };
 
 describe("derivedConfig", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("selects the dev runtime and Account fee authority together", () => {
+    vi.stubEnv("VANA_ENV", "prod");
+    const stable = localServerRuntimeDir();
+    const prod = localServerNetwork("mainnet");
+    vi.stubEnv("VANA_ENV", "dev");
+    const dev = localServerNetwork("mainnet");
+    expect(localServerRuntimeDir()).not.toBe(stable);
+    expect(derivedConfig(dev, null).payment).toEqual({
+      enabled: true,
+      ownAppAccountUrl: "https://account-dev.vana.org",
+    });
+    expect(dev.webOrigin).toBe("https://app-dev.vana.org");
+    expect(dev.gatewayUrl).toBe(prod.gatewayUrl);
+    const persisted = {
+      payment: {
+        enabled: false,
+        ownAppAccountUrl: "https://account-dev.vana.org",
+      },
+    };
+    expect(
+      JSON.parse(
+        JSON.stringify(applyDerived(persisted, derivedConfig(prod, null))),
+      ).payment,
+    ).toEqual({ enabled: true });
+  });
   it("charges builder reads, public or local", () => {
     expect(derivedConfig(NETWORK, TUNNEL).payment).toEqual({ enabled: true });
     expect(derivedConfig(NETWORK, null).payment).toEqual({ enabled: true });
