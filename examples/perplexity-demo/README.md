@@ -132,6 +132,8 @@ Keep private titles and raw payloads outside Git/Linear. A successful server acc
 
 ## Iterate through the same grant — BUI-932
 
+After reload, the app first restores its saved connection before offering any connection action. Saved conversations keep the **Conversations saved** status and **Read latest** action; reviewing access again remains an explicit recovery action.
+
 After the first result is saved, displayed and acknowledged, **Read latest** performs a fresh SDK read using the owner/app/network/grant/server binding retained privately by the backend. It accepts no grant, server, scope or request overrides from the browser and does not reopen the completed Direct request. The backend rechecks the live grant and owner-bound server. If access has expired or been revoked, the saved list stays visible and **Review access again** is available. Funding and transient server errors remain read/funding problems.
 
 Every deliberately fresh read can incur the current capped test-VANA fee. Earlier successful receipts remain in private history; a failed or uncertain fresh attempt reuses its own receipt instead of authorizing another fee. A delivered body that has not been decoded/saved, or a saved response lost before the browser received it, is recovered before another paid read. Acknowledgement follows rendering of the recovered/new revision. The BUI-931 ledger is adopted only when its saved, acknowledged revision matches its retained received body; uncertain legacy payments are not relabelled as successful.

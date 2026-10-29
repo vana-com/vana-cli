@@ -37,6 +37,7 @@ const STATUS: Record<DirectConnectState["type"], string> = {
 
 export default function ConnectFlow() {
   const [saved, setSaved] = useState<Connection["saved"]>();
+  const [restoring, setRestoring] = useState(true);
   const [acknowledgedRevision, setAcknowledgedRevision] = useState<string>();
   const displayedRevision = useRef<string | undefined>(undefined);
   const connectionGeneration = useRef(0);
@@ -86,7 +87,10 @@ export default function ConnectFlow() {
           );
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (active) setRestoring(false);
+      });
     return () => {
       active = false;
     };
@@ -181,6 +185,18 @@ export default function ConnectFlow() {
     };
   }, [saved]);
 
+  const restored = state.type === "idle" && !!saved && !reviewRequired;
+  const status =
+    state.type === "idle" && restoring
+      ? "Loading saved conversations"
+      : restored
+        ? "Conversations saved"
+        : STATUS[state.type];
+  const reviewAccess = () => {
+    setReviewRequired(true);
+    reset();
+  };
+
   return (
     <>
       <section
@@ -194,10 +210,10 @@ export default function ConnectFlow() {
             className={state.type === "error" ? "status-error" : "mono"}
             role="status"
           >
-            {STATUS[state.type]}
+            {status}
           </span>
         </div>
-        {state.type === "idle" && (
+        {state.type === "idle" && !restoring && !restored && (
           <>
             <p>
               Run the Perplexity connector with the CLI first. Then open Vana to
@@ -219,6 +235,9 @@ export default function ConnectFlow() {
               Connect with Vana
             </button>
           </>
+        )}
+        {state.type === "idle" && restoring && (
+          <p>Loading your saved connection…</p>
         )}
         {state.type === "creating" && (
           <p>
@@ -255,7 +274,7 @@ export default function ConnectFlow() {
             your Perplexity conversations…
           </p>
         )}
-        {state.type === "done" && (
+        {(state.type === "done" || restored) && (
           <p>
             Conversations saved.{" "}
             {acknowledged
@@ -280,7 +299,7 @@ export default function ConnectFlow() {
           </>
         )}
         {state.type === "error" && (
-          <button type="button" className="btn-ghost" onClick={reset}>
+          <button type="button" className="btn-ghost" onClick={reviewAccess}>
             Review access again
           </button>
         )}
@@ -333,7 +352,11 @@ export default function ConnectFlow() {
               </p>
             )}
             {reviewRequired && state.type !== "idle" && (
-              <button type="button" className="btn-ghost" onClick={reset}>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={reviewAccess}
+              >
                 Review access again
               </button>
             )}
