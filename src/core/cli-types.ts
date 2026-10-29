@@ -1,3 +1,4 @@
+import { factoryVerificationSchema } from "./factory-verification.js";
 import { z } from "zod";
 
 export const CliOutcomeStatus = {
@@ -361,6 +362,7 @@ export const datasetNotFoundErrorSchema = z.object({
   nextSteps: z.array(z.string()).optional(),
   /** A result file the last run left without data. */
   resultPath: z.string().optional(),
+  factoryVerification: factoryVerificationSchema.optional(),
   /** The log of the run that failed to collect. */
   logPath: z.string().optional(),
 });
@@ -398,6 +400,7 @@ export const cliEventSchema = z.object({
   message: z.string().optional(),
   status: z.string().optional(),
   resultPath: z.string().optional(),
+  factoryVerification: factoryVerificationSchema.optional(),
   connectorPath: z.string().optional(),
   /** Version of the connector a `connector-resolved` event settled on. */
   connectorVersion: z.string().optional(),
@@ -434,6 +437,7 @@ export const cliOutcomeSchema = z
     ),
     source: z.string().optional(),
     resultPath: z.string().optional(),
+    factoryVerification: factoryVerificationSchema.optional(),
     reason: z.string().optional(),
   })
   .catchall(z.unknown());

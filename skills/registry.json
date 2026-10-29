@@ -30,8 +30,8 @@
     {
       "id": "create-connector",
       "name": "Create Connector",
-      "description": "How to build, test, validate, and contribute a new data connector",
-      "version": "1.0.0",
+      "description": "Build or repair a Collection Profile connector with the current agent and shared Factory checks",
+      "version": "1.1.0",
       "files": {
         "skill": "create-connector/SKILL.md",
         "supplemental": [

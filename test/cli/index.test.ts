@@ -4216,59 +4216,99 @@ describe("runCli", () => {
     );
   });
 
-  it("records ingest failures as local data with sync failure state", async () => {
-    mockListAvailableSources.mockResolvedValue([
-      {
-        id: "github",
-        name: "GitHub",
-        authMode: "interactive",
-      },
-    ]);
-    fetchConnectorResult = {
-      connectorPath: "/tmp/connectors/github/github-playwright.js",
-      logPath: "/tmp/logs/fetch.log",
-    };
-    runConnectorEvents = [
-      {
-        type: "collection-complete",
-        source: "github",
-        resultPath: "/tmp/.vana/github-result.json",
-        logPath: "/tmp/logs/run.log",
-      },
-    ];
-    mockIngestResult.mockResolvedValue([
-      {
-        type: "ingest-failed",
-        source: "github",
-        target: "http://localhost:8080",
-        message: "server exploded",
-      },
-    ]);
-    mockReadFile.mockResolvedValue(
-      JSON.stringify({
-        profile: { username: "tnunamak" },
-      }),
-    );
+  it.each([
+    { gated: false, eventType: "ingest-failed", exitCode: 0 },
+    { gated: true, eventType: "ingest-failed", exitCode: 1 },
+    { gated: true, eventType: "ingest-partial", exitCode: 1 },
+  ])(
+    "records $eventType with gated=$gated and exit $exitCode",
+    async ({ gated, eventType, exitCode: expectedExitCode }) => {
+      mockListAvailableSources.mockResolvedValue([
+        {
+          id: "github",
+          name: "GitHub",
+          authMode: "interactive",
+        },
+      ]);
+      fetchConnectorResult = {
+        connectorPath: "/tmp/connectors/github/github-playwright.js",
+        logPath: "/tmp/logs/fetch.log",
+      };
+      const factoryVerification = gated
+        ? {
+            version: 1,
+            kind: "factory_collection_verified",
+            status: "verified",
+            receiptId: "11111111-1111-4111-8111-111111111111",
+            jobId: "22222222-2222-4222-8222-222222222222",
+            attemptId: "33333333-3333-4333-8333-333333333333",
+            runId: "vana-test",
+            sourceKey: "github",
+            manifestConnectorKey: "github",
+            requestedStreams: ["profile"],
+            staticRunId: "44444444-4444-4444-8444-444444444444",
+            staticFingerprint: "a".repeat(64),
+            contextHash: "b".repeat(64),
+            manifestSha256: "c".repeat(64),
+            startSha256: "d".repeat(64),
+            hostSha256: "e".repeat(64),
+            evidenceSha256: "f".repeat(64),
+            projectionSha256: "a".repeat(64),
+            resultSha256: "b".repeat(64),
+            context: { owner: null, destination: null },
+            verifierVersion: 1,
+            scope: "same_vana_run_protocol",
+            schemaValidation: "collection-profile-subset-v1",
+            ingestion: "not_run",
+            readback: "not_performed",
+          }
+        : undefined;
+      runConnectorEvents = [
+        {
+          type: "collection-complete",
+          factoryVerification,
+          source: "github",
+          resultPath: "/tmp/.vana/github-result.json",
+          logPath: "/tmp/logs/run.log",
+        },
+      ];
+      mockIngestResult.mockResolvedValue([
+        {
+          type: eventType,
+          source: "github",
+          target: "http://localhost:8080",
+          message: "server exploded",
+        },
+      ]);
+      mockReadFile.mockResolvedValue(
+        JSON.stringify({
+          profile: { username: "tnunamak" },
+        }),
+      );
 
-    const { runCli } = await import("../../src/cli/index.js");
-    const exitCode = await runCli(["node", "vana", "connect", "github"]);
+      const { runCli } = await import("../../src/cli/index.js");
+      const exitCode = await runCli(["node", "vana", "connect", "github"]);
 
-    expect(exitCode).toBe(0);
-    expect(stderr).toContain("Connected GitHub.");
-    expect(stderr).toContain(
-      "Collected your GitHub data, but Personal Server sync failed.",
-    );
-    expect(stderr).toContain("Retry: vana server sync");
-    expect(mockUpdateSourceState).toHaveBeenLastCalledWith(
-      "github",
-      expect.objectContaining({
-        lastRunOutcome: "ingest_failed",
-        dataState: "ingest_failed",
-        lastError: "server exploded",
-      }),
-      { settle: expect.any(String) },
-    );
-  });
+      expect(exitCode).toBe(expectedExitCode);
+      expect(stderr).toContain("Connected GitHub.");
+      expect(stderr).toContain(
+        "Collected your GitHub data, but Personal Server sync failed.",
+      );
+      expect(stderr).toContain("Retry: vana server sync");
+      expect(mockUpdateSourceState).toHaveBeenLastCalledWith(
+        "github",
+        expect.objectContaining({
+          lastRunOutcome: "ingest_failed",
+          dataState: "ingest_failed",
+          lastError:
+            eventType === "ingest-partial"
+              ? "Some verified scopes could not be stored. Run vana server sync to retry their accepted bytes."
+              : "server exploded",
+        }),
+        { settle: expect.any(String) },
+      );
+    },
+  );
 
   it("shows saved and synced details when Personal Server ingest succeeds", async () => {
     mockListAvailableSources.mockResolvedValue([

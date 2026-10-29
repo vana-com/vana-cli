@@ -225,6 +225,55 @@ top content; selecting saved tracks avoids that dependency.
 an explicit source, and cannot be used with `--detach`. Omit it to request
 all streams. No connector source checkout is needed for pinned sources.
 
+Build a missing connector with your current agent and the shared Factory checks:
+
+```bash
+vana connectors build --instructions           # bundled offline instructions and request example
+vana connectors build --request /absolute/path/to/request.json --json
+vana connectors prepare --job <uuid> --state-dir /absolute/path/to/state --json # declared API evidence
+vana connectors check --job <uuid> --state-dir /absolute/path/to/state --json
+vana connectors resume --job <uuid> --state-dir /absolute/path/to/state --json
+```
+
+The instructions describe installing the separately supplied Factory tarball.
+Its `factory-build` executable must use a real Node 24+ runtime on macOS or
+Linux, independently of Vana's Node runtime or standalone launcher. Put it on
+`PATH` or set `VANA_FACTORY_BUILD` to its absolute executable path. Vana never
+downloads it. Instructions remain available when Factory is absent.
+
+Factory supports synthetic or explicitly reviewed export evidence and API
+preparation. The bundled instructions include a source-general API request
+with supplied documentation and responses. API plans declare the origin,
+auth environment names, research, bounded JSON GET or supplied samples, and
+reviewed structural disclosure. Build creates the job before preparation.
+Only `prepare` acquires declared API inputs. Resume and check never fetch them.
+Missing files or auth preserve the UUID. Supply them and prepare again.
+Successful repeated preparation verifies immutable artifacts without network.
+Raw captures stay private; the work file links safe research, profiles and
+synthetic fixtures. Review generated fixtures before publication.
+
+The current agent writes the connector; Factory owns job state and checks.
+State defaults to `factory/` under `VANA_HOME` (otherwise `~/.vana`). Keep the
+explicit UUID and canonical state directory in the returned prepare, check and
+resume argv.
+`--quiet` hides progress only; `--detach` is unsupported. Interrupting waits for
+Factory cleanup. SIGKILL requires Factory's manual lock recovery.
+
+A static/fixture pass leaves live verification pending and ingestion not run.
+The generated connect action includes --factory-job and --factory-state-dir. It
+requires same-run verification before local save or ingestion. A failed gate
+keeps previous results and checkpoints. Accepted bytes remain retryable through
+`vana server sync` after an upload failure, without recollecting or rechecking
+the source. Account/deployment, selected destination and scope stay bound. If
+collection had no destination, later sync requires the collecting account and
+a server that reports that account as its owner. Server body readback is not
+performed. Only a pass with a Vana-compatible local profile offers a separate
+`actions.connect.argv`, with the exact directory key, checkout, streams and
+required environment names from `collectionContext.access`. Browser preparation
+remains unsupported. Build commands never collect or register anything.
+Continue an already authorized collection request using
+that command, supplying missing account, scope or authentication as needed.
+
 A Collection Profile connector you are still writing can run straight from
 its directory. `vana connect <key> --from <dir>` runs it once; registering
 it makes every later command use it:
