@@ -14,7 +14,14 @@ import {
 } from "../core/source-export.js";
 import type { SourceExportReceipt } from "../core/source-export.js";
 
-import { confirm, input, isPromptInputClosed, password } from "./prompts.js";
+import {
+  confirm,
+  input,
+  isPromptInputClosed,
+  password,
+  select,
+} from "./prompts.js";
+import { sourceNamePrompt } from "./source-name-prompt.js";
 import { searchSelect } from "./search-select.js";
 import { Command, CommanderError, Option } from "commander";
 
@@ -374,9 +381,6 @@ export async function runCli(argv = process.argv): Promise<number> {
   }
 
   const normalizedArgv = normalizeArgv(argv);
-  if (normalizedArgv.length <= 2) {
-    normalizedArgv.push("--help");
-  }
   const parsedOptions = extractGlobalOptions(normalizedArgv);
   const cliVersion = getCliVersion();
   const installMethod = getCliInstallMethod();
@@ -462,6 +466,26 @@ More:
   );
   program.hook("preAction", (_thisCommand, actionCommand) => {
     mergeParsedGlobalOptions(parsedOptions, actionCommand as Command);
+  });
+
+  program.action(async () => {
+    if (
+      process.stdin.isTTY &&
+      process.stdout.isTTY &&
+      !process.env.CI &&
+      !process.env.AGENT &&
+      !process.env.VANA_DETACHED &&
+      !parsedOptions.json &&
+      !parsedOptions.noInput &&
+      !parsedOptions.ipc &&
+      !parsedOptions.yes &&
+      !parsedOptions.quiet
+    ) {
+      process.exitCode = await runWelcome(parsedOptions);
+    } else {
+      program.outputHelp();
+      process.exitCode = CliExitCode.OK;
+    }
   });
 
   program
@@ -1229,6 +1253,13 @@ Examples:
       async () => runSkillsGuidedPicker(parsedOptions),
     );
   });
+
+  skill
+    .command("setup")
+    .description("Choose an agent skill to install (optional)")
+    .action(async () => {
+      process.exitCode = await runSkillsGuidedPicker(parsedOptions);
+    });
 
   skill
     .command("list")
@@ -2955,12 +2986,6 @@ async function runConnectEntry(options: GlobalOptions): Promise<number> {
     return CliExitCode.USAGE;
   }
 
-  if (enrichedSources.length === 0) {
-    emit.info("No sources are available right now.");
-    emit.info("Run `vana sources` to verify the local connector registry.");
-    return 1;
-  }
-
   // Build inquirer-compatible choices from enriched sources
   const choices = enrichedSources.map((item) => {
     const connected = hasCollectedData(item.dataState);
@@ -2977,13 +3002,45 @@ async function runConnectEntry(options: GlobalOptions): Promise<number> {
   });
 
   try {
-    const source = await searchSelect({
-      message: "Choose a source to connect.",
-      choices,
-      ...vanaPromptTheme,
-    });
-
-    return runConnect(source as string, options);
+    while (true) {
+      const selection = await searchSelect({
+        message: "Choose a source",
+        choices,
+        allowMissingSource: true,
+        ...vanaPromptTheme,
+      });
+      if (typeof selection === "string") return runConnect(selection, options);
+      const name = selection.missingSource.trim() || (await sourceNamePrompt());
+      emit.blank();
+      emit.info(`${name} isn't in Vana's source list.`);
+      emit.blank();
+      emit.info(
+        `A connector is needed to collect your ${name.toLowerCase() === "readwise" ? "highlights" : "data"}.`,
+      );
+      emit.blank();
+      const decision = await select({
+        message: "What would you like to do?",
+        choices: [
+          { value: "build", name: `Build a ${name} connector` },
+          { value: "back", name: "Choose another source" },
+        ],
+        theme: {
+          ...vanaPromptTheme.theme,
+          icon: { cursor: ">" },
+          style: {
+            ...vanaPromptTheme.theme.style,
+            keysHelpTip: () =>
+              "--------------------------------------------------\nUp/Down: move | Enter: choose | Ctrl+C: exit",
+          },
+        },
+      });
+      if (decision === "back") continue;
+      emit.blank();
+      emit.info(`Build a ${name} connector`);
+      emit.blank();
+      showConnectorGuide(emit);
+      return CliExitCode.OK;
+    }
   } catch (error) {
     if (isPromptCancelled(error)) {
       emit.info("Cancelled.");
@@ -8083,6 +8140,56 @@ async function maybePromptSkillInstall(
     // Prompt cancelled or error — mark as completed to avoid re-asking.
     await updateCliConfig({ skillsPromptCompleted: true });
   }
+}
+
+const CONNECTOR_GUIDE_URL =
+  "https://github.com/vana-com/vana-cli/blob/main/skills/create-connector/SKILL.md";
+
+async function runWelcome(options: GlobalOptions): Promise<number> {
+  const emit = createEmitter(options);
+  emit.info("[OK] Vana installed.");
+  emit.blank();
+  try {
+    const choice = await select({
+      message: "What would you like to do?",
+      choices: [
+        { value: "connect", name: "Collect or manage my data" },
+        { value: "use", name: "Use or share data" },
+        { value: "develop", name: "Build or test a connector" },
+        { value: "server", name: "Manage my Personal Server" },
+      ],
+      theme: {
+        ...vanaPromptTheme.theme,
+        icon: { cursor: ">" },
+        style: {
+          ...vanaPromptTheme.theme.style,
+          keysHelpTip: () =>
+            "\nHelp: vana --help\nAgent skills are included. No installation needed.\nOptional install for future sessions: vana skills setup\n\n--------------------------------------------------\nUp/Down: move | Enter: choose | Ctrl+C: exit",
+        },
+      },
+    });
+    if (choice === "connect") return runConnectEntry(options);
+    if (choice === "use") {
+      emit.info("Approve access to your data: vana mcp requests");
+      emit.info(
+        "Request consent, read data, pay or ask questions: vana app --help",
+      );
+    }
+    if (choice === "develop") showConnectorGuide(emit);
+    if (choice === "server") return runServerStatus(options);
+    return CliExitCode.OK;
+  } catch (error) {
+    if (isPromptCancelled(error)) return CliExitCode.OK;
+    throw error;
+  }
+}
+
+function showConnectorGuide(emit: ReturnType<typeof createEmitter>): void {
+  emit.info("Build and test the connector, then collect your data with Vana.");
+  emit.blank();
+  emit.info(`Guide: ${CONNECTOR_GUIDE_URL}`);
+  emit.info("--------------------------------------------------");
+  emit.info("Follow the guide yourself, or share it with your agent.");
 }
 
 async function runSkillsGuidedPicker(options: GlobalOptions): Promise<number> {

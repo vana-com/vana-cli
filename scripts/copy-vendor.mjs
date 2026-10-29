@@ -17,3 +17,17 @@ for (const relative of ASSET_DIRS) {
   await fs.rm(destination, { recursive: true, force: true });
   await fs.cp(source, destination, { recursive: true });
 }
+
+// Both npm and SEA ship dist/, including the public skills for offline setup.
+await fs.rm(path.join(repoRoot, "dist/skills/bundled"), {
+  recursive: true,
+  force: true,
+});
+await fs.cp(
+  path.join(repoRoot, "skills"),
+  path.join(repoRoot, "dist/skills/bundled"),
+  {
+    recursive: true,
+    force: true,
+  },
+);

@@ -109,6 +109,7 @@
     "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "dependencies": {
+    "@inquirer/core": "11.1.7",
     "@inquirer/prompts": "8.3.0",
     "@inquirer/search": "^4.1.6",
     "@modelcontextprotocol/sdk": "^1.27.1",

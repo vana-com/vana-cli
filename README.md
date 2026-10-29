@@ -21,8 +21,9 @@ Or install the standalone binary, which is signed and notarized on macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vana-com/vana-cli/main/install/install.sh | sh
-vana status
 ```
+
+At a human terminal, installation opens the welcome menu. Choose **Collect or manage my data** to search sources; press Ctrl+O for a missing source and follow the connector guide. Run `vana` to reopen the menu. Automated installs remain prompt-free.
 
 Windows uses `install/install.ps1`. The Homebrew tap (`vana-com/tap`) is
 no longer updated and ships a months-old canary, so use one of the routes

@@ -14,6 +14,7 @@ import {
   confirm as inquirerConfirm,
   input as inquirerInput,
   password as inquirerPassword,
+  select as inquirerSelect,
 } from "@inquirer/prompts";
 
 type PromptStream = NodeJS.ReadableStream & {
@@ -116,6 +117,17 @@ export function password(
 ): Promise<string> {
   return withInputClosedGuard(
     (guarded) => inquirerPassword(config, guarded),
+    context,
+  );
+}
+
+/** A finite choice, with the same closed-input handling as text prompts. */
+export function select<T>(
+  config: Parameters<typeof inquirerSelect<T>>[0],
+  context?: PromptContext,
+): Promise<T> {
+  return withInputClosedGuard(
+    (guarded) => inquirerSelect(config, guarded),
     context,
   );
 }

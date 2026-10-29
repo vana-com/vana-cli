@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 
 const requiredPaths = [
   "dist/cli/bin.js",
+  "dist/skills/bundled/registry.json",
+  "dist/skills/bundled/create-connector/SKILL.md",
   "dist/cli/index.js",
   "dist/runtime/managed-playwright.js",
   "dist/vendor/pdpp-connector-manager/index.mjs",
