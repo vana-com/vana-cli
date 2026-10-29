@@ -85,6 +85,43 @@ function run(
 }
 
 describe("runCollectionProfile", () => {
+  it("captures actual START, raw malformed tail, host replies and child close before normalization", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const file = connector(`
+      await next();
+      emit({type:"INTERACTION",request_id:"input_1",kind:"manual_action",message:"Continue."});
+      const reply=await next();
+      if(reply.request_id!=="input_1")throw new Error("wrong reply");
+      process.stdout.write("{malformed}\\nTAIL");
+      await waitForStdinClose();
+    `);
+    const { promise } = run(file, { capture: (event) => captured.push(event) });
+    expect((await promise).status).toBe("failed");
+    expect(captured[0]).toMatchObject({
+      channel: "stdin",
+      message: { type: "START", run_id: "test-run" },
+    });
+    expect(captured).toContainEqual({
+      channel: "stdin",
+      message: {
+        type: "INTERACTION_RESPONSE",
+        request_id: "input_1",
+        status: "success",
+      },
+    });
+    const raw = captured
+      .filter((x) => x.channel === "stdout")
+      .map((x) => Buffer.from(String(x.base64), "base64"))
+      .reduce((a, b) => Buffer.concat([a, b]), Buffer.alloc(0))
+      .toString("utf8");
+    expect(raw).toContain("{malformed}\nTAIL");
+    expect(captured.at(-1)).toMatchObject({
+      channel: "close",
+      status: "failed",
+      recordsEmitted: 0,
+    });
+  });
+
   it("delivers START, collects records and cursors, and succeeds on DONE", async () => {
     const file = connector(`
       const start = await next();

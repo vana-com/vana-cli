@@ -1,3 +1,7 @@
+import {
+  factoryVerificationSchema,
+  type FactoryVerification,
+} from "./factory-verification.js";
 import crypto from "node:crypto";
 
 import type { StoredSourceState } from "./state-store.js";
@@ -12,6 +16,8 @@ export interface SourceExportReceipt {
   owner: ExportOwner;
   path: string;
   sha256: string;
+  factoryVerification?: FactoryVerification;
+  factoryVerificationSha256?: string;
 }
 
 /** Persisted receipts are untrusted; legacy or malformed records remain local. */
@@ -36,6 +42,19 @@ export function readExportReceipt(value: unknown): SourceExportReceipt | null {
       !owner.accountUrl ||
       typeof owner.address !== "string" ||
       !/^0x[a-f0-9]{40}$/i.test(owner.address))
+  )
+    return null;
+  if (
+    "factoryVerification" in receipt &&
+    (!factoryVerificationSchema.safeParse(receipt.factoryVerification)
+      .success ||
+      receipt.factoryVerificationSha256 !==
+        exportDigest(Buffer.from(JSON.stringify(receipt.factoryVerification))))
+  )
+    return null;
+  if (
+    "factoryVerificationSha256" in receipt &&
+    !("factoryVerification" in receipt)
   )
     return null;
   return receipt as SourceExportReceipt;

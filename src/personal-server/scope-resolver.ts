@@ -46,7 +46,8 @@ function normalizeScopeSegment(segment: string): string {
     .toLowerCase();
 }
 
-function normalizeScope(scope: string): string {
+/** Canonical Personal Server scope spelling used by projection and admission. */
+export function normalizeScope(scope: string): string {
   return scope.split(".").filter(Boolean).map(normalizeScopeSegment).join(".");
 }
 

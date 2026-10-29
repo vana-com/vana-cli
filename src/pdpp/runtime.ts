@@ -1,3 +1,12 @@
+import {
+  FactoryCollectionGate,
+  FactoryCollectionFailure,
+  type FactoryBindingOptions,
+} from "./factory-gate.js";
+import { exportDigest } from "../core/source-export.js";
+import type { FactoryVerification } from "../core/factory-verification.js";
+import type { z } from "zod";
+import type { factoryContextSchema } from "../core/factory-verification.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -24,7 +33,7 @@ import {
   PDPP_NODE_VERSION,
 } from "./host.js";
 import { ensurePinnedArtifact } from "./installer.js";
-import { resolveLocalLaunch } from "./local.js";
+import { findLocalConnectorFiles, resolveLocalLaunch } from "./local.js";
 import {
   resolvePdppSource,
   type LocalConnectorDeps,
@@ -46,12 +55,15 @@ import {
   readCollectionState,
   writeCollectionState,
   writeResult,
+  withCollectionLock,
 } from "./store.js";
 
 /** The range every published artifact declares today; checked again per artifact. */
 const EXPECTED_NODE_RANGE = ">=24.15.0 <25";
 
 export interface PdppRuntimeOptions {
+  factory?: FactoryBindingOptions;
+  collectionContext?: z.infer<typeof factoryContextSchema>;
   /** A data-connectors checkout to run the connector from, instead of an artifact. */
   from?: string;
   /** Limit collection and publication to these declared stream names. */
@@ -191,7 +203,7 @@ export class PdppRuntime {
     }
     await fsp.mkdir(getLogsDir(), { recursive: true });
     const logPath = getTimestampedLogPath(`run-${options.source}`);
-    const logStream = fs.createWriteStream(logPath);
+    const logStream = fs.createWriteStream(logPath, { mode: 0o600 });
     const log = (line: string) => logStream.write(`${line}\n`);
 
     const queue: CliEvent[] = [];
@@ -204,7 +216,13 @@ export class PdppRuntime {
 
     const run = this.execute(launch, options, logPath, log, push).catch(
       (error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = this.options.factory
+          ? error instanceof FactoryCollectionFailure
+            ? error.message
+            : "Factory collection failed. Previous data and checkpoints were kept; inspect the private attempt evidence."
+          : error instanceof Error
+            ? error.message
+            : String(error);
         log(`[host] ${message}`);
         push({
           type: "runtime-error",
@@ -257,6 +275,44 @@ export class PdppRuntime {
     log: (line: string) => void,
     push: (event: CliEvent) => void,
   ): Promise<void> {
+    const owner =
+      this.options.factory && this.options.collectionContext?.owner
+        ? `${this.options.collectionContext.owner.accountUrl}#${this.options.collectionContext.owner.address}`
+        : this.options.owner;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    process.on("SIGINT", abort);
+    process.on("SIGTERM", abort);
+    const signal = AbortSignal.any([
+      controller.signal,
+      ...(options.signal ? [options.signal] : []),
+    ]);
+    try {
+      return await withCollectionLock(
+        collectionStatePath(launch.source, owner),
+        () =>
+          this.executeLocked(
+            launch,
+            { ...options, signal },
+            logPath,
+            log,
+            push,
+            owner,
+          ),
+      );
+    } finally {
+      process.off("SIGINT", abort);
+      process.off("SIGTERM", abort);
+    }
+  }
+  private async executeLocked(
+    launch: PdppLaunch,
+    options: RunConnectorOptions,
+    logPath: string,
+    log: (line: string) => void,
+    push: (event: CliEvent) => void,
+    stateOwner?: string | null,
+  ): Promise<void> {
     const source = launch.source;
     const node = await findCompatibleNode(launch.nodeRange);
     if (!node) {
@@ -275,13 +331,19 @@ export class PdppRuntime {
       await ensureConnectorBrowser(node, logPath);
     }
 
-    const statePath = collectionStatePath(source, this.options.owner);
+    const statePath = collectionStatePath(source, stateOwner);
     const previous = await readCollectionState(statePath);
-    const selectedStreams = launch.profile.streams.filter(
-      (stream) =>
-        this.options.streams === undefined ||
-        this.options.streams.includes(stream.name),
-    );
+    const selectedStreams =
+      this.options.factory && this.options.streams
+        ? this.options.streams.map(
+            (name) =>
+              launch.profile.streams.find((stream) => stream.name === name)!,
+          )
+        : launch.profile.streams.filter(
+            (stream) =>
+              this.options.streams === undefined ||
+              this.options.streams.includes(stream.name),
+          );
     const streamNames = selectedStreams.map((stream) => stream.name);
     const mode = selectedStreams.some((stream) => stream.incremental === false)
       ? "full_refresh"
@@ -346,113 +408,221 @@ export class PdppRuntime {
     const checkpoints: Record<string, Record<string, unknown>> = {};
     const skips: SkipResult[] = [];
 
-    const outcome = await runCollectionProfile({
-      node: node.path,
-      args: launch.args,
-      cwd: launch.cwd,
-      env,
-      signal: options.signal,
-      start: {
-        type: "START",
-        run_id: runId,
-        collection_mode: mode,
-        scope: { streams: streamNames.map((name) => ({ name })) },
-        state: previous.checkpoints,
-      },
-      log,
-      onRecord: (record) => {
-        records.push(record);
-        counts.set(record.stream, (counts.get(record.stream) ?? 0) + 1);
-        if (activeStream !== record.stream) enterStream(record.stream);
-      },
-      onState: (stream, cursor) => {
-        checkpoints[stream] = cursor;
-      },
-      onProgress: (progress) => {
-        log(`[progress] ${JSON.stringify(progress)}`);
-        if (progress.stream && labels.has(progress.stream)) {
-          enterStream(progress.stream, progress.message);
-        } else if (progress.message) {
+    if (options.signal?.aborted)
+      throw new Error("Cancelled before collection.");
+    const exportedAt = new Date().toISOString();
+    const start = {
+      type: "START" as const,
+      run_id: runId,
+      collection_mode: mode as "incremental" | "full_refresh",
+      scope: { streams: streamNames.map((name) => ({ name })) },
+      state: previous.checkpoints,
+    };
+    let gate: FactoryCollectionGate | undefined;
+    if (this.options.factory) {
+      if (
+        !this.options.from ||
+        !this.options.streams ||
+        launch.origin !== "local" ||
+        !this.options.collectionContext
+      )
+        throw new Error(
+          "Factory requires an explicit local launch, streams and collection context.",
+        );
+      const checkout = await fsp.realpath(this.options.from);
+      const files = findLocalConnectorFiles(checkout, source);
+      const manifest = await fsp.readFile(files.manifestPath);
+      if (
+        JSON.stringify(JSON.parse(manifest.toString("utf8"))) !==
+        JSON.stringify(launch.profile)
+      )
+        throw new Error("Loaded manifest changed.");
+      const nodePath = await fsp.realpath(node.path);
+      gate = await FactoryCollectionGate.begin(
+        this.options.factory,
+        {
+          version: 1,
+          binding: {
+            jobId: this.options.factory.jobId,
+            sourceKey: source,
+            checkout,
+            connectorDirectory: path.dirname(files.entry),
+            manifestConnectorKey: launch.profile.connector_key,
+            requestedStreams: streamNames,
+            runId,
+          },
+          manifestSha256: exportDigest(manifest),
+          start,
+          host: {
+            nodePath,
+            nodeSha256: exportDigest(await fsp.readFile(nodePath)),
+            nodeVersion: `v${node.version}`,
+            cwd: launch.cwd,
+            args: launch.args,
+            environmentSha256: exportDigest(
+              Buffer.from(
+                JSON.stringify(
+                  Object.entries(env).sort(([a], [b]) => a.localeCompare(b)),
+                ),
+              ),
+            ),
+          },
+          context: this.options.collectionContext,
+          previous,
+          displayName: launch.displayName,
+          exportedAt,
+        },
+        options.signal,
+      );
+    }
+    let verification: FactoryVerification | undefined;
+    try {
+      if (options.signal?.aborted)
+        throw new Error("Cancelled before provider launch.");
+      const outcome = await runCollectionProfile({
+        node: node.path,
+        args: launch.args,
+        cwd: launch.cwd,
+        env,
+        signal: options.signal,
+        start,
+        ...(gate ? { capture: gate.capture } : {}),
+        log: this.options.factory ? () => {} : log,
+        onRecord: (record) => {
+          records.push(record);
+          counts.set(record.stream, (counts.get(record.stream) ?? 0) + 1);
+          if (activeStream !== record.stream) enterStream(record.stream);
+        },
+        onState: (stream, cursor) => {
+          checkpoints[stream] = cursor;
+        },
+        onProgress: (progress) => {
+          if (this.options.factory) return;
+          log(`[progress] ${JSON.stringify(progress)}`);
+          if (progress.stream && labels.has(progress.stream)) {
+            enterStream(progress.stream, progress.message);
+          } else if (progress.message) {
+            push({
+              type: "status-update",
+              source,
+              logPath,
+              message: progress.message,
+            });
+          }
+        },
+        onAssistance: (message) => {
+          log(`[assistance] ${message}`);
           push({
-            type: "status-update",
+            type: options.noInput ? "legacy-auth" : "headed-required",
             source,
             logPath,
-            message: progress.message,
+            message,
           });
-        }
-      },
-      onAssistance: (message) => {
-        log(`[assistance] ${message}`);
+          if (options.noInput) {
+            throw new Error(
+              "Browser sign-in is required; run without --no-input.",
+            );
+          }
+        },
+        onSkip: (skip) => {
+          skips.push(skip);
+          if (this.options.factory) return;
+          log(`[skip] ${JSON.stringify(skip)}`);
+          push({
+            type: "stream-skipped",
+            source,
+            logPath,
+            stream: skip.stream,
+            reason: skip.reason,
+            message: skip.message ?? `Skipped ${skip.stream ?? "the run"}.`,
+          });
+        },
+        onInteraction: (request) =>
+          this.interact(request, source, options, logPath, log, push),
+      });
+
+      if (activeStream) finishStream(activeStream);
+      log(`[host] outcome ${JSON.stringify(outcome)}`);
+
+      if (gate) verification = await gate.verify();
+      if (options.signal?.aborted)
+        throw new Error("Cancelled before collection acceptance.");
+      if (outcome.status !== "succeeded") {
         push({
-          type: options.noInput ? "legacy-auth" : "headed-required",
+          type: "runtime-error",
           source,
           logPath,
-          message,
+          message: outcome.error?.message ?? "The connector run failed.",
         });
-        if (options.noInput) {
-          throw new Error(
-            "Browser sign-in is required; run without --no-input.",
-          );
-        }
-      },
-      onSkip: (skip) => {
-        skips.push(skip);
-        log(`[skip] ${JSON.stringify(skip)}`);
+        return;
+      }
+
+      const completed = completedStreams(streamNames, skips);
+      if (completed.length === 0) {
+        // Nothing this run collected can be stood behind. Writing a result
+        // anyway would replace the last good one with bare metadata, and the
+        // ingest step would store that metadata as scopes. The previous state
+        // and result stay exactly as they were.
         push({
-          type: "stream-skipped",
+          type: "runtime-error",
           source,
           logPath,
-          stream: skip.stream,
-          reason: skip.reason,
-          message: skip.message ?? `Skipped ${skip.stream ?? "the run"}.`,
+          message: `No ${launch.displayName} stream finished, so nothing was saved. ${describeSkips(skips)}`,
         });
-      },
-      onInteraction: (request) =>
-        this.interact(request, source, options, logPath, log, push),
-    });
-
-    if (activeStream) finishStream(activeStream);
-    log(`[host] outcome ${JSON.stringify(outcome)}`);
-
-    if (outcome.status !== "succeeded") {
-      push({
-        type: "runtime-error",
-        source,
-        logPath,
-        message: outcome.error?.message ?? "The connector run failed.",
+        return;
+      }
+      const merged = mergeRun(previous, {
+        mode,
+        completed,
+        records,
+        checkpoints,
       });
-      return;
-    }
-
-    const completed = completedStreams(streamNames, skips);
-    if (completed.length === 0) {
-      // Nothing this run collected can be stood behind. Writing a result
-      // anyway would replace the last good one with bare metadata, and the
-      // ingest step would store that metadata as scopes. The previous state
-      // and result stay exactly as they were.
-      push({
-        type: "runtime-error",
+      const resultPath = options.resultPath ?? getSourceResultPath(source);
+      const result = projectResult(
         source,
+        launch.displayName,
+        merged,
+        completed,
+        exportedAt,
+      );
+      if (verification) {
+        const digest = (v: unknown) =>
+          exportDigest(Buffer.from(JSON.stringify(v)));
+        const normalizedRecords = records.map((r) => ({
+          ...r,
+          op: r.op ?? "upsert",
+        }));
+        if (
+          verification.runId !== runId ||
+          verification.sourceKey !== source ||
+          verification.jobId !== this.options.factory?.jobId ||
+          JSON.stringify(verification.requestedStreams) !==
+            JSON.stringify(streamNames) ||
+          verification.projectionSha256 !==
+            digest({ records: normalizedRecords, checkpoints }) ||
+          verification.resultSha256 !==
+            exportDigest(Buffer.from(`${JSON.stringify(result, null, 2)}\n`)) ||
+          JSON.stringify(verification.context) !==
+            JSON.stringify(this.options.collectionContext)
+        )
+          throw new Error("Factory accepted-byte binding mismatch.");
+      }
+      if (options.signal?.aborted)
+        throw new Error("Cancelled before local save.");
+      await writeResult(resultPath, result);
+      // State is committed only once the result it describes is on disk, so a
+      // crash in between re-collects rather than skipping data.
+      await writeCollectionState(statePath, merged);
+      push({
+        type: "collection-complete",
+        source,
+        resultPath,
         logPath,
-        message: `No ${launch.displayName} stream finished, so nothing was saved. ${describeSkips(skips)}`,
+        ...(verification ? { factoryVerification: verification } : {}),
       });
-      return;
+    } finally {
+      gate?.close();
     }
-    const merged = mergeRun(previous, {
-      mode,
-      completed,
-      records,
-      checkpoints,
-    });
-    const resultPath = options.resultPath ?? getSourceResultPath(source);
-    await writeResult(
-      resultPath,
-      projectResult(source, launch.displayName, merged, completed),
-    );
-    // State is committed only once the result it describes is on disk, so a
-    // crash in between re-collects rather than skipping data.
-    await writeCollectionState(statePath, merged);
-    push({ type: "collection-complete", source, resultPath, logPath });
   }
 
   private async interact(
