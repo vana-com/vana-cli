@@ -279,18 +279,14 @@ export class PdppRuntime {
       this.options.factory && this.options.collectionContext?.owner
         ? `${this.options.collectionContext.owner.accountUrl}#${this.options.collectionContext.owner.address}`
         : this.options.owner;
-    const controller = this.options.factory ? new AbortController() : undefined;
-    const abort = () => controller?.abort();
-    if (controller) {
-      process.on("SIGINT", abort);
-      process.on("SIGTERM", abort);
-    }
-    const signal = controller
-      ? AbortSignal.any([
-          controller.signal,
-          ...(options.signal ? [options.signal] : []),
-        ])
-      : options.signal;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    process.on("SIGINT", abort);
+    process.on("SIGTERM", abort);
+    const signal = AbortSignal.any([
+      controller.signal,
+      ...(options.signal ? [options.signal] : []),
+    ]);
     try {
       return await withCollectionLock(
         collectionStatePath(launch.source, owner),
@@ -305,10 +301,8 @@ export class PdppRuntime {
           ),
       );
     } finally {
-      if (controller) {
-        process.off("SIGINT", abort);
-        process.off("SIGTERM", abort);
-      }
+      process.off("SIGINT", abort);
+      process.off("SIGTERM", abort);
     }
   }
   private async executeLocked(

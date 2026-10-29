@@ -42,3 +42,23 @@ Browser preparation and authenticated provider acceptance are outside this PR.
 Protocol verification, local persistence, upload acknowledgement, and independent
 server readback remain distinct. No real-provider collection or real Personal
 Server readback was performed. No merge or release is authorized.
+
+## Review fix, 29 October 2026
+
+Every PDPP run holding the collection lock now uses the same graceful signal
+and abort lifecycle, including ordinary runs without a Factory job. Provider
+cleanup and lock release finish before signal handlers are removed. Manual
+recovery for uncatchable crashes remains unchanged.
+
+Real subprocess regressions for SIGINT and SIGTERM failed on the stale lock
+before repair. They now prove accepted result/checkpoint bytes stay unchanged,
+the provider is reaped, the lock is removed, and the next collection succeeds.
+The test builds into its own temporary output so it does not race existing
+built-CLI tests. No production build or storage mechanism was added.
+
+All 46 focused runtime/protocol/store tests passed. Final full validation passes
+typecheck, ESLint, formatting, and 948 tests. The original runtime reproduction
+also confirms cancellation followed by a successful collection and no stale
+lock. Changes remain limited to this finding and its regression. Delivery
+updates existing PR #108 from this isolated worktree; no active CLI/#106 edits,
+new features, merge, release or real-provider runs are authorized.
