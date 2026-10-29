@@ -19,10 +19,14 @@ The current agent writes and repairs the connector. Factory supplies the
 explicit job, private work instructions and executable checks. Do not launch
 another coding agent or service.
 
-1. Read the bundled instructions. Use a compatible data-connectors checkout,
-   synthetic or explicitly reviewed evidence, and a separately installed
-   `factory-build` executable under a real Node 24+ runtime on macOS or Linux.
-   The instructions include a local tarball installation example.
+1. Read the bundled instructions. They include the public data-connectors
+   checkout, its locked dependency installation and the exact public
+   `@vana/factory-core@0.0.1` release artifact to install locally. No private
+   Factory access or internal service is required. Use synthetic or explicitly
+   reviewed evidence and a real Node 24 runtime on macOS or Linux; Node 24.22.1
+   is recommended for both Factory and the checkout. The instructions set
+   `VANA_FACTORY_TOOLS` under `VANA_HOME` (otherwise `~/.vana`) and
+   `VANA_FACTORY_BUILD` to the installed executable.
 2. Save a version 1 request file with absolute checkout/evidence paths, source
    identity, directory key, exact manifest key, requested streams, and export
    environment variable name or API preparation plan. The bundled instructions
