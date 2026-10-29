@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 
 import type { CliEvent, PersonalServerState } from "../core/cli-types.js";
 import { readCliConfig } from "../core/state-store.js";
-import { resolveScopes } from "./scope-resolver.js";
+import { normalizeScope, resolveScopes } from "./scope-resolver.js";
 import { createPersonalServerClient } from "./client.js";
 import { readCachedConnectorMetadata } from "../connectors/registry.js";
 import { getConnectorCacheDir } from "../core/paths.js";
@@ -257,7 +257,36 @@ export async function ingestResult(
       "The export bytes changed after collection and cannot be safely synced.",
     );
   }
+  const proof = receipt.factoryVerification;
+  if (
+    proof &&
+    (proof.sourceKey !== source ||
+      proof.resultSha256 !== receipt.sha256 ||
+      !sameExportOwner(proof.context.owner, receipt.owner) ||
+      !proof.context.owner ||
+      !target.health?.owner ||
+      target.health.owner.toLowerCase() !==
+        proof.context.owner.address.toLowerCase() ||
+      (proof.context.destination &&
+        (proof.context.destination.url !== target.url ||
+          !proof.context.destination.owner ||
+          target.health.owner.toLowerCase() !==
+            proof.context.destination.owner.toLowerCase())))
+  )
+    return blocked(
+      "factory_verification_context_mismatch",
+      "The verified collection does not match this account, destination or accepted bytes.",
+    );
   const result = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
+  if (
+    proof &&
+    JSON.stringify(result.completedStreams) !==
+      JSON.stringify(proof.requestedStreams)
+  )
+    return blocked(
+      "factory_verification_scope_mismatch",
+      "The verified collection scope changed.",
+    );
   const metadata = await readCachedConnectorMetadata(
     source,
     getConnectorCacheDir(),
@@ -267,6 +296,22 @@ export async function ingestResult(
     (mapping) => !selectedScopes || selectedScopes.has(mapping.scope),
   );
 
+  if (proof) {
+    const allowed = proof.requestedStreams.map((stream) =>
+      normalizeScope(`${source}.${stream}`),
+    );
+    const expected = options.scopes ?? allowed;
+    if (
+      new Set(allowed).size !== allowed.length ||
+      expected.some((scope) => !allowed.includes(scope)) ||
+      scopeMappings.length !== expected.length ||
+      scopeMappings.some((mapping) => !expected.includes(mapping.scope))
+    )
+      return blocked(
+        "factory_verification_scope_mismatch",
+        "The upload scopes do not match the verified collection.",
+      );
+  }
   if (scopeMappings.length === 0) {
     return [
       {

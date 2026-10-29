@@ -94,6 +94,7 @@ import {
 } from "../core/network.js";
 import { CliExitCode } from "../core/exit-codes.js";
 import { registerAppCommands } from "./app/index.js";
+import { registerConnectorBuildCommands } from "./connector-build.js";
 import {
   checkRegisteredServers,
   lookupRegisteredServers,
@@ -504,6 +505,14 @@ More:
       "Run a Collection Profile connector from a data-connectors checkout",
     )
     .option(
+      "--factory-job <uuid>",
+      "Verify this exact Factory job before saving collection",
+    )
+    .option(
+      "--factory-state-dir <directory>",
+      "Private Factory job state directory",
+    )
+    .option(
       "--streams <names>",
       "Collect only these comma-separated Collection Profile streams",
     )
@@ -512,6 +521,20 @@ More:
         process.exitCode = await runCommandWithTelemetry(
           { ...telemetryBaseContext, command: "connect", source },
           async () => {
+            if (
+              (commandOptions.factoryJob || commandOptions.factoryStateDir) &&
+              (!source ||
+                parsedOptions.detach ||
+                !commandOptions.factoryJob ||
+                !commandOptions.factoryStateDir ||
+                !commandOptions.from ||
+                !commandOptions.streams)
+            ) {
+              process.stderr.write(
+                "Factory collection needs a source, --from, --streams, --factory-job and --factory-state-dir in the foreground.\n",
+              );
+              return CliExitCode.USAGE;
+            }
             if (
               (commandOptions.from || commandOptions.streams !== undefined) &&
               (!source || parsedOptions.detach)
@@ -528,6 +551,8 @@ More:
               ? runConnect(source, parsedOptions, {
                   from: commandOptions.from,
                   streams: commandOptions.streams,
+                  factoryJob: commandOptions.factoryJob,
+                  factoryStateDir: commandOptions.factoryStateDir,
                 })
               : runConnectEntry(parsedOptions);
           },
@@ -549,9 +574,7 @@ Examples:
 
   const connectors = program
     .command("connectors")
-    .description(
-      "Register Collection Profile connectors from a local directory",
-    );
+    .description("Build and register local Collection Profile connectors");
   connectors.addHelpText(
     "after",
     `
@@ -568,6 +591,8 @@ Examples:
   connectors.action(() => {
     connectors.outputHelp();
   });
+
+  registerConnectorBuildCommands(connectors, () => parsedOptions);
 
   connectors
     .command("add <key>")
@@ -1605,6 +1630,8 @@ export async function withPhaseProgress<T>(
 }
 
 interface ConnectOptions {
+  factoryJob?: string;
+  factoryStateDir?: string;
   /** Comma-separated Collection Profile stream names. */
   streams?: string;
   /** A data-connectors checkout to run a Collection Profile connector from. */
@@ -1939,6 +1966,20 @@ async function runConnect(
     const runtime = isPdpp
       ? new PdppRuntime({
           from: connectOptions.from,
+          ...(connectOptions.factoryJob
+            ? {
+                factory: {
+                  jobId: connectOptions.factoryJob,
+                  stateDirectory: path.resolve(connectOptions.factoryStateDir!),
+                },
+                collectionContext: {
+                  owner: collectionOwner,
+                  destination: target.url
+                    ? { url: target.url, owner: target.health?.owner ?? null }
+                    : null,
+                },
+              }
+            : {}),
           streams: connectOptions.streams
             ?.split(",")
             .map((name) => name.trim()),
@@ -2107,11 +2148,15 @@ async function runConnect(
         });
         renderer?.fail(`${displayName} is not available.`);
         renderer?.detail(`See what’s ready: vana sources`);
+        renderer?.detail(
+          `Build with your agent: vana connectors build --instructions`,
+        );
         emit.event({
           type: "outcome",
           status: CliOutcomeStatus.CONNECTOR_UNAVAILABLE,
           source,
           reason: message,
+          remedy: "vana connectors build --instructions",
         });
         return 1;
       }
@@ -2522,6 +2567,14 @@ async function runConnect(
           owner: collectionOwner,
           path: resultPath,
           sha256: exportDigest(exportBytes),
+          ...(event.factoryVerification
+            ? {
+                factoryVerification: event.factoryVerification,
+                factoryVerificationSha256: exportDigest(
+                  Buffer.from(JSON.stringify(event.factoryVerification)),
+                ),
+              }
+            : {}),
         };
         acceptedReceipt = receipt;
         const admitted = await updateSourceState(
@@ -2586,14 +2639,22 @@ async function runConnect(
         const blockedExport = ingestEvents.find(
           (ingestEvent) =>
             ingestEvent.type === "ingest-skipped" &&
-            ingestEvent.reason?.startsWith("export_"),
+            (ingestEvent.reason?.startsWith("export_") ||
+              ingestEvent.reason?.startsWith("factory_")),
         );
         if (ingestCompleted) {
           finalStatus = CliOutcomeStatus.CONNECTED_AND_INGESTED;
           finalDataState = "ingested_personal_server";
         } else if (ingestPartial) {
-          finalStatus = CliOutcomeStatus.CONNECTED_AND_INGESTED;
-          finalDataState = "ingested_personal_server";
+          finalStatus = receipt.factoryVerification
+            ? CliOutcomeStatus.INGEST_FAILED
+            : CliOutcomeStatus.CONNECTED_AND_INGESTED;
+          finalDataState = receipt.factoryVerification
+            ? "ingest_failed"
+            : "ingested_personal_server";
+          if (receipt.factoryVerification)
+            ingestFailureMessage =
+              "Some verified scopes could not be stored. Run vana server sync to retry their accepted bytes.";
         } else if (ingestFailedEvent?.type === "ingest-failed") {
           finalStatus = CliOutcomeStatus.INGEST_FAILED;
           finalDataState = "ingest_failed";
@@ -2610,6 +2671,13 @@ async function runConnect(
         } else {
           finalStatus = CliOutcomeStatus.CONNECTED_LOCAL_ONLY;
           finalDataState = "collected_local";
+        }
+
+        if (
+          receipt.factoryVerification &&
+          finalStatus === CliOutcomeStatus.INGEST_FAILED
+        ) {
+          pendingExitCode = CliExitCode.FAILURE;
         }
 
         // Store per-scope results in state
@@ -4537,10 +4605,11 @@ async function runSourceDetail(
     const message = formatUnknownSourceMessage(source, suggestion);
     if (options.json) {
       process.stdout.write(
-        `${JSON.stringify({ error: "unknown_source", source, message, suggestedSource: suggestion?.id ?? null })}\n`,
+        `${JSON.stringify({ error: "unknown_source", source, message, suggestedSource: suggestion?.id ?? null, buildInstructions: { argv: ["vana", "connectors", "build", "--instructions"] } })}\n`,
       );
     } else {
       emit.info(message);
+      emit.info("Build with your agent: vana connectors build --instructions");
     }
     return 1;
   }
@@ -4672,6 +4741,7 @@ interface SyncPendingResult {
   sourceResults: Array<{
     source: string;
     blocked?: string;
+    verificationPending?: boolean;
     scopeResults?: Array<{ scope: string; status: string; error?: string }>;
   }>;
 }
@@ -4836,7 +4906,9 @@ async function syncPendingSources(
     );
     const blockedExport = ingestEvents.find(
       (event) =>
-        event.type === "ingest-skipped" && event.reason?.startsWith("export_"),
+        event.type === "ingest-skipped" &&
+        (event.reason?.startsWith("export_") ||
+          event.reason?.startsWith("factory_")),
     );
     if (blockedExport) {
       sourceResults.push({
@@ -4866,11 +4938,17 @@ async function syncPendingSources(
     );
 
     if (ingestCompleted || ingestPartial) {
-      syncedCount++;
-      const dataState = deriveSyncedDataState(
-        mergedScopes,
-        stored.dataState as SourceStatus["dataState"] | null | undefined,
+      const verificationPending = Boolean(
+        receipt?.factoryVerification &&
+        mergedScopes?.some((scope) => scope.status !== "stored"),
       );
+      if (!verificationPending) syncedCount++;
+      const dataState = verificationPending
+        ? "ingest_failed"
+        : deriveSyncedDataState(
+            mergedScopes,
+            stored.dataState as SourceStatus["dataState"] | null | undefined,
+          );
       const settled =
         receipt &&
         (await updateSourceState(
@@ -4889,7 +4967,7 @@ async function syncPendingSources(
           { settle: receipt.id },
         ));
       if (!settled) {
-        syncedCount--;
+        if (!verificationPending) syncedCount--;
         sourceResults.push({
           source,
           blocked:
@@ -4899,7 +4977,14 @@ async function syncPendingSources(
       }
     }
 
-    sourceResults.push({ source, scopeResults: resultEvent?.scopeResults });
+    sourceResults.push({
+      source,
+      scopeResults: resultEvent?.scopeResults,
+      ...(receipt?.factoryVerification &&
+      mergedScopes?.some((scope) => scope.status !== "stored")
+        ? { verificationPending: true }
+        : {}),
+    });
   }
 
   return { syncedCount, sourceResults };
@@ -5203,7 +5288,12 @@ async function runServerSync(options: GlobalOptions): Promise<number> {
         emit.next("vana doctor");
       }
     } else {
-      emit.success(
+      const report = syncResult.sourceResults.some(
+        (entry) => entry.verificationPending,
+      )
+        ? emit.info
+        : emit.success;
+      report(
         failedScopeCount > 0
           ? `Synced ${syncResult.syncedCount} dataset(s), ${failedScopeCount} scope(s) failed.`
           : `Synced ${syncResult.syncedCount} dataset(s).`,
@@ -5219,7 +5309,10 @@ async function runServerSync(options: GlobalOptions): Promise<number> {
   });
   // Nothing stored and something failed is a failed run, whatever the
   // per-scope lines said.
-  return storedScopeCount === 0 && failedScopeCount > 0 ? 1 : 0;
+  return (storedScopeCount === 0 && failedScopeCount > 0) ||
+    syncResult.sourceResults.some((entry) => entry.verificationPending)
+    ? 1
+    : 0;
 }
 
 /**

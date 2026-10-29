@@ -1,7 +1,11 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { satisfiesNodeRange } from "../../src/pdpp/host.js";
 import {
+  withCollectionLock,
   completedStreams,
   describeSkips,
   mergeRun,
@@ -177,5 +181,49 @@ describe("ownerKey", () => {
     expect(a).toBe(ownerKey("0x99bf14e94de7edb022e08528c5cdb627f73a988d"));
     expect(a).not.toBe(ownerKey("0xbffb000000000000000000000000000000000000"));
     expect(ownerKey(null)).toBe("unowned");
+  });
+});
+
+describe("collection checkpoint writer exclusion", () => {
+  it("excludes a competing writer and releases ownership after success or failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vana-state-writer-"));
+    const file = join(root, "state.json");
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = withCollectionLock(file, async () => {
+      enter();
+      await released;
+      await writeFile(file, "accepted");
+    });
+    try {
+      await entered;
+      await expect(
+        withCollectionLock(file, async () => {
+          await writeFile(file, "unverified competing output");
+        }),
+      ).rejects.toThrow(/locked/);
+      release();
+      await first;
+      expect(await readFile(file, "utf8")).toBe("accepted");
+      await expect(
+        withCollectionLock(file, async () => {
+          throw new Error("cancelled");
+        }),
+      ).rejects.toThrow("cancelled");
+      await withCollectionLock(file, async () => {
+        await writeFile(file, "next accepted");
+      });
+      expect(await readFile(file, "utf8")).toBe("next accepted");
+    } finally {
+      release();
+      await first;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
