@@ -86,3 +86,43 @@ The external autoreview helper was blocked by automatic approval review because
 its repository payload and model-service destination were not authorized for
 this repair; no alternative external transport was used. CI remains the final
 authority after the scoped push.
+
+## Public Factory installation, 29 October 2026
+
+User authorized an exact public install route through Vana's bundled Factory
+instructions and a released CLI with a fresh-agent synthetic acceptance. This
+worktree is isolated from active CLI work and #106. No real-provider reads.
+
+Factory's core will be a licensed, public, versioned release tarball containing
+its executable, instructions and checks. The private Factory repository remains
+private. A public npm registry listing is not available with current credentials;
+this must remain distinct from successful public tarball installation.
+
+The existing current-agent job/check/collection flow remains unchanged. Vana's
+instructions name the exact public artifact and Node/checkout requirements.
+Parent owns delivery and the independent public-only acceptance after release.
+
+The public-guidance regression failed before repair. All 45 focused tests then
+passed, followed by full typecheck, ESLint, formatting and 952 tests in 66 files.
+The built CLI exposes its offline instructions even when Factory is absent.
+Instructions name the exact public factory-core 0.0.1 release artifact and the
+real Node 24 / public upstream setup requirements. Publication, fresh-agent
+public-only collection and acceptance evidence remain parent-owned.
+
+The CLI publisher already has a working npm credential inside GitHub Actions.
+Add a manual Factory publication job using that existing secret, the exact
+public tarball and its pinned SHA256. It cannot publish an arbitrary URL or
+artifact. No credential is extracted. Namespace permissions may still prevent
+this registry listing; the public tarball remains independently installable.
+
+PR CI exposed a preexisting registry test's unintended GitHub metadata fetch.
+A rejecting fetch guard plus no-call assertion failed on that exact request.
+Supplying the missing local metadata fixture repairs it without production or
+timeout changes. All twelve registry tests pass under Node 26 and Node 24,
+including the explicit offline failure cases. The same guard now catches any
+future fixture omission instead of silently relying on the external network.
+
+Final combined CLI validation passes typecheck, ESLint, formatting and all 952
+tests. The public tarball was downloaded anonymously and installed with private
+checkout/config reads denied; its capabilities report version 0.0.1 and supported
+API/export routes. The downloaded hash matches the frozen licensed artifact.

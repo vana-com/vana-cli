@@ -1,13 +1,16 @@
 /** Offline instructions compiled into npm and standalone Vana distributions. */
 export const CONNECTOR_BUILD_INSTRUCTIONS = `Build a Collection Profile connector with the current agent
 
-1. Use a compatible data-connectors checkout. Factory supports synthetic or explicitly reviewed export evidence and declared API preparation. Browser preparation remains unsupported.
-2. Install the separately supplied Factory package under a real Node 24+ runtime on macOS or Linux. Put factory-build on PATH, or set VANA_FACTORY_BUILD to its absolute executable path. Vana never installs or downloads it. The external executable supplies its own Node host, including when Vana runs on Node 22 or as a standalone binary.
-Install a supplied local tarball, without publishing it or relying on a registry package:
-  export PATH="/absolute/path/to/node24/bin:$PATH"
-  npm install --prefix /absolute/path/to/factory-tools /absolute/path/to/vana-factory-core-0.0.1.tgz
-  export VANA_FACTORY_BUILD="/absolute/path/to/factory-tools/node_modules/.bin/factory-build"
-  /absolute/path/to/factory-tools/node_modules/.bin/factory-build capabilities --json
+1. Select a real Node 24 runtime on macOS or Linux; Node 24.22.1 is recommended for Factory and the public data-connectors checkout (which requires Node >=24.15.0 <25). Ensure node --version reports that runtime and its bin directory is on PATH. Use an existing compatible checkout, or clone the public source and install its locked tools:
+  git clone https://github.com/PDP-Connect/data-connectors.git /absolute/path/to/data-connectors
+  cd /absolute/path/to/data-connectors
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci
+Read AUTHORING.md and docs/spec/collection-profile.md in that checkout before writing the connector. Factory needs the packages/polyfill-connectors layout, Git metadata and installed TypeScript, tsx and Biome inside the checkout. Do not link dependencies from another checkout. Factory supports synthetic or explicitly reviewed export evidence and declared API preparation. Browser preparation remains unsupported.
+2. Install the public @vana/factory-core@0.0.1 release artifact locally. This needs no private Factory repository access, internal services or Factory account. Put factory-build on PATH, or set VANA_FACTORY_BUILD to its absolute executable path. Vana never installs or downloads it. The external executable supplies its own Node host, including when Vana runs on Node 22 or as a standalone binary.
+  export VANA_FACTORY_TOOLS="\${VANA_HOME:-$HOME/.vana}/factory-tools"
+  npm install --prefix "$VANA_FACTORY_TOOLS" --ignore-scripts --no-audit --no-fund https://github.com/vana-com/vana-cli/releases/download/v0.45.0/vana-factory-core-0.0.1.tgz
+  export VANA_FACTORY_BUILD="$VANA_FACTORY_TOOLS/node_modules/.bin/factory-build"
+  "$VANA_FACTORY_BUILD" capabilities --json
 Use the installed executable's absolute path for the capability command if it is not on PATH. The PATH must select the real Node 24+ executable used by its shebang. Require protocolVersion 1, contextVersion 2, apiPreparationVersion 1 and supportedRoutes ["export", "api"]. Older context versions are incompatible.
 
 3. Save a version 1 request JSON file. Use absolute checkout and evidence paths. Declare environment variable names only, never credential values or raw export contents.

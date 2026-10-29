@@ -222,6 +222,15 @@ describe("connector build subprocess policy", () => {
     });
     expect(output.value.instructions).toContain("static_and_fixture");
     expect(output.value.instructions).toContain("VANA_FACTORY_BUILD");
+    expect(output.value.instructions).toContain(
+      'npm install --prefix "$VANA_FACTORY_TOOLS" --ignore-scripts --no-audit --no-fund https://github.com/vana-com/vana-cli/releases/download/v0.45.0/vana-factory-core-0.0.1.tgz',
+    );
+    expect(output.value.instructions).toContain(
+      'export VANA_FACTORY_TOOLS="${VANA_HOME:-$HOME/.vana}/factory-tools"',
+    );
+    expect(output.value.instructions).toContain(
+      "git clone https://github.com/PDP-Connect/data-connectors.git",
+    );
     await expect(readFile(callsFile)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
