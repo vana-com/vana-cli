@@ -16,7 +16,7 @@ describe("resolveNetwork", () => {
     expect(network.gatewayUrl).toBe("https://dp-rpc.vana.org");
   });
 
-  it("keeps moksha the default on dev hosts, which have no mainnet", () => {
+  it("keeps moksha the default on dev hosts", () => {
     const network = resolveNetwork(undefined, { VANA_ENV: "dev" });
     expect(network.name).toBe("moksha");
     expect(network.env).toBe("dev");
@@ -61,10 +61,14 @@ describe("resolveNetwork", () => {
     expect(network.explorerUrl).toBe("https://moksha.vanascan.io");
   });
 
-  it("refuses mainnet with dev hosts", () => {
-    expect(() => resolveNetwork("mainnet", { VANA_ENV: "dev" })).toThrow(
-      UnknownNetworkError,
-    );
+  it("uses dev surfaces with the explicitly selected mainnet network", () => {
+    const network = resolveNetwork("mainnet", { VANA_ENV: "dev" });
+    expect(network.env).toBe("dev");
+    expect(network.chainId).toBe(1480);
+    expect(network.gatewayUrl).toBe("https://dp-rpc.vana.org");
+    expect(network.accountUrl).toBe("https://account-dev.vana.org");
+    expect(network.approvalUrl).toBe("https://app-dev.vana.org");
+    expect(network.rpcUrl).toBe("https://rpc.vana.org");
   });
 
   it("throws UnknownNetworkError for anything else", () => {

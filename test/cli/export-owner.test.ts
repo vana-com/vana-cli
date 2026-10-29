@@ -365,35 +365,63 @@ await new Promise((resolve) => input.once("close", resolve));
     );
   });
 
-  it.each(["missing receipt", "malformed receipt"])(
-    "keeps a legacy export local and inspectable with %s",
-    async (kind) => {
-      const queued = await collectA();
-      const saved = await state();
-      saved.sources.fake.exportReceipt =
-        kind === "missing receipt" ? undefined : { owner: A };
-      await write(path.join(home, "vana-connect-state.json"), saved);
-      const synced = await run(["server", "sync", "--no-input", "--json"]);
-      expect(synced.code).toBe(5);
-      // copy-assertion-ok: re-login must not be offered as a repair for missing provenance.
-      expect(synced.stdout).toContain("receipt");
-      expect(synced.stdout).not.toContain("Sign in");
-      const inspected = await run(["data", "show", "fake", "--json"]);
-      expect(inspected.code).toBe(0);
-      expect(JSON.parse(inspected.stdout).path).toBe(queued.resultPath);
-      expect(inspected.stdout).toContain(A);
-      const collected = await run([
-        "connect",
-        "fake",
-        "--from",
-        checkout,
-        "--no-input",
-        "--json",
-      ]);
-      expect(collected.code).toBe(5);
-      expect(uploads).toEqual([]);
-      expect(await fs.readFile(queued.resultPath)).toEqual(queued.bytes);
-      expect(await fs.readFile(executionFile, "utf8")).toBe(queued.executions);
+  describe.each(["missing receipt", "malformed receipt"])(
+    "legacy export with %s",
+    (kind) => {
+      let queued: Awaited<ReturnType<typeof collectA>>;
+
+      beforeEach(async () => {
+        queued = await collectA();
+        const saved = await state();
+        saved.sources.fake.exportReceipt =
+          kind === "missing receipt" ? undefined : { owner: A };
+        await write(path.join(home, "vana-connect-state.json"), saved);
+      });
+
+      it("blocks sync with a receipt remedy and preserves the export", async () => {
+        const synced = await run(["server", "sync", "--no-input", "--json"]);
+        expect(synced.code).toBe(5);
+        // copy-assertion-ok: re-login must not be offered as a repair for missing provenance.
+        expect(synced.stdout).toContain("receipt");
+        expect(synced.stdout).not.toContain("Sign in");
+        expect(uploads).toEqual([]);
+        expect(await fs.readFile(queued.resultPath)).toEqual(queued.bytes);
+        expect(await fs.readFile(executionFile, "utf8")).toBe(
+          queued.executions,
+        );
+      });
+
+      it("shows the original local export without uploading or recollecting", async () => {
+        const inspected = await run(["data", "show", "fake", "--json"]);
+        expect(inspected.code).toBe(0);
+        expect(JSON.parse(inspected.stdout).path).toBe(queued.resultPath);
+        expect(inspected.stdout).toContain(A);
+        expect(uploads).toEqual([]);
+        expect(await fs.readFile(queued.resultPath)).toEqual(queued.bytes);
+        expect(await fs.readFile(executionFile, "utf8")).toBe(
+          queued.executions,
+        );
+      });
+
+      it("blocks recollection before replacing the queued export", async () => {
+        const collected = await run([
+          "connect",
+          "fake",
+          "--from",
+          checkout,
+          "--no-input",
+          "--json",
+        ]);
+        expect(collected.code).toBe(5);
+        expect(uploads).toEqual([]);
+        expect(await fs.readFile(queued.resultPath)).toEqual(queued.bytes);
+        expect(await fs.readFile(executionFile, "utf8")).toBe(
+          queued.executions,
+        );
+        expect((await state()).sources.fake.lastResultPath).toBe(
+          queued.resultPath,
+        );
+      });
     },
   );
 

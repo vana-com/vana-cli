@@ -1,206 +1,117 @@
 ---
 name: create-connector
 description: >
-  Build or update a PDP-Connect Collection Profile connector and collect
-  the owner's requested data through the Vana CLI. Use when a source has
-  no connector or its collection code needs changing.
+  Build or repair a Collection Profile connector with the current agent and
+  shared Factory checks. Use when a requested source has no connector or a
+  connector needs implementation. Export evidence and API preparation are supported.
 ---
 
-# Create a Collection Profile connector
+# Create a connector
 
 Read workflows with `vana skills show <id> --json`. The response includes full
 instructions and required reference content; installation into the agent's
 harness is optional. Use `connect-data`, `create-connector` or `builder` as the
 requested goal needs them.
 
-Take the user's source and data goal through implementation, tests, one real
+Take the user's source and data goal through implementation, checks, one real
 CLI collection, and a check that the intended Personal Server stored it.
 Continue through those steps from one request. Ask for source/account choices,
-human authentication, or an action that needs the user's decision. Choose the
-runtime, helper functions, and verification commands from the public upstream
-sources yourself; those are implementation decisions, not prompts for the
-user to write. The
+human authentication, or an action that needs the user's decision. The
 [walkthrough](https://github.com/vana-com/vana-cli/blob/main/skills/README.md)
 shows the commands beside the user's part of each step.
 
-## Select the source and checkout
-
-Read Connect Data for CLI discovery, identity, server readiness,
-authentication, and result inspection:
-
-```sh
-vana skills show connect-data --json
-```
-
-Read its returned `instructions` and required `resources`. Preserve the person's owner,
-network, `VANA_HOME`, and Account deployment. Use the same CLI entry point
-throughout. For local CLI work, build the actual checkout with `pnpm build`
-and use its absolute `dist/cli/bin.js` path in place of `vana`.
-
 Reuse completed discovery from the current task. Otherwise check both
-`vana sources --json` and upstream's current connectors before
-creating one. A catalog failure is not evidence of an unsupported provider.
-Use an existing implementation when it satisfies the requested data goal.
+`vana sources --json` and upstream's current connectors before creating one.
+A catalog failure is not evidence of an unsupported provider. Use an existing
+implementation when it satisfies the requested data goal.
 
-Keep implementations in the person's intended `data-connectors` checkout,
-preserving its changes. If a checkout is needed:
+Start with the instructions bundled in the installed Vana CLI. This command
+works offline without installing an agent skill or Factory.
 
-```sh
-git clone https://github.com/PDP-Connect/data-connectors.git
-cd data-connectors
+```bash
+vana connectors build --instructions --json
 ```
 
-From that root, read `AGENTS.md` and these public references:
+The current agent writes and repairs the connector. Factory supplies the
+explicit job, private work instructions and executable checks. Do not launch
+another coding agent or service.
 
-- [AUTHORING.md](https://github.com/PDP-Connect/data-connectors/blob/main/AUTHORING.md) for layout and gates.
-- [Collection Profile](https://github.com/PDP-Connect/data-connectors/blob/main/docs/spec/collection-profile.md) for manifest and wire contracts.
-- [Authoring guide](https://github.com/PDP-Connect/data-connectors/blob/main/packages/polyfill-connectors/docs/connector-authoring-guide.md) for shared helpers and fixture evidence.
-- [Runtime note](https://github.com/PDP-Connect/data-connectors/blob/main/packages/polyfill-connectors/docs/collection-profile-runtime.md) for current APIs and gaps.
-- [Connector checklist](https://github.com/PDP-Connect/data-connectors/blob/main/packages/polyfill-connectors/CONNECTOR-CHECKLIST.md) and [TESTING.md](https://github.com/PDP-Connect/data-connectors/blob/main/TESTING.md) for verification.
+1. Read the bundled instructions. They include the public data-connectors
+   checkout, its locked dependency installation and the exact public
+   `@vana/factory-core@0.0.2` release artifact to install locally. No private
+   Factory access or internal service is required. Use synthetic or explicitly
+   reviewed evidence and a real Node 24 runtime on macOS or Linux; Node 24.22.1
+   is recommended for both Factory and the checkout. The instructions set
+   `VANA_FACTORY_TOOLS` under `VANA_HOME` (otherwise `~/.vana`) and
+   `VANA_FACTORY_BUILD` to the installed executable.
+2. Save a version 1 request file with absolute checkout/evidence paths, source
+   identity, directory key, exact manifest key, requested streams, and export
+   environment variable name or API preparation plan. The bundled instructions
+   include a source-general API example. Declare names rather than credential
+   values.
+   Directory and manifest keys must match after underscore/hyphen normalization.
+3. Run `vana connectors build --request /absolute/path/to/request.json --json`.
+   Read the returned private `workFile`. For an API, run `actions.prepare.argv`
+   for the same UUID and state directory. Explicit prepare acquires only declared
+   fetch or GET inputs. Supplied synthetic or reviewed research and responses
+   also work offline without credential values. Missing inputs preserve the job.
+   Supply them and prepare again. Successful repeated preparation verifies its
+   accepted artifacts without network. Changed accepted inputs need a new job.
+   Read safe `api.md`, research, profiles and fixtures, then implement in the
+   named checkout. Raw captures are private and are not linked for the agent.
+   Factory validates stream schemas with `type`, `properties`, `required`,
+   `items`, `enum`, `format: date-time`, `minLength` and boolean
+   `additionalProperties`. Other assertions need explicit unsupported handling;
+   do not remove constraints to obtain a pass.
+4. Run the returned `actions.check.argv`. Repair failures and check the same
+   job again. Use `actions.resume.argv` to refresh work or continue after
+   export prerequisites. Resume and check never acquire API evidence. An API
+   check before preparation returns `agent_work` with reason `prepare`. Use
+   prepare after supplying API prerequisites. All commands retain the explicit
+   UUID and canonical state directory. Never infer a latest job or read private job state as an API.
+5. A `checks_passed` result covers `static_and_fixture` checks. Live
+   verification remains `pending`; ingestion remains `not_run`. The returned
+   connect action verifies the same Vana run before result/checkpoint writes
+   and ingestion. Independent server readback remains a separate proof.
+6. Only a pass offers `actions.connect.argv`. Preserve its exact directory
+   spelling, checkout and requested streams. Supply the required environment
+   names derived from `collectionContext.access` when needed. Continue the
+   original authorized collection request; ask only for missing account, scope, authentication or a
+   blocked decision. Collection and registration are never started by a build.
 
-Check `packages/polyfill-connectors/package.json` for Node requirements, then
-run `npm ci` at the repository root. Upstream uses npm workspaces; use pnpm
-inside `vana-cli`. Resolve moved paths from the chosen checkout rather than
-copying stale paths from an example or initializer.
-
-## Implement one useful stream
-
-Choose a lowercase snake_case key and a manifest stream name. From upstream's
-`packages/polyfill-connectors` directory:
-
-```sh
-node --import tsx bin/connector-init.ts <key> --display-name "<Source name>" --stream <stream>
-```
-
-Use `--browser` when browser sign-in is required. Skip initialization for an
-existing connector. The initializer refuses existing paths and generates
-synthetic starting records; replace provider placeholders before a live run.
-
-Inspect a current connector with the same access mechanism. Prefer an official
-API or owner-provided export when it serves the requested data. Use the shared
-browser/session helpers when a browser is needed. Declare the actual permitted
-hosts, runtime bindings, authentication, interactions, streams, schemas, and
-stable primary keys in `manifest.json`.
-
-Reuse `packages/polyfill-connectors/src/connector-runtime.ts`, its current
-auth helpers, and `schema-registry.ts`. `runConnector()` owns protocol messages,
-interactions, counters, and outcomes. Connector code owns provider access,
-parsing, and cursor logic. Inspect installed helper signatures before using
-them; a README example is not an API declaration.
-
-Keep code, manifest, record validation, tests, and fixtures together under
-`connectors/<key>/`. For token input, use the existing auth strategy and secret
-field metadata so the host can present a hidden prompt. For file input, explain
-which export to obtain and which path the connector accepts. For browser input,
-let the person complete sign-in and human checks in the connector's browser.
-
-Prove pagination termination, stable record identities, requested-stream
-selection, and failure behavior with synthetic or reviewed scrubbed fixtures.
-Include nullable/empty values and observed response variants. A failed page
-must not advance a success checkpoint. Where the provider exposes an independent
-count, check completeness against it. State deletion and incremental behavior
-explicitly; missing records alone do not establish a provider deletion.
-
-Use the public fixture-capture, scrub, and validation helpers described by the
-upstream authoring guide. Record whether fixtures are synthetic or derived
-from a reviewed capture, regardless of their directory name. Real records and
-credentials stay outside commits. Private Connector Factory code is optional;
-a normal user must be able to complete the workflow without it. Its hosted
-browser, test-account, registration, and publication pipeline is not a local
-CLI prerequisite.
-
-## Verify before the real-account run
-
-Follow the chosen checkout's checklist, including its conformance roster,
-manifest version, generated indexes, and narrowly justified sequential-await
-exceptions. The roster lives at
-`packages/polyfill-connectors/src/connector-conformance-roster.ts`; consult the
-current checks for the other paths instead of disabling them to get a pass.
-
-From the upstream root:
-
-```sh
-npm run connector-implementation-index:generate
-npm run connector-implementation-index:check
-```
-
-If manifest options or reason messages changed, run
-`npm run polyfill-library-metadata:generate`. Then run:
-
-```sh
-npm run verify --workspace @pdpp/polyfill-connectors
-scripts/test-sandbox/test-sandbox -- node --import tsx --test connectors/<key>/pilot-fixture.test.ts
-```
-
-Run the same per-file test command for relevant provider/parser tests. Follow
-`TESTING.md` for Vitest lanes. A passing scaffold test checks its starting
-shape, not provider behavior. Report a missing checker or disabled sandbox
-accurately; fix the actual prerequisite or leave that check unverified.
+API preparation supports bounded JSON GET samples and public documentation,
+with none, named-header, Bearer or Token auth references. It has no discovery,
+automatic retries or pagination. Review declared structural fields and tokens.
+Prepared synthetic fixtures still require review before publication. Browser
+preparation remains unsupported. Do not imply live provider proof. Missing
+prerequisites need a person; global `--yes`, `--no-input`, `--ipc` and `--network` do not grant
+new source access. `--detach` is unsupported; `--quiet` hides progress only.
 
 ## Collect once through Vana
 
-Return the built connector's absolute checkout directory, source key and selected
-streams to the original task. Follow Connect Data's account/server preparation
-before running a real-account collection: Vana sign-in, server readiness and
-CLI approval precede source-token entry or provider reads. Writing and testing
-the connector itself does not require Vana sign-in. Readiness failures include a
-recovery command; preserve the original source/path/streams through that recovery.
+Read Connect Data with `vana skills show connect-data --json` for discovery,
+identity, server readiness, authentication and result inspection. Preserve the
+person's owner, network, `VANA_HOME` and Account deployment, and use the same
+CLI entry point throughout. For local CLI work, build the actual checkout with
+`pnpm build` and use its absolute `dist/cli/bin.js` path in place of `vana`.
+
+Writing and checking the connector does not require Vana sign-in. Before a
+real-account collection, follow Connect Data's account/server preparation:
+Vana sign-in, server readiness and CLI approval precede source-token entry or
+provider reads. Readiness failures include a recovery command; preserve the
+original source, checkout path and streams through that recovery.
 
 Have the person use the interactive CLI for secrets. Supply the exact command
-with real key, checkout, stream, and selected network, not a token placeholder
-they might paste into chat:
-
-```sh
-vana whoami --json
-vana status --json
-vana connect <key> --from /absolute/path/to/data-connectors --streams <stream>
-```
-
-Carry the selected `--network` through these commands. If the intended server
-is unavailable, follow its reported recovery or start a local server with
-`vana server start --local` in that same context. Check readiness before
-collecting; another account's server is not this owner's server.
-
-`vana connect` collects and ingests in one run. Keep progress visible. For an
-agent-controlled browser or protected credential handoff, add `--json --ipc`
-and follow Connect Data's input procedure. For a human token prompt, explain
-that they run the command in their own terminal and paste at its hidden prompt.
-Use the connector's schema to verify that secret fields are hidden. Keep
-credentials out of chat, shell arguments, scripts, and logs.
-
-Inspect `vana data show <key> --json`, `vana data path <key>`, and
-`vana logs <key>` without another provider run. Report the selected streams,
-active/deleted counts where meaningful, and whether ingestion completed. Keep
-private payloads local. Distinguish `connected_and_ingested` from
-`connected_local_only`; tests alone establish neither.
-
-## Diagnose or iterate
-
-Use the existing logs and failed response shape to reproduce a defect before
-changing the parser. After a fix, rerun the focused checks, then repeat the
-same CLI collection deliberately. To test a code change, compare meaningful
-changed output and stable keys in the server, not just a successful exit.
-
-The upstream developer runner is optional when diagnosing protocol/runtime
-behavior separately. From `packages/polyfill-connectors`:
-
-```sh
-node --import tsx bin/connector-dev.ts <key> --streams <stream> --summary-out /absolute/path/to/run-summary.json
-```
-
-This can contact the provider and ask for sign-in. It does not ingest into a
-Personal Server. Do not require this live run before every `vana connect`.
-For incremental diagnostics, follow the runner's `--seed-last-state` support
-and preserve its successful state. Respect provider refresh limits.
+with the real key, checkout, streams and selected network, not a token
+placeholder they might paste into chat. Keep credentials out of chat, shell
+arguments, scripts and logs. Inspect `vana data show <key> --json`,
+`vana data path <key>` and `vana logs <key>` without another provider run, and
+distinguish `connected_and_ingested` from `connected_local_only`; checks alone
+establish neither.
 
 Repeated development may use `vana connectors add <key> --from <checkout>`.
-That saves a persistent override which also affects collect, schedules, and
-MCP; one-off acceptance needs only `--from`. A key collision needs a deliberate
-choice before `--force`. Remove an unwanted override with
-`vana connectors remove <key>`.
-
-Finish with the implementation path, checks run, collection/ingestion evidence,
-and remaining reusable workflow gaps. App consent, reading, saving, display,
-and acknowledgement belong to the Builder workflow. Native availability,
-signed release, and publication are separate work, not a side effect of a
-local test.
+That saves a persistent override which also affects collect, schedules and
+MCP; one-off acceptance needs only `--from`. Remove an unwanted override with
+`vana connectors remove <key>`. App consent, reading and delivery belong to
+the Builder workflow. Native availability, signed release and publication are
+separate work, not a side effect of a local test.

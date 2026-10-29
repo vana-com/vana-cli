@@ -72,6 +72,28 @@ pnpm build:sea      # standalone binary (signs and notarizes when Apple env is s
 pnpm cli -- <args>  # run the built CLI
 ```
 
+### Browser testing and documentation fixtures
+
+- Choose the browser for the test. Use Callum's running regular Chrome when
+  a CLI journey needs his existing login, extensions, passkeys, or keychain.
+  Inspect existing sessions and relevant tabs first. Isolated browsers are
+  valid for anonymous, clean-session, and dedicated test-account checks; they
+  do not prove access to his personal session.
+- Never launch installed system Chrome under a temporary or replaced `HOME`
+  for tests, demos, or transcript capture. Inspect a script's launch path,
+  environment, and cleanup before running it. Headless mode does not prevent
+  keychain prompts. If a needed personal session is unavailable, report the
+  connection blocker rather than silently opening a disposable login session.
+- `pnpm demo:transcripts` captures canned terminal output for
+  `docs/CLI-TRANSCRIPTS.md`. It must run only fixture connectors, with browser
+  launches, subprocesses, and network access blocked inside the captured CLI.
+  A fixture failure must abort capture, never fall back to a live provider.
+- On an unexpected keychain prompt, stop the test and its identified browser
+  processes. Preserve the normal Chrome session. Never reset the keychain,
+  copy personal credentials, or retry with another browser to bypass it.
+- Report the environment and behavior actually verified. Fixture output and
+  a login screen do not establish a completed authenticated journey.
+
 ## Conventions
 
 - **ESM-only**, `"type": "module"`; import paths carry the `.js` extension

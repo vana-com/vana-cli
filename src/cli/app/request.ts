@@ -501,7 +501,7 @@ export async function runAppRequest(
   }
 
   // What `vana app register --app-name/--app-url` remembered for this key.
-  const profile = (deps.readProfile ?? readAppProfile)(key.address);
+  const profile = (deps.readProfile ?? readAppProfile)(key.address, network);
 
   const removeScopes = splitList(options.removeScopes);
   for (const entry of removeScopes) {

@@ -324,7 +324,7 @@ export function startInProcessConnectorRun({
       browserClosedByConnector: false,
       connectorCompleted: false,
       headless: true,
-      allowHeaded: !request.noInput,
+      allowHeaded: !request.noInput && process.env.VANA_DEMO_NO_BROWSER !== "1",
       hasResult: false,
       resultPath: null,
       cookies: [],
@@ -341,9 +341,11 @@ export function startInProcessConnectorRun({
     try {
       const connectorCode = await fsp.readFile(request.connectorPath, "utf8");
 
-      // Skip browser launch for demo/fixture connectors that don't need it.
-      // VANA_DEMO_FAST_SUCCESS connectors only use page.setData/setProgress/return.
-      const skipBrowser = process.env.VANA_DEMO_FAST_SUCCESS === "1";
+      // Documentation fixtures also exercise requestInput, independently of
+      // whether the fixture simulates a successful login.
+      const skipBrowser =
+        process.env.VANA_DEMO_FAST_SUCCESS === "1" ||
+        process.env.VANA_DEMO_NO_BROWSER === "1";
 
       if (!skipBrowser) {
         runState.browserPath = resolveBrowserPath();
@@ -556,7 +558,7 @@ function buildConnectorFunction(
   connectorCode: string,
 ): (page: unknown) => Promise<unknown> {
   let modifiedCode = connectorCode;
-  const iifePattern = /\n\(async\s*\(\)\s*=>\s*\{/g;
+  const iifePattern = /(?:^|\n)\(async\s*\(\)\s*=>\s*\{/g;
   const matches = [...modifiedCode.matchAll(iifePattern)];
 
   if (matches.length > 0) {

@@ -1,6 +1,6 @@
 {
   "name": "vana-cli",
-  "version": "0.44.0",
+  "version": "0.47.0",
   "description": "Collect your data into a Vana Personal Server, or request, read and pay for someone else's with their consent",
   "keywords": [
     "vana",
@@ -111,6 +111,7 @@
     "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "dependencies": {
+    "@inquirer/core": "11.1.7",
     "@inquirer/prompts": "8.3.0",
     "@inquirer/search": "^4.1.6",
     "@modelcontextprotocol/sdk": "^1.27.1",

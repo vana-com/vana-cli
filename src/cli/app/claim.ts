@@ -174,16 +174,20 @@ export async function runAppClaim(
 
   if (options.appName?.trim()) {
     try {
-      (deps.saveProfile ?? saveAppProfile)(key.address, {
-        name: options.appName,
-      });
+      (deps.saveProfile ?? saveAppProfile)(
+        key.address,
+        {
+          name: options.appName,
+        },
+        network,
+      );
     } catch {
       // Remembering the name is a convenience; the link carries it anyway.
     }
   }
   const appName =
     options.appName?.trim() ||
-    (deps.readProfile ?? readAppProfile)(key.address).name ||
+    (deps.readProfile ?? readAppProfile)(key.address, network).name ||
     "";
   const link = await buildClaimLink({
     privateKey: key.privateKey,

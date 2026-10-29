@@ -29,6 +29,8 @@ await assertExists(
 const requiredDirectoryEntries = [
   binaryName,
   "app/sea-entry.cjs",
+  "app/dist/skills/bundled/registry.json",
+  "app/dist/skills/bundled/create-connector/SKILL.md",
   "app/package.json",
   "app/dist/skills/setup.js",
   "app/dist/skills/bundled/registry.json",
@@ -40,6 +42,8 @@ const requiredDirectoryEntries = [
   "app/dist/cli/main.js",
   "app/dist/runtime/managed-playwright.js",
   "app/dist/personal-server/local/runtime-pkg/entry.mjs",
+  "app/dist/personal-server/local/runtime-pkg/dev/package.json",
+  "app/dist/personal-server/local/runtime-pkg/dev/package-lock.json",
   "app/dist/personal-server/local/runtime-pkg/derived-config.mjs",
   "app/dist/personal-server/local/runtime-pkg/mcp-approval.mjs",
 ];

@@ -9,8 +9,9 @@
  * and `--max-fee` caps it. `--network moksha` is the testnet, where fees
  * are play money.
  *
- * `VANA_ENV=dev` swaps in the dev host set (internal use; dev serves the
- * moksha chain), and there moksha stays the default.
+ * `VANA_ENV=dev` selects dev surfaces and keeps Moksha as the default.
+ * Explicit mainnet uses its real chain/gateway with dev Account and approval,
+ * matching Account's independent environment and network selectors.
  */
 
 export type VanaNetworkName = "moksha" | "mainnet";
@@ -25,7 +26,7 @@ export const DEFAULT_NETWORK: VanaNetworkName = "mainnet";
 export interface ResolvedNetwork {
   /** Network name as selected. */
   name: VanaNetworkName;
-  /** Host set: "dev" only when VANA_ENV=dev (moksha chain, dev hosts). */
+  /** Surface environment; mainnet retains its own gateway under dev. */
   env: "dev" | "prod";
   /** Vana chain id: 14800 moksha, 1480 mainnet. */
   chainId: number;
@@ -99,7 +100,7 @@ export function isVanaNetworkName(value: string): value is VanaNetworkName {
  * Resolve a network selection into hosts and chain.
  *
  * @param name - `--network` value; falls back to `VANA_NETWORK`, then
- *   mainnet (moksha under `VANA_ENV=dev`, which has no mainnet hosts).
+ *   mainnet (Moksha under `VANA_ENV=dev`).
  * @param env - process env, injectable for tests.
  * @throws {UnknownNetworkError} for a name outside {@link VANA_NETWORKS}.
  */
@@ -114,9 +115,12 @@ export function resolveNetwork(
   }
   const base = NETWORKS[raw];
   const dev = env.VANA_ENV === "dev";
-  if (dev && raw === "mainnet") {
-    // There is no dev host set for mainnet; refuse rather than guess.
-    throw new UnknownNetworkError("mainnet with VANA_ENV=dev");
-  }
-  return dev ? { ...base, ...DEV_HOSTS, env: "dev" } : { ...base, env: "prod" };
+  return dev
+    ? {
+        ...base,
+        ...DEV_HOSTS,
+        gatewayUrl: raw === "mainnet" ? base.gatewayUrl : DEV_HOSTS.gatewayUrl,
+        env: "dev",
+      }
+    : { ...base, env: "prod" };
 }

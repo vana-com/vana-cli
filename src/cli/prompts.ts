@@ -12,9 +12,9 @@
 
 import {
   confirm as inquirerConfirm,
-  select as inquirerSelect,
   input as inquirerInput,
   password as inquirerPassword,
+  select as inquirerSelect,
 } from "@inquirer/prompts";
 
 type PromptStream = NodeJS.ReadableStream & {
@@ -121,7 +121,7 @@ export function password(
   );
 }
 
-/** A finite choice; closed input aborts through the same guard as other prompts. */
+/** A finite choice, with the same closed-input handling as text prompts. */
 export function select<T>(
   config: Parameters<typeof inquirerSelect<T>>[0],
   context?: PromptContext,

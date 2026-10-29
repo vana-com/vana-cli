@@ -33,3 +33,9 @@ sh "$ROOT_DIR/install/install.sh"
 PATH="$HOME_DIR/bin:$PATH" HOME="$HOME_DIR" "$HOME_DIR/bin/vana" status --json >/dev/null
 
 echo "Unix installer smoke test passed"
+
+python3 "$ROOT_DIR/scripts/test-onboarding.py" \
+  --installer "$ROOT_DIR/install/install.sh" \
+  --version test-release \
+  --release-base-url "file://$WORK_DIR/local-release" \
+  --evidence "$WORK_DIR/onboarding-proof.json"

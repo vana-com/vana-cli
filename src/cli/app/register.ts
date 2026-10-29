@@ -1,9 +1,8 @@
 /**
  * `vana app register` - idempotent builder registration at the gateway.
  *
- * Resolves the app key (generating one on first use), checks the gateway
- * first and exits 0 when the app is already registered, otherwise signs the
- * EIP-712 BuilderRegistration and posts it. Safe at the top of any script.
+ * Moksha can generate a first app key. Mainnet reuses the established Moksha
+ * identity and completes Account association before reporting success.
  */
 
 import {
@@ -15,6 +14,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import {
   resolveAppKey,
   InvalidAppKeyError,
+  AppKeyMissingError,
   type ResolvedAppKey,
 } from "../../core/app-key.js";
 import {
@@ -24,6 +24,9 @@ import {
 } from "../../core/network.js";
 import { saveAppProfile } from "../../core/app-profile.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
+import { runMainnetRegistration } from "./mainnet-registration.js";
+import type { AppRegistrationStore } from "../../core/app-registration-store.js";
+import type { loadCredentials } from "../auth.js";
 
 export interface RegisterCommandOptions extends AppCommandOptions {
   /** Public URL of the app; the gateway stores it on the record. */
@@ -33,6 +36,9 @@ export interface RegisterCommandOptions extends AppCommandOptions {
 }
 
 export interface RegisterDeps {
+  fetch?: typeof fetch;
+  loadCredentials?: typeof loadCredentials;
+  store?: AppRegistrationStore;
   createClient?: (gatewayUrl: string) => GatewayClient;
   resolveKey?: typeof resolveAppKey;
   saveProfile?: typeof saveAppProfile;
@@ -97,8 +103,21 @@ export async function runAppRegister(
 
   let key: ResolvedAppKey;
   try {
-    key = (deps.resolveKey ?? resolveAppKey)({ allowGenerate: true });
+    key = (deps.resolveKey ?? resolveAppKey)({
+      allowGenerate: network.name !== "mainnet",
+    });
   } catch (error) {
+    if (error instanceof AppKeyMissingError) {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "builder_unknown",
+        message:
+          "No existing app key was found. Mainnet registration never generates a replacement key.",
+        remedy:
+          "Select the existing app key, or create and test an app on Moksha first.",
+        network: network.name,
+      });
+    }
     if (error instanceof InvalidAppKeyError) {
       return emitAppOutcome(options, {
         status: "failed",
@@ -110,14 +129,21 @@ export async function runAppRegister(
     throw error;
   }
 
+  if (network.name === "mainnet")
+    return runMainnetRegistration(options, key, network, deps);
+
   // Remember how this app introduces itself, so `vana app request` shows it
   // on the approval page without repeating --app-name every time.
   // A local file that cannot be written must not cost the registration.
   try {
-    (deps.saveProfile ?? saveAppProfile)(key.address, {
-      name: options.appName,
-      url: options.appUrl,
-    });
+    (deps.saveProfile ?? saveAppProfile)(
+      key.address,
+      {
+        name: options.appName,
+        url: options.appUrl,
+      },
+      network,
+    );
   } catch {
     // The name then has to be passed as --app-name on each request.
   }

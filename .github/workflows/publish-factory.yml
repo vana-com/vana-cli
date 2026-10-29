@@ -1,0 +1,24 @@
+name: Publish Factory core
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.22.1
+          registry-url: https://registry.npmjs.org
+      - name: Download the licensed public package
+        run: curl --fail --location --output vana-factory-core-0.0.2.tgz https://github.com/vana-com/vana-cli/releases/download/v0.45.1/vana-factory-core-0.0.2.tgz
+      - name: Verify the reviewed artifact
+        run: echo '089a528f4a7a302d2dae9a0724e4b25f62ada14c61eb7728507c4139875a30d9  vana-factory-core-0.0.2.tgz' | sha256sum --check
+      - name: Publish the exact artifact to npm
+        run: npm publish ./vana-factory-core-0.0.2.tgz --ignore-scripts --access public --tag latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

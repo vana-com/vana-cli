@@ -143,11 +143,12 @@ export function projectResult(
   displayName: string,
   state: CollectionState,
   completed: string[],
+  exportedAt = new Date().toISOString(),
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {
     platform: source,
     company: displayName,
-    exportedAt: new Date().toISOString(),
+    exportedAt,
     completedStreams: completed,
   };
   for (const stream of completed) {
@@ -163,4 +164,30 @@ export async function writeResult(
   result: Record<string, unknown>,
 ): Promise<void> {
   await writeAtomic(file, `${JSON.stringify(result, null, 2)}\n`);
+}
+
+/** Excludes every real checkpoint writer for a source and owner. */
+export async function withCollectionLock<T>(
+  file: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  await fsp.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const lockPath = `${file}.lock`;
+  const token = crypto.randomUUID();
+  let lock;
+  try {
+    lock = await fsp.open(lockPath, "wx", 0o600);
+  } catch {
+    throw new Error(
+      "Collection state is locked by another run. Inspect the owner before recovering an interrupted lock.",
+    );
+  }
+  try {
+    await lock.writeFile(JSON.stringify({ pid: process.pid, token }));
+    return await operation();
+  } finally {
+    await lock.close();
+    const current = JSON.parse(await fsp.readFile(lockPath, "utf8"));
+    if (current.token === token) await fsp.rm(lockPath);
+  }
 }

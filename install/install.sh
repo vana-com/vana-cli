@@ -157,4 +157,13 @@ esac
 
 echo ""
 echo "Next step:"
-echo "  vana status"
+echo "  vana"
+
+# curl | sh consumes stdin; human interaction must use the controlling terminal.
+if [ -t 1 ] && [ -z "${CI:-}" ] && [ -z "${AGENT:-}" ]; then
+  if [ -t 0 ]; then
+    "$BIN_DIR/vana" || true
+  elif [ -r /dev/tty ]; then
+    "$BIN_DIR/vana" </dev/tty || true
+  fi
+fi

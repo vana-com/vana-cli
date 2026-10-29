@@ -36,9 +36,9 @@ its own storage and UI; no reference app or observability service is required.
 ## The loop
 
 ```bash
-vana app register --app-name "<your name>"             # once per machine
-vana app request --scopes spotify.savedTracks          # ask a person
-vana app read spotify.savedTracks --grant <id> --pay   # read and pay
+vana app register --network moksha --app-name "<your name>" # create and test first
+vana app request --network moksha --scopes spotify.savedTracks          # ask a person
+vana app read --network moksha spotify.savedTracks --grant <id> --pay   # read and pay
 ```
 
 Check `vana app whoami --json` first and reuse an appropriate registration.
@@ -49,7 +49,7 @@ request shows as "Vana CLI".
 Or ask a question instead of reading raw data, in one command:
 
 ```bash
-vana app ask "Which genres fill their saved tracks?" \
+vana app ask "Which genres fill their saved tracks?" --network moksha \
   --sources spotify.savedTracks --derived myapp.genres --pay
 ```
 
@@ -76,7 +76,7 @@ Branch on these instead of parsing text.
 ## Asking for access
 
 ```bash
-vana app request --scopes spotify.savedTracks,spotify.playlists --json
+vana app request --network moksha --scopes spotify.savedTracks,spotify.playlists --json
 ```
 
 Waits up to ten minutes by default (`--timeout <seconds>`). On approval the
@@ -99,7 +99,7 @@ shared)" and the approval page drops those entries if the grant holds them.
 When no human is watching the terminal, do not block:
 
 ```bash
-vana app request --scopes spotify.savedTracks --no-input --json
+vana app request --network moksha --scopes spotify.savedTracks --no-input --json
 ```
 
 That exits **7** immediately with `approvalUrl` in the payload. Hand the URL
@@ -130,7 +130,7 @@ computed on the person's own server over sources **your app never reads**;
 you end up holding a grant on the answer only.
 
 ```bash
-vana app ask "Which genres fill their saved tracks?" \
+vana app ask "Which genres fill their saved tracks?" --network moksha \
   --sources spotify.savedTracks \
   --derived myapp.genres \
   --pay --json

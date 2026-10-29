@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { getVanaHome } from "../../core/paths.js";
-import type { VanaNetworkName } from "../../core/network.js";
+import { resolveNetwork, type VanaNetworkName } from "../../core/network.js";
 
 /** What a Personal Server needs to know about the network it serves. */
 export interface LocalServerNetwork {
@@ -18,6 +18,8 @@ export interface LocalServerNetwork {
    * gateway, storage and relay are dev's), so its page is app-dev.
    */
   webOrigin: string;
+  /** Trusted fee authority; enabled only with the dev server runtime. */
+  ownAppAccountUrl?: string;
 }
 
 // Same deployment on both chains. Mirrors the `contracts` and tunnel entries
@@ -54,11 +56,25 @@ const NETWORKS: Record<VanaNetworkName, LocalServerNetwork> = {
 };
 
 export function localServerNetwork(name: VanaNetworkName): LocalServerNetwork {
-  return NETWORKS[name];
+  const network = NETWORKS[name];
+  if (process.env.VANA_ENV !== "dev") return network;
+  const resolved = resolveNetwork(name);
+  return {
+    ...network,
+    webOrigin: resolved.approvalUrl,
+    ownAppAccountUrl: resolved.accountUrl,
+  };
 }
 
 /** The pinned server release, matching runtime-pkg/package.json. */
 export const PERSONAL_SERVER_VERSION = "1.33.8";
+const DEV_PERSONAL_SERVER_VERSION = "0.0.1-canary.d87e672";
+
+function personalServerVersion(): string {
+  return process.env.VANA_ENV === "dev"
+    ? DEV_PERSONAL_SERVER_VERSION
+    : PERSONAL_SERVER_VERSION;
+}
 
 export function localServerHome(): string {
   return path.join(getVanaHome(), "cli", "personal-server");
@@ -86,7 +102,7 @@ export function accountServerDataDir(
 }
 
 export function localServerRuntimeDir(): string {
-  return path.join(localServerHome(), "runtime", PERSONAL_SERVER_VERSION);
+  return path.join(localServerHome(), "runtime", personalServerVersion());
 }
 
 /** Ports Desktop and the CLI both try first; the loopback approval page is port + 1. */

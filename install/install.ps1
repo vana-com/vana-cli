@@ -175,7 +175,10 @@ try {
   # The CLI asks before copying skills and skips redirected/automated sessions.
   & $WrapperPath skills setup
   Write-Host "Next step:"
-  Write-Host "  vana status"
+  Write-Host "  vana"
+  if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected -and -not $env:CI -and -not $env:AGENT) {
+    & $WrapperPath
+  }
 }
 finally {
   if (Test-Path $TempDir) {

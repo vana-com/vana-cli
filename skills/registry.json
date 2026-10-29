@@ -13,7 +13,7 @@
       "id": "builder",
       "name": "Builder",
       "description": "Request permission, read Vana data and verify delivery in the consuming app",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "files": {
         "skill": "builder/SKILL.md",
         "supplemental": ["builder/reference/verification.md"]
@@ -31,8 +31,8 @@
     {
       "id": "create-connector",
       "name": "Create Connector",
-      "description": "Build and test PDP-Connect Collection Profile connectors from a local source checkout",
-      "version": "1.3.0",
+      "description": "Build or repair a Collection Profile connector with the current agent and shared Factory checks",
+      "version": "1.4.0",
       "files": {
         "skill": "create-connector/SKILL.md"
       }

@@ -21,8 +21,9 @@ Or install the standalone binary, which is signed and notarized on macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vana-com/vana-cli/main/install/install.sh | sh
-vana status
 ```
+
+At a human terminal, installation opens the welcome menu. Choose **Collect or manage my data** to search sources; press Ctrl+O for a missing source and follow the connector guide. Run `vana` to reopen the menu. Automated installs remain prompt-free.
 
 Windows uses `install/install.ps1`. The Homebrew tap (`vana-com/tap`) is
 no longer updated and ships a months-old canary, so use one of the routes
@@ -55,9 +56,9 @@ signed and notarized by Vana (or Vana Desktop's copy, when installed).
 else's data, with their consent:
 
 ```bash
-vana app register                                  # once per machine
-vana app request --scopes github.repositories      # prints an approval URL, waits
-vana app read github.repositories --grant <id>     # signed read
+vana app register --network moksha                 # create and test the app first
+vana app request --network moksha --scopes github.repositories      # prints an approval URL, waits
+vana app read --network moksha github.repositories --grant <id>     # signed read
 ```
 
 `request` returns the grant id once the person approves. Asking the same
@@ -107,6 +108,33 @@ unavailable or at its limit, setup stays resumable and does not report success.
 This path requires the Account test-credit service to be deployed and enabled;
 mainnet requests retain their existing behavior. Saved consent intents from
 older CLI versions resume without adding a funding step.
+
+## Make an existing app available on mainnet
+
+After the app is registered and claimed by your Account on Moksha, run:
+
+```bash
+vana app register --network mainnet --app-url https://your-app.example --app-name "Your app"
+```
+
+For a dev Account check, prefix the command with `VANA_ENV=dev`. This uses
+`account-dev.vana.org`, the dev login and separate dev app metadata. The explicit
+`--network mainnet` still selects the real mainnet chain and gateway; changing the
+Account environment does not turn mainnet into a test chain.
+
+`VANA_ENV=dev vana server start` installs a separately pinned dev Personal Server
+runtime and enables own-app fee checks against dev Account. A valid app grant is
+still required; eligible same-Account reads are free and other apps remain
+metered. Production retains its stable server pin.
+
+This reuses the same key and Account, confirms mainnet registration and Account association without another claim, and preserves Moksha. An interactive run opens Account only for necessary sign-in; noninteractive runs return exit 7 when sign-in is required. Rerun the same command after interruption to reuse completed registration and finish association. Mainnet does not silently create a replacement key or overwrite Moksha metadata.
+
+The command waits up to 90 seconds for the gateway's chain confirmation before
+asking Account to associate mainnet. A pending record is not a confirmed
+registration. If confirmation stays unavailable, exit 6 preserves the operation
+without submitting another registration.
+
+Account migration 030 and its association API must be deployed first. Registration does not transfer data, grants, escrow or connectors, and does not waive fees.
 
 ## For agents
 
@@ -290,6 +318,55 @@ top content; selecting saved tracks avoids that dependency.
 `--streams` takes comma-separated Collection Profile stream names, requires
 an explicit source, and cannot be used with `--detach`. Omit it to request
 all streams. No connector source checkout is needed for pinned sources.
+
+Build a missing connector with your current agent and the shared Factory checks:
+
+```bash
+vana connectors build --instructions           # bundled offline instructions and request example
+vana connectors build --request /absolute/path/to/request.json --json
+vana connectors prepare --job <uuid> --state-dir /absolute/path/to/state --json # declared API evidence
+vana connectors check --job <uuid> --state-dir /absolute/path/to/state --json
+vana connectors resume --job <uuid> --state-dir /absolute/path/to/state --json
+```
+
+The instructions describe installing the separately supplied Factory tarball.
+Its `factory-build` executable must use a real Node 24+ runtime on macOS or
+Linux, independently of Vana's Node runtime or standalone launcher. Put it on
+`PATH` or set `VANA_FACTORY_BUILD` to its absolute executable path. Vana never
+downloads it. Instructions remain available when Factory is absent.
+
+Factory supports synthetic or explicitly reviewed export evidence and API
+preparation. The bundled instructions include a source-general API request
+with supplied documentation and responses. API plans declare the origin,
+auth environment names, research, bounded JSON GET or supplied samples, and
+reviewed structural disclosure. Build creates the job before preparation.
+Only `prepare` acquires declared API inputs. Resume and check never fetch them.
+Missing files or auth preserve the UUID. Supply them and prepare again.
+Successful repeated preparation verifies immutable artifacts without network.
+Raw captures stay private; the work file links safe research, profiles and
+synthetic fixtures. Review generated fixtures before publication.
+
+The current agent writes the connector; Factory owns job state and checks.
+State defaults to `factory/` under `VANA_HOME` (otherwise `~/.vana`). Keep the
+explicit UUID and canonical state directory in the returned prepare, check and
+resume argv.
+`--quiet` hides progress only; `--detach` is unsupported. Interrupting waits for
+Factory cleanup. SIGKILL requires Factory's manual lock recovery.
+
+A static/fixture pass leaves live verification pending and ingestion not run.
+The generated connect action includes --factory-job and --factory-state-dir. It
+requires same-run verification before local save or ingestion. A failed gate
+keeps previous results and checkpoints. Accepted bytes remain retryable through
+`vana server sync` after an upload failure, without recollecting or rechecking
+the source. Account/deployment, selected destination and scope stay bound. If
+collection had no destination, later sync requires the collecting account and
+a server that reports that account as its owner. Server body readback is not
+performed. Only a pass with a Vana-compatible local profile offers a separate
+`actions.connect.argv`, with the exact directory key, checkout, streams and
+required environment names from `collectionContext.access`. Browser preparation
+remains unsupported. Build commands never collect or register anything.
+Continue an already authorized collection request using
+that command, supplying missing account, scope or authentication as needed.
 
 A Collection Profile connector you are still writing can run straight from
 its directory. `vana connect <key> --from <dir>` runs it once; registering

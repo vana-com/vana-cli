@@ -334,6 +334,7 @@ export async function startLocalServer(input: {
         contracts: network.contracts,
         storageApiUrl: network.storageApiUrl,
         webOrigin: network.webOrigin,
+        ownAppAccountUrl: network.ownAppAccountUrl,
       },
       tunnel: input.frpcPath
         ? { binaryPath: input.frpcPath, ...network.tunnel }

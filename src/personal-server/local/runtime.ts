@@ -19,14 +19,16 @@ const SCRIPT_FILES = [
 ] as const;
 
 /** Files shipped with the CLI that define the runtime: the pin, its lock, the scripts. */
-const ASSET_FILES = [
-  "package.json",
-  "package-lock.json",
-  ...SCRIPT_FILES,
-] as const;
+const ASSET_FILES = ["package.json", "package-lock.json"] as const;
 
 function assetDir(): string {
   return fileURLToPath(new URL("./runtime-pkg/", import.meta.url));
+}
+
+function manifestDir(): string {
+  return process.env.VANA_ENV === "dev"
+    ? path.join(assetDir(), "dev")
+    : assetDir();
 }
 
 function lockHash(dir: string): string {
@@ -128,7 +130,7 @@ export function isRuntimeInstalled(dir = localServerRuntimeDir()): boolean {
   try {
     return (
       fs.readFileSync(path.join(dir, ".installed"), "utf8").trim() ===
-        lockHash(assetDir()) &&
+        lockHash(manifestDir()) &&
       fs.existsSync(
         path.join(dir, "node_modules", "@opendatalabs", "personal-server-ts"),
       )
@@ -160,7 +162,7 @@ export async function ensureRuntime(
   }
 
   for (const file of ASSET_FILES) {
-    await fsp.copyFile(path.join(assetDir(), file), path.join(dir, file));
+    await fsp.copyFile(path.join(manifestDir(), file), path.join(dir, file));
   }
   await fsp.rm(path.join(dir, "node_modules"), {
     recursive: true,
@@ -227,7 +229,7 @@ export async function ensureRuntime(
   }
   await fsp.writeFile(
     path.join(dir, ".installed"),
-    `${lockHash(assetDir())}\n`,
+    `${lockHash(manifestDir())}\n`,
     "utf8",
   );
   return dir;

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 /**
  * Host side of the Collection Profile protocol: one JSON object per line on
@@ -66,6 +67,8 @@ export interface RunProtocolOptions {
   /** A browser step that resolves itself rather than requesting an stdin reply. */
   onAssistance?(message: string): void;
   onInteraction(request: InteractionRequest): Promise<InteractionReply>;
+  /** Exact ordered transport observations. Errors fail the run. */
+  capture?(event: Record<string, unknown>): void;
   log(line: string): void;
 }
 
@@ -172,6 +175,11 @@ export function runCollectionProfile(
     const write = (message: unknown) => {
       if (child.stdin.writable) {
         child.stdin.write(`${JSON.stringify(message)}\n`);
+        try {
+          options.capture?.({ channel: "stdin", message });
+        } catch {
+          fail("Protocol evidence capture failed.");
+        }
       }
     };
 
@@ -390,8 +398,17 @@ export function runCollectionProfile(
     };
 
     let buffer = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    const stdoutDecoder = new StringDecoder("utf8");
+    child.stdout.on("data", (raw: Buffer) => {
+      try {
+        options.capture?.({
+          channel: "stdout",
+          base64: raw.toString("base64"),
+        });
+      } catch {
+        fail("Protocol evidence capture failed.");
+      }
+      const chunk = stdoutDecoder.write(raw);
       buffer += chunk;
       if (
         Buffer.byteLength(buffer) > MAX_LINE_BYTES &&
@@ -450,6 +467,24 @@ export function runCollectionProfile(
       if (killTimer) clearTimeout(killTimer);
       options.signal?.removeEventListener("abort", onAbort);
 
+      try {
+        options.capture?.({
+          channel: "close",
+          code,
+          signal,
+          status: failure?.status ?? done?.status ?? "failed",
+          recordsEmitted: observedRecords,
+        });
+      } catch {
+        failure = {
+          status: "failed",
+          recordsEmitted: observedRecords,
+          error: {
+            message: "Protocol evidence capture failed.",
+            retryable: false,
+          },
+        };
+      }
       if (failure) {
         resolve(failure);
         return;
