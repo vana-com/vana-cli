@@ -44,12 +44,14 @@ let wrongAccount: boolean;
 let lostRegistrationResponse: boolean;
 let registrations: number;
 let deps: RegisterDeps;
+let accountOrigin: string;
 
 beforeEach(() => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), "mainnet-registration-"));
   vi.stubEnv("VANA_HOME", directory);
   vi.stubEnv("VANA_ENV", "prod");
   vi.stubEnv("VANA_ACCOUNT_URL", "https://account.vana.org");
+  accountOrigin = "https://account.vana.org";
   output = "";
   builder = null;
   owned = unavailable = wrongAccount = lostRegistrationResponse = false;
@@ -79,7 +81,7 @@ beforeEach(() => {
     }),
     createClient: (url) =>
       ({
-        getBuilder: async () => (url === moksha.gatewayUrl ? source : builder),
+        getBuilder: async () => (url === mainnet.gatewayUrl ? builder : source),
         registerBuilder: async (params) => {
           registrations += 1;
           builder = { ...source, appUrl: params.appUrl };
@@ -89,6 +91,8 @@ beforeEach(() => {
       }) as GatewayClient,
     fetch: async (url, init) => {
       const parsed = new URL(String(url));
+      if (parsed.origin !== accountOrigin)
+        throw new Error("Wrong Account deployment");
       if (parsed.pathname === "/api/v1/me/app-ownership") {
         const network = parsed.searchParams.get("network");
         return Response.json({
@@ -136,7 +140,7 @@ beforeEach(() => {
         message: {
           granteeAddress: account.address,
           accountSubject: subject,
-          accountOrigin: "https://account.vana.org",
+          accountOrigin,
           sourceNetwork: "moksha",
           network: "mainnet",
           appUrl: options.appUrl,
@@ -183,6 +187,36 @@ describe("one-command mainnet registration", () => {
     expect(readAppProfile(account.address, mainnet)).toEqual({
       name: "Example",
       url: options.appUrl,
+    });
+    expect(deps.store!.getRegistration()).toBeNull();
+  });
+  it("resumes against dev Account without overwriting production metadata", async () => {
+    vi.stubEnv("VANA_ENV", "dev");
+    accountOrigin = "https://account-dev.vana.org";
+    vi.stubEnv("VANA_ACCOUNT_URL", accountOrigin);
+    saveAppProfile(
+      account.address,
+      { name: "Production app", url: "https://unchanged.example" },
+      mainnet,
+    );
+    unavailable = true;
+    expect(await runAppRegister(options, deps)).toBe(6);
+    expect(deps.store!.getRegistration()).toMatchObject({
+      env: "dev",
+      accountUrl: accountOrigin,
+    });
+    unavailable = false;
+    expect(await runAppRegister(options, deps)).toBe(0);
+    expect(registrations).toBe(1);
+    expect(
+      readAppProfile(
+        account.address,
+        resolveNetwork("mainnet", { VANA_ENV: "dev" }),
+      ),
+    ).toEqual({ name: "Example", url: options.appUrl });
+    expect(readAppProfile(account.address, mainnet)).toEqual({
+      name: "Production app",
+      url: "https://unchanged.example",
     });
     expect(deps.store!.getRegistration()).toBeNull();
   });

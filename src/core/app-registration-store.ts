@@ -10,7 +10,7 @@ const registrationSchema = z.object({
   accountUrl: z.string().url(),
   gatewayUrl: z.string().url(),
   network: z.literal("mainnet"),
-  env: z.literal("prod"),
+  env: z.enum(["dev", "prod"]),
   appUrl: z.string().url(),
   appName: z.string().max(64),
 });

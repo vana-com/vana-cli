@@ -212,7 +212,7 @@ export async function runMainnetRegistration(
       accountUrl,
       gatewayUrl: network.gatewayUrl,
       network: "mainnet",
-      env: "prod",
+      env: network.env,
       appUrl,
       appName,
     };

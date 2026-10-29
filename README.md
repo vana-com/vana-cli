@@ -91,6 +91,11 @@ After the app is registered and claimed by your Account on Moksha, run:
 vana app register --network mainnet --app-url https://your-app.example --app-name "Your app"
 ```
 
+For a dev Account check, prefix the command with `VANA_ENV=dev`. This uses
+`account-dev.vana.org`, the dev login and separate dev app metadata. The explicit
+`--network mainnet` still selects the real mainnet chain and gateway; changing the
+Account environment does not turn mainnet into a test chain.
+
 This reuses the same key and Account, confirms mainnet registration and Account association without another claim, and preserves Moksha. An interactive run opens Account only for necessary sign-in; noninteractive runs return exit 7 when sign-in is required. Rerun the same command after interruption to reuse completed registration and finish association. Mainnet does not silently create a replacement key or overwrite Moksha metadata.
 
 Account migration 030 and its association API must be deployed first. Registration does not transfer data, grants, escrow or connectors, and does not waive fees.
