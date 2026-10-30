@@ -24,7 +24,7 @@ import {
 } from "../../core/network.js";
 import { saveAppProfile } from "../../core/app-profile.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
-import { runMainnetRegistration } from "./mainnet-registration.js";
+import { isHttpUrl, runMainnetRegistration } from "./mainnet-registration.js";
 import type { AppRegistrationStore } from "../../core/app-registration-store.js";
 import type { loadCredentials } from "../auth.js";
 
@@ -152,24 +152,47 @@ export async function runAppRegister(
 
   try {
     if (await client.isRegisteredBuilder(key.address)) {
+      // The record cannot change. An empty URL still works for paid reads,
+      // but Account can never claim the app, so say so instead of hiding it.
+      const recorded =
+        typeof client.getBuilder === "function"
+          ? await client.getBuilder(key.address).catch(() => null)
+          : null;
+      const claimable = recorded?.appUrl === "" ? false : undefined;
       return emitAppOutcome(options, {
         status: "done",
         code: "ok",
-        message: "Already registered.",
+        message:
+          claimable === false
+            ? "Already registered, without an app URL, so Vana Account cannot claim this app."
+            : "Already registered.",
         network: network.name,
         data: {
           address: key.address,
           keySource: key.source,
           alreadyRegistered: true,
+          claimable,
         },
       });
     }
 
-    const params = await signBuilderRegistration(
-      key,
-      network,
-      options.appUrl ?? "",
-    );
+    // The gateway keeps the first registration, and Account cannot claim
+    // (or approve owner-only sources for) an app whose record has no URL.
+    // Refuse rather than create an identity that can never be claimed.
+    const appUrl = options.appUrl?.trim() ?? "";
+    if (!isHttpUrl(appUrl)) {
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "bad_usage",
+        message:
+          "Pass --app-url with an http(s) URL. Vana Account cannot claim an app registered without one, and the URL cannot be changed after registration.",
+        remedy: `vana app register --network ${network.name} --app-url http://localhost:3000 --app-name "<your app>"`,
+        network: network.name,
+        data: { address: key.address },
+      });
+    }
+
+    const params = await signBuilderRegistration(key, network, appUrl);
     const result = await client.registerBuilder(params);
     return emitAppOutcome(options, {
       status: "done",

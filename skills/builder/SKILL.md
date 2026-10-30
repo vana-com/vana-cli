@@ -19,13 +19,15 @@ exit code, read `code` for the reason and `remedy` for the next command.
 ## The loop
 
 ```bash
-vana app register --network moksha --app-name "<your name>" # create and test first
+vana app register --network moksha --app-url <your app URL> --app-name "<your name>" # create and test first
 vana app request --network moksha --scopes spotify.savedTracks          # ask a person
 vana app read --network moksha spotify.savedTracks --grant <id> --pay   # read and pay
 ```
 
 Register with the name the person should see on the approval page, such as
-your agent's name. The CLI remembers it for this app key; without it the
+your agent's name, and with your app's URL (a localhost URL is fine while
+testing). The URL is required: Vana Account cannot claim an app registered
+without one, and a registration cannot be changed later. The CLI remembers it for this app key; without it the
 request shows as "Vana CLI".
 
 Or ask a question instead of reading raw data, in one command:
