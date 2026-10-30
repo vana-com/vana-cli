@@ -138,13 +138,6 @@ if ! HOME="${HOME}" VANA_APP_ROOT="$INSTALL_ROOT/current/app" "$BIN_DIR/vana" st
 fi
 
 echo "Installed vana to $BIN_DIR/vana"
-if [ -t 1 ] && [ -z "${CI:-}" ] && [ -z "${AGENT:-}" ]; then
-  if [ -t 0 ]; then
-    "$BIN_DIR/vana" skills setup || true
-  elif ( : </dev/tty ) 2>/dev/null; then
-    "$BIN_DIR/vana" skills setup </dev/tty || true
-  fi
-fi
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *)

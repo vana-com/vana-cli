@@ -174,8 +174,8 @@ retrying after setup. A server that fails after collection starts can still
 leave an owner-attributed local export for later sync.
 
 Persistent skill installation is optional convenience for future agent sessions.
-The installer may offer it at a human terminal; it names destination folders,
-defaults to no and copies or replaces skills only after confirmation. Revisit it:
+An interactive npm install may offer it; the offer names destination folders,
+defaults to no and copies or replaces skills only after confirmation. Run it any time:
 
 ```bash
 vana skills setup
