@@ -34,7 +34,7 @@ jobs:
             arch: x64
             archive_format: tar.gz
             binary_name: vana
-          - runner: macos-14
+          - runner: macos-15
             platform: darwin
             arch: arm64
             archive_format: tar.gz
