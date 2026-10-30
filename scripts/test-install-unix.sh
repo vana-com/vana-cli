@@ -9,8 +9,19 @@ HOME_DIR="$WORK_DIR/home"
 
 mkdir -p "$RELEASE_DIR" "$HOME_DIR"
 
-cp "$ARTIFACT_DIR/vana-linux-x64.tar.gz" "$RELEASE_DIR/vana-linux-x64.tar.gz"
-cp "$ARTIFACT_DIR/vana-linux-x64.tar.gz.sha256" "$RELEASE_DIR/vana-linux-x64.tar.gz.sha256"
+case "$(uname -s)" in
+  Darwin) PLATFORM=darwin ;;
+  Linux) PLATFORM=linux ;;
+  *) echo "Unsupported test platform" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+  arm64|aarch64) ARCH=arm64 ;;
+  x86_64|amd64) ARCH=x64 ;;
+  *) echo "Unsupported test architecture" >&2; exit 1 ;;
+esac
+ASSET_BASE="vana-$PLATFORM-$ARCH"
+cp "$ARTIFACT_DIR/$ASSET_BASE.tar.gz" "$RELEASE_DIR/$ASSET_BASE.tar.gz"
+cp "$ARTIFACT_DIR/$ASSET_BASE.tar.gz.sha256" "$RELEASE_DIR/$ASSET_BASE.tar.gz.sha256"
 
 VANA_VERSION=test-release \
 VANA_RELEASE_BASE_URL="file://$WORK_DIR/local-release" \

@@ -410,6 +410,8 @@ export const cliEventSchema = z.object({
   target: z.string().optional(),
   runtime: z.string().optional(),
   reason: z.string().optional(),
+  /** Next command when collection cannot start without account/server setup. */
+  remedy: z.string().optional(),
   count: z.number().optional(),
   phase: progressPhaseSchema.optional(),
   scopeResults: z.array(scopeResultSchema).optional(),

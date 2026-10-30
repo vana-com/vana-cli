@@ -1,3 +1,35 @@
+# Worklog
+
+## 2026-10-29 — Approved collection onboarding implementation
+
+Implement the agreed welcome groups and collection journey in the existing PR #106 checkout. Source selection stays searchable with 12 visible rows, a fixed missing-source shortcut and a no-results continuation that carries the query. Missing sources hand off to the canonical Create Connector skill without a heading anchor. Connector creation/Factory integration stays outside this implementation (BUI-951).
+
+The shared collection entry must establish a valid Vana owner and an available, approved destination before connector credential prompts or provider access. Reuse valid sessions; interactive terminals can sign in and prepare the server using existing owners. JSON/IPC/no-input/scheduled runs must stop with actionable structured outcomes instead of prompting or collecting anonymously. Preserve account/network/home context, local connector path and selected streams through recovery. Do not weaken pending-export ownership checks.
+
+Reuse existing credential and ingestion machinery; fix cancellation and retry context, remove mandatory skill-installation contradictions, and keep skill installation explicitly optional. The other three menu groups get bounded routing to their existing workflows, not newly invented full journeys. No Factory core/adapter work, backend changes, merge or release. Starting evidence was synthetic build/checks and a real masked prompt cancelled before input; no authenticated Readwise collection existed. This section supersedes the earlier three-choice welcome design below.
+
+Proof: first reproduce the signed-out collection bypass at the command boundary, then verify readiness ordering, refusal modes, ownership and recovery, plus real terminal source-picker interaction. Use the safe fixture/PTY paths; do not run the old transcript generator or launch a personal browser. Finish with normal checks and the repository's structured review. Keep delivery on #106.
+
+Implemented at the shared collection owner: account identity, destination ownership and server approval precede runtime/provider work; prompts stay out of automated modes. Missing-source search retains its query and hands off to the canonical guide. Read-only skill selection no longer installs it. Recovery carries local checkout, streams, network, home and Account/server overrides. A second reproduced regression showed custom-server environment overrides diverted Account sign-in recovery; recovery now clears them only for Account sign-in and retains them in the collection retry.
+
+Proof on the final implementation: `pnpm validate` passes 1,027 tests across 71 files plus TypeScript, ESLint and formatting; build and package checks pass. Both signed-out collection and custom-server recovery regressions failed before their fixes. Actual terminal checks cover four welcome choices, discovery before sign-in, no-results Enter, immediate Ctrl+O, and the stable guide URL. The actual disposable Readwise connector reached its masked token prompt under synthetic prepared credentials and a local fixture server; Ctrl+C without any token now reports cancellation, without `readwise_credentials_missing`. A separate built-CLI trial executes the generated Account recovery command with both server overrides set. The HTTP fixture collection test independently reads back saved synthetic records under the prepared owner. These prove controlled CLI/transport behaviour, not live Readwise completeness or authenticated production storage. External network/browser access was blocked in terminal trials. The unsafe old transcript generator was not run.
+
+Delivery: Callum explicitly approved sending the patch to Codex after the initial automatic approval rejection. The repository's structured read-only Codex review then completed cleanly at its P0 threshold (0.95 confidence), with no actionable findings. No separate runtime proof is inferred from that review. Keep the scoped commit/push on the existing PR #106; no merge or release is authorized.
+
+## 2026-10-29 — CLI-first agent bootstrap and human welcome
+
+Accepted outcome: an ordinary request such as “Use Vana to collect my highlights from Readwise” can continue after CLI installation by reading bundled instructions through the CLI. Persistent installation into an agent harness is optional, explicitly confirmed, and is not needed by the running agent. Keep public skills self-contained and retain the single CLI PR #106.
+
+Implement at the existing skills owner: `skills show` returns full instructions and required reference content without skill-cache or agent-configuration writes. Keep existing metadata and installed status in JSON. Make this bootstrap discoverable in public docs and CLI help. Remove harness-specific reload advice. Preserve the standalone distribution without adding skills.sh or a separate Node requirement.
+
+For humans, bare interactive `vana` shows the approved welcome choices: connect my data, build an app using Vana data, finish setup. Direct commands and automated modes must remain prompt-free apart from their own requested actions. Reuse the current login/collection owners; do not change providers, accounts, networks or payment behavior.
+
+Boundary: test-credit commits already on #106 are preserved. Another chat owns browser/transcript isolation repairs in the primary checkout. Do not run the old transcript capture here: it can reach a browser under a replaced HOME. Verify this change with controlled skill reads and real terminal UI captures, with browser and network access blocked; live authenticated collection is outside this task.
+
+Finish: focused proof, normal safe repository checks, structured review, scoped commit/push to #106 and update the existing Linear project handoff. No merge or release is authorized.
+
+Implemented: full CLI workflow reads, generic install success, optional persistent setup, and a finite welcome menu. The builder choice hands off to safe app-identity inspection before registration; the connect choice reuses login and source collection. Skill content remains the shared owner for CLI reads and persistent installs. Runtime/packaging evidence and review results belong in PR #106; the existing Linear project update carries the team handoff. The authenticated Readwise journey is not established by these bootstrap checks.
+
 # BUI-951 implementation record
 
 ## BUI-951 API/export release candidate, 30 October 2026

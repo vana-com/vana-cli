@@ -21,8 +21,10 @@ import {
   password,
   select,
 } from "./prompts.js";
+import { canOfferSkillSetup, offerSkillSetup } from "../skills/setup.js";
 import { sourceNamePrompt } from "./source-name-prompt.js";
 import { searchSelect } from "./search-select.js";
+import { prepareCollection } from "./collection-readiness.js";
 import { Command, CommanderError, Option } from "commander";
 
 // Vana-branded theme for inquirer prompts — matches brand palette
@@ -32,6 +34,8 @@ const VANA_MUTED = "\x1b[38;2;112;112;112m";
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
 const BOLD_RESET = "\x1b[22m";
+const CONNECTOR_GUIDE_URL =
+  "https://github.com/vana-com/vana-cli/blob/main/skills/create-connector/SKILL.md";
 const vanaPromptTheme = {
   theme: {
     prefix: { idle: `${VANA_BLUE}?${RESET}`, done: `${VANA_GREEN}✓${RESET}` },
@@ -42,12 +46,15 @@ const vanaPromptTheme = {
       highlight: (text: string) => `${VANA_BLUE}${text}${RESET}`,
       help: (text: string) => `${VANA_MUTED}${text}${RESET}`,
       error: (text: string) => `\x1b[38;2;231;0;11m${text}${RESET}`,
+      keysHelpTip: () =>
+        "--------------------------------------------------\nUp/Down: move | Enter: choose | Ctrl+C: exit",
     },
   },
 };
 
 import {
   createConnectRenderer,
+  createFlowRenderer,
   createHumanRenderer,
   createLoginRenderer,
   formatDisplayPath,
@@ -126,6 +133,7 @@ import {
 } from "../connectors/registry.js";
 import {
   detectPersonalServerTarget,
+  createPersonalServerClient,
   ingestResult,
   personalServerOwnerMismatch,
   urlsMatch,
@@ -171,6 +179,7 @@ import {
 import { readLocalProfile } from "../pdpp/local.js";
 import {
   listAvailableSkills,
+  readSkillContent,
   installSkill,
   readInstalledSkills,
 } from "../skills/index.js";
@@ -220,6 +229,7 @@ import {
   trackActiveTelemetryEvent,
 } from "./telemetry.js";
 import { dataScopeKeys, scopeLeaf, scopeList } from "./data-slice.js";
+import { queryOwnerIdentity, type OwnerIdentity } from "./identity.js";
 
 interface GlobalOptions {
   json?: boolean;
@@ -419,6 +429,7 @@ export async function runCli(argv = process.argv): Promise<number> {
       `
 Quick start:
   vana login             Log in to your Vana account
+  vana whoami            Show your signed-in account identity
   vana connect           Connect a source and collect data
   vana sources           Browse available sources
   vana status            Check system health
@@ -434,8 +445,14 @@ Connectors:
   vana connectors add <key> --from <dir>   Register a local Collection Profile connector
   vana connectors list                     Show registered local connectors
 
-Agent:
+Agent quick start:
+  vana skills show connect-data --json    Read collection instructions; no skill installation needed
+  vana skills show create-connector --json   Read connector authoring instructions
+  vana skills show builder --json         Read app integration and verification instructions
+
+Agent setup (optional):
   vana mcp               Start MCP server (for Claude Code, Cursor, etc.)
+  vana skills setup        Offer the three public skills for your agent
   vana skills list         List available agent skills
   vana skills install      Install a skill for your agent
 
@@ -719,6 +736,16 @@ Examples:
   vana collect --json
 `,
   );
+
+  program
+    .command("whoami")
+    .description("Show your signed-in Vana account identity")
+    .action(async () => {
+      process.exitCode = await runCommandWithTelemetry(
+        { ...telemetryBaseContext, command: "whoami" },
+        async () => runWhoami(parsedOptions),
+      );
+    });
 
   const statusCommand = program
     .command("status")
@@ -1256,9 +1283,22 @@ Examples:
 
   skill
     .command("setup")
-    .description("Choose an agent skill to install (optional)")
+    .description("Offer Connect Data, Create Connector and Builder together")
     .action(async () => {
-      process.exitCode = await runSkillsGuidedPicker(parsedOptions);
+      process.exitCode = await offerSkillSetup({
+        interactive:
+          canOfferSkillSetup() &&
+          !parsedOptions.json &&
+          !parsedOptions.noInput &&
+          !parsedOptions.ipc &&
+          !parsedOptions.yes,
+        force: true,
+      });
+      if (parsedOptions.json) {
+        process.stdout.write(
+          `${JSON.stringify({ status: "skipped", reason: "interactive_confirmation_required", remedy: "vana skills setup" })}\n`,
+        );
+      }
     });
 
   skill
@@ -1284,7 +1324,9 @@ Examples:
 
   skill
     .command("show <name>")
-    .description("Show skill details")
+    .description(
+      "Read full instructions and required references without installing",
+    )
     .action(async (name: string) => {
       process.exitCode = await runCommandWithTelemetry(
         { ...telemetryBaseContext, command: "skills", subcommand: "show" },
@@ -1881,7 +1923,7 @@ async function runConnect(
   connectOptions: ConnectOptions = {},
 ): Promise<number> {
   const source = rawSource.toLowerCase();
-  const collectionOwner = loadExportOwner();
+  let collectionOwner = loadExportOwner();
   const exportId = crypto.randomUUID();
   const resultKey = path.basename(getSourceResultPath(source), ".json");
   const runResultPath = path.join(
@@ -1900,10 +1942,7 @@ async function runConnect(
     return CliExitCode.USAGE;
   }
   const emit = createEmitter(options);
-  const renderer: ConnectRenderer | null =
-    !options.json && !options.quiet
-      ? createConnectRenderer(connectOptions.verb)
-      : null;
+  let renderer: ConnectRenderer | null = null;
   const registrySources = await loadRegistrySources();
   const sourceLabels = createSourceLabelMap(registrySources);
   const displayName = displaySource(source, sourceLabels);
@@ -1911,8 +1950,99 @@ async function runConnect(
   let fetchLogPath: string | undefined;
   let runLogPath: string | undefined;
   let pendingExitCode: number | null = null;
+  let inputCancelled = false;
+  const retry = collectionRetryCommand(source, options, connectOptions);
 
   try {
+    const readiness = await prepareCollection({
+      interactive: canPromptForCollection(options),
+      session: () => ({
+        authenticated: Boolean(loadCredentials()?.account.session_token),
+        owner: loadExportOwner(),
+      }),
+      signIn: () =>
+        runLogin(
+          options,
+          undefined,
+          undefined,
+          collectionGoal(displayName, connectOptions.streams),
+        ),
+      detectServer: detectPersonalServerTarget,
+      prepareServer: async (owner) => {
+        await finishServerSetup(owner.address, options);
+      },
+      approveServer: (target) => loginToPersonalServer(target.url!, options),
+      confirmForeignServer: (target) =>
+        confirm({
+          message: `Store your ${displayName} data in ${formatAddress(target.health!.owner!)}'s Personal Server?`,
+          default: false,
+          ...vanaPromptTheme,
+        }),
+      checkAccess: async (target) => {
+        const auth = resolvePersonalServerAuthConfig(target.url!);
+        if (!auth || auth.type !== "bearerToken" || !auth.token) return "auth";
+        try {
+          await createPersonalServerClient({
+            url: target.url!,
+            auth,
+          }).listScopes();
+          return "ready";
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          return isPersonalServerAuthError(message) ||
+            /\bHTTP\s+(401|403)\b/.test(message)
+            ? "auth"
+            : "unavailable";
+        }
+      },
+      serverStartCommand: serverStartCommand(options),
+      serverApprovalCommand: (target) =>
+        commandWithContext(
+          `vana login --server ${quoteCommandArgument(target.url!)} --network ${resolveNetwork(options.network).name}`,
+          options,
+        ),
+    });
+    if (!readiness.ready) {
+      const remedy = readiness.remedy.startsWith("vana ")
+        ? commandWithContext(
+            `${readiness.remedy} --network ${resolveNetwork(options.network).name}`,
+            options,
+            readiness.reason === "vana_owner_unknown",
+            readiness.remedy === "vana login",
+          )
+        : readiness.remedy;
+      emit.event({
+        type: "outcome",
+        source,
+        status:
+          readiness.exitCode === CliExitCode.CONFIRMATION_REQUIRED
+            ? CliOutcomeStatus.NEEDS_INPUT
+            : CliOutcomeStatus.PERSONAL_SERVER_UNAVAILABLE,
+        reason: readiness.reason,
+        message: `${readiness.message} Run: ${remedy}. Then retry: ${retry}`,
+        remedy,
+        ...(readiness.personalServerOwner
+          ? {
+              personalServerUrl: readiness.personalServerUrl,
+              personalServerOwner: readiness.personalServerOwner,
+              account: readiness.account,
+            }
+          : {}),
+      });
+      if (!options.json) {
+        process.stderr.write(
+          `\n${readiness.message}\n\nNext: ${remedy}\nThen retry: ${retry}\n`,
+        );
+      }
+      return readiness.exitCode;
+    }
+    collectionOwner = readiness.owner;
+    const { target, allowForeignServer } = readiness;
+    renderer =
+      !options.json && !options.quiet
+        ? createConnectRenderer(connectOptions.verb)
+        : null;
     // Title
     renderer?.title(displayName);
 
@@ -1932,64 +2062,6 @@ async function runConnect(
         message: pendingBlock,
       });
       return CliExitCode.SERVER_UNAVAILABLE;
-    }
-
-    const target = await withPhaseProgress(
-      renderer,
-      "Finding your Personal Server",
-      () => detectPersonalServerTarget(),
-    );
-
-    // Collecting into a server owned by another identity looks like success
-    // and is not undoable, so settle ownership before touching the source.
-    const credentials = loadCredentials();
-    let allowForeignServer = false;
-    const mismatch = personalServerOwnerMismatch(
-      target.health?.owner,
-      collectionOwner?.address,
-    );
-    if (mismatch) {
-      // An expired login names whoever signed in last, which may be long
-      // gone; say that, rather than claim a current identity.
-      renderer?.detail(
-        !credentials
-          ? `Your vana login has expired or is unavailable, so the CLI cannot check that the Personal Server at ${target.url} (owner ${formatAddress(mismatch.owner)}) is yours. Run \`vana login\` to check.`
-          : `The Personal Server at ${target.url} belongs to ${formatAddress(mismatch.owner)}, but you are signed in as ${formatAddress(mismatch.account)}.`,
-      );
-      if (cannotAskAboutForeignServer(options)) {
-        // Nobody is there to say yes: never store one account's data in
-        // another account's server on its own (the nightly schedule runs
-        // exactly like this).
-        const message = foreignServerRefusal(target.url, mismatch.owner);
-        renderer?.fail(message);
-        if (!renderer && !options.json) process.stderr.write(`${message}\n`);
-        emit.event({
-          type: "outcome",
-          status: CliOutcomeStatus.PERSONAL_SERVER_UNAVAILABLE,
-          source,
-          reason: "personal_server_not_yours",
-          personalServerUrl: target.url,
-          personalServerOwner: mismatch.owner,
-          account: mismatch.account,
-          message,
-        });
-        return CliExitCode.SERVER_UNAVAILABLE;
-      } else {
-        renderer?.cleanup();
-        const useIt = await confirm({
-          message: `Store your ${displayName} data in ${formatAddress(mismatch.owner)}'s Personal Server?`,
-          default: false,
-          ...vanaPromptTheme,
-        });
-        if (!useIt) {
-          renderer?.fail("Cancelled.");
-          renderer?.detail(
-            "Sign in as that identity, or start the Personal Server for this one, then run `vana connect` again.",
-          );
-          return CliExitCode.CONFIRMATION_REQUIRED;
-        }
-        allowForeignServer = true;
-      }
     }
 
     // Collection Profile state is kept per server owner, so it has to be
@@ -2369,6 +2441,7 @@ async function runConnect(
             }
           } catch (error) {
             if (isPromptCancelled(error)) {
+              inputCancelled = true;
               throw new Error("__vana_prompt_cancelled__");
             }
             throw error;
@@ -2389,6 +2462,7 @@ async function runConnect(
       noInput: options.ipc ? false : options.noInput,
       onNeedInput: interactiveCallback,
     })) {
+      if (inputCancelled) throw new Error("__vana_prompt_cancelled__");
       emit.event(event);
       if (event.logPath) {
         runLogPath = event.logPath;
@@ -2875,16 +2949,6 @@ async function runConnect(
 
     renderer?.bell();
 
-    // Offer skill install on first successful connect (ask once)
-    if (
-      !state.config?.skillsPromptCompleted &&
-      !options.json &&
-      !options.noInput &&
-      process.stdin.isTTY
-    ) {
-      await maybePromptSkillInstall(emit);
-    }
-
     // Emit for --json consumers (unchanged)
     emit.event({
       type: "outcome",
@@ -2920,7 +2984,7 @@ async function runConnect(
       error instanceof Error ? error.message : "Unexpected error.";
     renderer?.fail(`Problem connecting ${displayName}.`);
     renderer?.detail(message);
-    renderer?.detail(`Retry: vana connect ${source}`);
+    renderer?.detail(`Retry: ${retry}`);
     emit.event({
       type: "outcome",
       status: CliOutcomeStatus.UNEXPECTED_INTERNAL_ERROR,
@@ -3141,8 +3205,72 @@ async function runList(options: GlobalOptions): Promise<number> {
   return 0;
 }
 
+function renderOwnerIdentity(
+  emit: Emitter,
+  identity: OwnerIdentity,
+  options: GlobalOptions,
+): void {
+  if (identity.authenticated) {
+    emit.keyValue(
+      "Account",
+      identity.email ?? identity.name ?? identity.address ?? "Unknown",
+      "success",
+    );
+    if (identity.email || identity.name) {
+      emit.keyValue(
+        /^0x[a-f0-9]{40}$/i.test(identity.address ?? "")
+          ? "Wallet"
+          : "Account ID",
+        identity.address ?? "Unknown",
+        "muted",
+      );
+    }
+    emit.keyValue(
+      "Sign-in method",
+      identity.loginMethod ?? "Not reported by Account",
+      "muted",
+    );
+    emit.keyValue(
+      "Auth",
+      `Authenticated (expires in ${formatExpiresIn(identity.expires_at!)})`,
+      "success",
+    );
+    emit.keyValue("Account URL", identity.accountUrl, "muted");
+    emit.keyValue("Network", resolveNetwork(options.network).name, "muted");
+  } else if (identity.authentication === "personal_server") {
+    emit.keyValue("Account", "Not logged in", "muted");
+    if (identity.address) emit.keyValue("Wallet", identity.address, "muted");
+    emit.keyValue("Auth", "Personal Server session only", "muted");
+    emit.keyValue(
+      "Server URL",
+      identity.personalServerUrl ?? "Unknown",
+      "muted",
+    );
+  } else {
+    emit.keyValue("Account", "Not logged in", "muted");
+    emit.keyValue("Auth", "Run `vana login` to authenticate", "muted");
+  }
+}
+
+async function runWhoami(options: GlobalOptions): Promise<number> {
+  const identity = await queryOwnerIdentity(loadCredentials());
+  const network = resolveNetwork(options.network);
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify({ ...identity, network: network.name, chainId: network.chainId })}\n`,
+    );
+  } else {
+    const emit = createEmitter(options);
+    emit.title("Vana account");
+    emit.blank();
+    renderOwnerIdentity(emit, identity, options);
+    if (!identity.authenticated) emit.next("vana login");
+  }
+  return CliExitCode.OK;
+}
+
 async function runStatus(options: GlobalOptions): Promise<number> {
-  const { status, nextSteps } = await queryStatus();
+  const { status, nextSteps, otherServers } = await queryStatus();
   const state = await readCliState();
 
   // Build per-source health map from stored state
@@ -3175,15 +3303,19 @@ async function runStatus(options: GlobalOptions): Promise<number> {
   // The server answering here may be another account's, still running after
   // a login switch: it is listed as such, never as this account's.
   const authCreds = loadCredentials();
-  const other = foreignServer(
+  const selectedOther = foreignServer(
     {
       state: status.personalServer,
       url: status.personalServerUrl ?? null,
       owner: status.personalServerOwner ?? null,
     },
     authCreds,
+    { inspection: true },
   );
-  const ownRunning = status.personalServer === "available" && !other;
+  const others = statusOtherServers(selectedOther, otherServers);
+  const other = others[0] ?? null;
+  const ownRunning = status.personalServer === "available" && !selectedOther;
+  const identity = await queryOwnerIdentity(authCreds, { refresh: false });
   const ownDir =
     authCreds && !isExpired(authCreds)
       ? ownCliServerDir(
@@ -3191,6 +3323,8 @@ async function runStatus(options: GlobalOptions): Promise<number> {
           authCreds.account.address,
         )
       : null;
+  const recoveryCommand =
+    !ownRunning && (other || ownDir) ? serverStartCommand(options) : null;
 
   const accessRequests =
     ownRunning && status.personalServerUrl
@@ -3198,7 +3332,6 @@ async function runStatus(options: GlobalOptions): Promise<number> {
       : [];
 
   if (options.json) {
-    const jsonAuthCreds = authCreds;
     const compactJson = {
       runtime: status.runtime,
       personalServer: ownRunning ? status.personalServer : "unavailable",
@@ -3212,13 +3345,11 @@ async function runStatus(options: GlobalOptions): Promise<number> {
         ? { url: other.url, owner: other.owner, notThisAccount: true }
         : null,
       pendingSyncCount: status.pendingSyncCount ?? 0,
-      auth: jsonAuthCreds
-        ? {
-            authenticated: !isExpired(jsonAuthCreds),
-            address: jsonAuthCreds.account.address,
-            expires_at: jsonAuthCreds.account.expires_at,
-          }
-        : { authenticated: false },
+      otherPersonalServers: others.map((server) => ({
+        ...server,
+        notThisAccount: true,
+      })),
+      auth: identity,
       sources: {
         connected: status.summary?.connectedCount ?? 0,
         needsAttention: status.summary?.needsAttentionCount ?? 0,
@@ -3230,7 +3361,7 @@ async function runStatus(options: GlobalOptions): Promise<number> {
         displayName: request.displayName,
         scopes: request.scopes,
       })),
-      next: other ? "vana server start" : (nextSteps[0] ?? null),
+      next: recoveryCommand ?? nextSteps[0] ?? null,
     };
     process.stdout.write(`${JSON.stringify(compactJson)}\n`);
     return 0;
@@ -3254,28 +3385,17 @@ async function runStatus(options: GlobalOptions): Promise<number> {
     emit.keyValue("Personal Server", "not connected", "warning");
   }
 
-  // Auth state
-  if (authCreds && !isExpired(authCreds)) {
-    emit.keyValue("Account", authCreds.account.address, "success");
-    emit.keyValue(
-      "Auth",
-      `Authenticated (expires in ${formatExpiresIn(authCreds.account.expires_at)})`,
-      "success",
-    );
-  } else {
-    emit.keyValue("Account", "Not logged in", "muted");
-    emit.keyValue("Auth", "Run `vana login` to authenticate", "muted");
-  }
+  renderOwnerIdentity(emit, identity, options);
 
-  if (other) {
+  for (const server of others) {
     emit.keyValue(
       "Also running",
-      `${other.url} for ${other.owner} (not this account)`,
+      `${server.url} for ${server.owner} (not this account)`,
       "muted",
     );
   }
-  if (!ownRunning && (other || ownDir)) {
-    emit.detail(ownServerDownLine(Boolean(ownDir)));
+  if (recoveryCommand) {
+    emit.detail(ownServerDownLine(Boolean(ownDir), recoveryCommand));
   }
   const accessRequestLine = pendingRequestsStatusLine(accessRequests);
   if (accessRequestLine) {
@@ -3364,7 +3484,10 @@ async function runStatus(options: GlobalOptions): Promise<number> {
     }
   }
 
-  if (nextSteps.length > 0) {
+  if (recoveryCommand) {
+    emit.blank();
+    emit.next(recoveryCommand);
+  } else if (nextSteps.length > 0) {
     emit.blank();
     const command = extractCommand(nextSteps[0]);
     if (command) {
@@ -3711,13 +3834,15 @@ function networkOfGateway(gatewayUrl: unknown): VanaNetworkName | null {
 function foreignServer(
   server: { state: string; url: string | null; owner: string | null },
   credentials: VanaCredentials | null,
+  options: { inspection?: boolean } = {},
 ): { url: string; owner: string; account: string } | null {
   if (server.state !== "available" || !server.url) return null;
-  if (!credentials || isExpired(credentials)) return null;
-  const mismatch = personalServerOwnerMismatch(
-    server.owner,
-    credentials.account.address,
-  );
+  if (!options.inspection && (!credentials || isExpired(credentials)))
+    return null;
+  const account = options.inspection
+    ? (loadAccountAddressForOwnership() ?? credentials?.account.address)
+    : credentials?.account.address;
+  const mismatch = personalServerOwnerMismatch(server.owner, account);
   return mismatch ? { url: server.url, ...mismatch } : null;
 }
 
@@ -3791,6 +3916,19 @@ async function pendingScopeRequestsForStatus(
   }
 }
 
+function statusOtherServers(
+  selected: { url: string; owner: string } | null,
+  discovered: { url: string; owner: string }[] = [],
+): { url: string; owner: string }[] {
+  const others: { url: string; owner: string }[] = [];
+  for (const server of [...(selected ? [selected] : []), ...discovered]) {
+    if (!others.some((other) => urlsMatch(other.url, server.url))) {
+      others.push({ url: server.url, owner: server.owner });
+    }
+  }
+  return others;
+}
+
 /** This account's own `vana server start` data dir, running or not. */
 function ownCliServerDir(
   network: VanaNetworkName,
@@ -3808,11 +3946,102 @@ function ownCliServerDir(
   }
 }
 
+function commandWithContext(
+  command: string,
+  options: GlobalOptions,
+  withoutSession = false,
+  accountSignIn = false,
+): string {
+  const environment: [string, string][] = [["VANA_HOME", getVanaHome()]];
+  if (process.env.VANA_ENV === "dev" || process.env.VANA_ENV === "prod") {
+    environment.push(["VANA_ENV", process.env.VANA_ENV]);
+  }
+  if (process.env.VANA_ACCOUNT_URL) {
+    environment.push(["VANA_ACCOUNT_URL", getAccountUrl()]);
+  }
+  for (const key of ["VANA_PS_URL", "VANA_PERSONAL_SERVER_URL"]) {
+    const value = process.env[key];
+    if (value) environment.push([key, accountSignIn ? "" : value]);
+  }
+  const windows = process.platform === "win32";
+  const context = environment.map(([key, value]) => {
+    if (windows) return `$env:${key}='${value.replace(/'/g, "''")}'`;
+    return `${key}='${value.replace(/'/g, "'\\''")}'`;
+  });
+  context.push(command);
+  const result = context.join(windows ? "; " : " ");
+  return withoutSession
+    ? windows
+      ? `$env:VANA_SESSION_TOKEN=$null; ${result}`
+      : `env -u VANA_SESSION_TOKEN ${result}`
+    : result;
+}
+
+function serverStartCommand(options: GlobalOptions): string {
+  return commandWithContext(
+    `vana server start --network ${resolveNetwork(options.network).name}`,
+    options,
+  );
+}
+
+function canPromptForCollection(options: GlobalOptions): boolean {
+  return Boolean(
+    process.stdin.isTTY &&
+    process.stdout.isTTY &&
+    !options.json &&
+    !options.noInput &&
+    !options.ipc &&
+    !options.yes &&
+    !options.quiet &&
+    process.env[SCHEDULED_RUN_ENV] !== "1",
+  );
+}
+
+function collectionGoal(name: string, streams?: string): string {
+  const data =
+    streams
+      ?.split(",")
+      .map((stream) => stream.trim().replaceAll("_", " "))
+      .filter(Boolean)
+      .join(", ") || "data";
+  return `${name} ${data}`;
+}
+
+function collectionRetryCommand(
+  source: string,
+  options: GlobalOptions,
+  connectOptions: ConnectOptions,
+): string {
+  const parts = ["vana connect", quoteCommandArgument(source)];
+  if (connectOptions.from)
+    parts.push(
+      "--from",
+      quoteCommandArgument(path.resolve(connectOptions.from)),
+    );
+  if (connectOptions.streams !== undefined)
+    parts.push("--streams", quoteCommandArgument(connectOptions.streams));
+  parts.push("--network", resolveNetwork(options.network).name);
+  return commandWithContext(
+    parts.join(" "),
+    options,
+    Boolean(process.env.VANA_SESSION_TOKEN && !loadExportOwner()),
+  );
+}
+
+function quoteCommandArgument(value: string): string {
+  const escaped =
+    process.platform === "win32"
+      ? value.replaceAll("'", "''")
+      : value.replaceAll("'", "'\\''");
+  return `'${escaped}'`;
+}
+
 /** What to say when this account's own server is not the one running. */
-function ownServerDownLine(hasOwnServer: boolean): string {
+function ownServerDownLine(hasOwnServer: boolean, command: string): string {
+  const shell = process.platform === "win32" ? " in PowerShell" : "";
   return hasOwnServer
-    ? "Your Personal Server is not running. Start it with `vana server start`."
-    : "No Personal Server of yours is running. Start one with `vana server start`.";
+    ? `Your Personal Server is not running. Start it${shell} with \`${command}\`.`
+    : `No Personal Server of yours is running. Start one${shell} with \`${command}\`.`;
 }
 
 /**
@@ -3860,21 +4089,26 @@ async function runServerStatus(
   statusOptions: { all?: boolean } = {},
 ): Promise<number> {
   const emit = createEmitter(options);
-  const target = await detectPersonalServerTarget();
+  const target = await detectPersonalServerTarget({
+    purpose: "owner-inspection",
+  });
   const credentials = loadCredentials();
   const account = credentials?.account.address;
   // The same check `vana status` makes: the server answering here may be
   // another account's, still running after a login switch. Then nothing
   // below is about it: its URLs are not this account's to hand out.
-  const other = foreignServer(
+  const selectedOther = foreignServer(
     {
       state: target.state,
       url: target.url,
       owner: target.health?.owner ?? null,
     },
     credentials,
+    { inspection: true },
   );
-  const own: PersonalServerTarget = other
+  const others = statusOtherServers(selectedOther, target.otherServers);
+  const other = others[0] ?? null;
+  const own: PersonalServerTarget = selectedOther
     ? { state: "unavailable", url: null, source: null, health: null }
     : target;
   const owner =
@@ -3913,7 +4147,9 @@ async function runServerStatus(
   const otherCliServers = cliServers.filter(
     (server) => server.dir !== dataDir?.path,
   );
-  const otherIdentity = other ? (target.health?.identity ?? null) : null;
+  const otherIdentity = selectedOther
+    ? (target.health?.identity ?? null)
+    : null;
   const isOtherServer = (server: CliServerDir) =>
     Boolean(
       other &&
@@ -3949,12 +4185,13 @@ async function runServerStatus(
           ? {
               url: other.url,
               owner: other.owner,
-              source: target.source,
+              source: selectedOther ? target.source : null,
               identity: otherIdentity,
               pid: cliServers.find(isOtherServer)?.pid ?? null,
-              health: target.health,
+              health: selectedOther ? target.health : null,
             }
           : null,
+        otherServers: others,
         otherLocalServers: otherCliServers.map((server) => ({
           owner: server.owner,
           pid: server.pid,
@@ -3963,7 +4200,7 @@ async function runServerStatus(
         registeredServers: registrations,
         health: own.health,
         scopeCount: totalScopeCount,
-        notThisAccount: other !== null,
+        notThisAccount: selectedOther !== null,
       })}\n`,
     );
     return 0;
@@ -4018,16 +4255,19 @@ async function runServerStatus(
   if (dataDir) {
     emit.keyValue("Data on disk", formatDisplayPath(dataDir.path), "muted");
   }
-  if (other) {
-    const pid = cliServers.find(isOtherServer)?.pid;
+  for (const server of others) {
+    const pid = cliServers.find((local) =>
+      sameAccountAddress(local.owner, server.owner),
+    )?.pid;
     emit.keyValue(
       "Also running",
-      `${other.url} for ${formatAddress(other.owner)}${pid ? ` (pid ${pid})` : ""}, not this account`,
+      `${server.url} for ${formatAddress(server.owner)}${pid ? ` (pid ${pid})` : ""}, not this account`,
       "muted",
     );
   }
   for (const server of otherCliServers) {
-    if (isOtherServer(server)) continue;
+    if (others.some((other) => sameAccountAddress(server.owner, other.owner)))
+      continue;
     emit.keyValue(
       "Also running",
       `vana server start for ${server.owner ? formatAddress(server.owner) : "another account"} (pid ${server.pid})`,
@@ -4066,9 +4306,12 @@ async function runServerStatus(
   }
 
   if (own.state !== "available") {
+    const recoveryCommand = serverStartCommand(options);
     emit.blank();
-    if (other || ownDir) emit.detail(ownServerDownLine(Boolean(ownDir)));
-    emit.next("vana server start");
+    if (other || ownDir) {
+      emit.detail(ownServerDownLine(Boolean(ownDir), recoveryCommand));
+    }
+    emit.next(recoveryCommand);
   }
 
   emit.blank();
@@ -8098,53 +8341,6 @@ function isPromptCancelled(error: unknown): boolean {
 // Skill commands
 // ---------------------------------------------------------------------------
 
-const BASE_SKILL_ID = "connect-data";
-
-async function maybePromptSkillInstall(
-  emit: ReturnType<typeof createEmitter>,
-): Promise<void> {
-  try {
-    const skills = await listAvailableSkills();
-    const baseSkill = skills.find((s) => s.id === BASE_SKILL_ID);
-    if (!baseSkill) return;
-
-    const installed = await readInstalledSkills();
-    if (installed.some((s) => s.id === BASE_SKILL_ID)) {
-      await updateCliConfig({ skillsPromptCompleted: true });
-      return;
-    }
-
-    emit.blank();
-    const shouldInstall = await confirm({
-      message:
-        "Install a skill so your coding agent knows how to use your connected data?",
-      default: true,
-      ...vanaPromptTheme,
-    });
-
-    if (shouldInstall) {
-      try {
-        await installSkill(BASE_SKILL_ID);
-        emit.success(`Installed skill: ${baseSkill.name}`);
-      } catch {
-        // Non-fatal.
-      }
-      const remaining = skills.filter((s) => s.id !== BASE_SKILL_ID);
-      if (remaining.length > 0) {
-        emit.next("vana skills");
-      }
-    }
-
-    await updateCliConfig({ skillsPromptCompleted: true });
-  } catch {
-    // Prompt cancelled or error — mark as completed to avoid re-asking.
-    await updateCliConfig({ skillsPromptCompleted: true });
-  }
-}
-
-const CONNECTOR_GUIDE_URL =
-  "https://github.com/vana-com/vana-cli/blob/main/skills/create-connector/SKILL.md";
-
 async function runWelcome(options: GlobalOptions): Promise<number> {
   const emit = createEmitter(options);
   emit.info("[OK] Vana installed.");
@@ -8229,10 +8425,7 @@ async function runSkillsGuidedPicker(options: GlobalOptions): Promise<number> {
       ...vanaPromptTheme,
     });
 
-    if (installedIds.has(selectedId)) {
-      return runSkillShow(selectedId, options);
-    }
-    return runSkillInstall(selectedId, options);
+    return runSkillShow(selectedId, options);
   } catch (error) {
     if (isPromptCancelled(error)) {
       emit.info("Cancelled.");
@@ -8346,46 +8539,22 @@ async function runSkillShow(
   const emit = createEmitter(options);
 
   try {
-    const skills = await listAvailableSkills();
-    const match = skills.find((s) => s.id.toLowerCase() === name.toLowerCase());
-
-    if (!match) {
-      if (options.json) {
-        process.stdout.write(
-          `${JSON.stringify({ error: `No skill found with id "${name}".` })}\n`,
-        );
-      } else {
-        emit.info(`No skill found with id "${name}".`);
-        emit.blank();
-        emit.next("vana skills list");
-      }
-      return 1;
-    }
-
+    const match = await readSkillContent(name);
     const installed = await readInstalledSkills();
     const isInstalled = installed.some((s) => s.id === match.id);
-
     if (options.json) {
       process.stdout.write(
         `${JSON.stringify({ ...match, installed: isInstalled })}\n`,
       );
-      return 0;
+    } else {
+      process.stdout.write(`${match.instructions.trimEnd()}\n`);
+      for (const resource of match.resources) {
+        process.stdout.write(
+          `\n# Reference: ${resource.path}\n\n${resource.content.trimEnd()}\n`,
+        );
+      }
     }
-
-    const badges: Array<{ text: string; tone?: RenderTone }> = [];
-    if (isInstalled) {
-      badges.push({ text: "installed", tone: "success" });
-    }
-    emit.sourceTitle(match.name, badges);
-    emit.detail(match.description);
-    emit.keyValue("Version", match.version);
-
-    if (!isInstalled) {
-      emit.blank();
-      emit.next(`vana skills install ${match.id}`);
-    }
-
-    return 0;
+    return CliExitCode.OK;
   } catch (error) {
     if (options.json) {
       process.stdout.write(
@@ -8394,7 +8563,7 @@ async function runSkillShow(
     } else {
       emit.info(error instanceof Error ? error.message : String(error));
     }
-    return 1;
+    return CliExitCode.FAILURE;
   }
 }
 
@@ -8489,9 +8658,12 @@ async function runLogin(
   options: GlobalOptions,
   serverUrl?: string,
   clientId?: string,
+  collection?: string,
 ): Promise<number> {
   // Determine auth target: cloud (account.vana.org) or self-hosted (PS directly)
-  const psUrl = serverUrl ?? resolveLoginServerUrl() ?? null;
+  const psUrl = collection
+    ? null
+    : (serverUrl ?? resolveLoginServerUrl() ?? null);
   const authTarget = getAuthTarget(psUrl);
 
   // If self-hosted, use /auth/device flow against the PS
@@ -8557,7 +8729,9 @@ async function runLogin(
       );
       emit.blank();
       emit.info("  Run `vana logout` to sign in as someone else.");
-      return (await finishServerSetup(existing.account.address, options)) ?? 0;
+      return collection
+        ? CliExitCode.OK
+        : ((await finishServerSetup(existing.account.address, options)) ?? 0);
     }
     return 0;
   }
@@ -8621,7 +8795,7 @@ async function runLogin(
   }
 
   // Interactive mode
-  const renderer = createLoginRenderer();
+  const renderer = collection ? createFlowRenderer() : createLoginRenderer();
   const humanRenderer = createHumanRenderer();
   // Branding lives in emphasis, not chrome (CLI-BEAUTY doctrine: no
   // banners). The two things the user must act on - the URL and the code -
@@ -8631,10 +8805,23 @@ async function runLogin(
       return;
     }
     const theme = humanRenderer.theme;
+    if (collection) {
+      process.stderr.write(`\nOpen in your browser: ${theme.accent(uri)}\n`);
+      const prefilled = new URL(uri).searchParams.get("user_code") === code;
+      process.stderr.write(
+        prefilled
+          ? "The code is filled in; choose Continue.\n"
+          : `In your browser, enter code: ${code}\n`,
+      );
+      process.stderr.write(
+        "\nFinish signing in in your browser. This terminal will continue automatically.\n\n--------------------------------------------------\nCtrl+C: cancel\n",
+      );
+      return;
+    }
     process.stderr.write(`  ${theme.muted("Open")}  ${theme.accent(uri)}\n`);
     process.stderr.write(`  ${theme.muted("Enter")} ${theme.heading(code)}\n`);
   };
-  renderer.title("Vana");
+  renderer.title(collection ? `Sign in to save your ${collection}.` : "Vana");
   // Set once authorized: a running server that belongs to another account.
   let foreignServer: { url: string; owner: string } | null = null;
   // Set once authorized: this account's server, known here but not running.
@@ -8720,7 +8907,10 @@ async function runLogin(
     },
     {
       clientId,
-      openBrowser: Boolean(process.stdout.isTTY) && !options.noInput,
+      openBrowser:
+        Boolean(process.stdout.isTTY) &&
+        !options.noInput &&
+        !process.env.VANA_NO_BROWSER,
     },
   );
 
@@ -8730,6 +8920,7 @@ async function runLogin(
   // Never offer to start a second server next to another account's without
   // the user reading why: the lines above already said what to do.
   if (foreignServer) return 0;
+  if (collection) return CliExitCode.OK;
   return (
     (await finishServerSetup(
       creds.account.address,

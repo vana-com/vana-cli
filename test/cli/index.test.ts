@@ -306,6 +306,7 @@ vi.mock("../../src/cli/search-select.js", () => ({
 
 vi.mock("../../src/skills/index.js", () => ({
   listAvailableSkills: vi.fn().mockResolvedValue([]),
+  readSkillContent: vi.fn(),
   installSkill: vi.fn().mockResolvedValue({
     installedPath: "/tmp/skills",
     installedPaths: ["/tmp/skills"],
@@ -405,6 +406,10 @@ describe("runCli", () => {
   beforeEach(() => {
     stdout = "";
     stderr = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("network unavailable in test")),
+    );
     writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
       chunk: string | Uint8Array,
     ) => {
@@ -541,11 +546,260 @@ describe("runCli", () => {
     vi.clearAllMocks();
     vi.resetModules();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
+
+  function readyToCollect(): void {
+    mockLoadCredentials.mockReturnValue(null);
+    mockReadFileSync.mockImplementation((file: string) => {
+      if (!/auth(?:\..+)?\.json$/.test(String(file)))
+        throw new Error("missing");
+      return JSON.stringify({
+        account: {
+          address: exportAccount,
+          session_token: "account-session",
+          expires_at: "2999-01-01T00:00:00.000Z",
+        },
+        personal_server: {
+          url: "http://localhost:8080",
+          session_token: "server-session",
+          expires_at: "2999-01-01T00:00:00.000Z",
+        },
+      });
+    });
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "available",
+      url: "http://localhost:8080",
+      source: "config",
+      health: { owner: exportAccount, status: "ok", version: "1", uptime: 1 },
+    });
+    mockResolvePersonalServerAuthConfig.mockReturnValue({
+      type: "bearerToken",
+      token: "server-session",
+    });
+  }
 
   function normalizeRenderedTimestamps(output: string): string {
     return output.replace(/Updated: .+/g, "Updated: <timestamp>");
   }
+
+  async function atTerminal<T>(action: () => Promise<T>): Promise<T> {
+    const streams = [process.stdin, process.stdout, process.stderr];
+    const descriptors = streams.map((stream) =>
+      Object.getOwnPropertyDescriptor(stream, "isTTY"),
+    );
+    streams.forEach((stream) =>
+      Object.defineProperty(stream, "isTTY", {
+        configurable: true,
+        value: true,
+      }),
+    );
+    try {
+      return await action();
+    } finally {
+      streams.forEach((stream, i) => {
+        if (descriptors[i])
+          Object.defineProperty(stream, "isTTY", descriptors[i]!);
+        else Reflect.deleteProperty(stream, "isTTY");
+      });
+    }
+  }
+
+  it("stops before provider access when the signed-in owner has no ready server", async () => {
+    readyToCollect();
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "unavailable",
+      url: null,
+      source: null,
+      health: null,
+    });
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(await runCli(["node", "vana", "connect", "github", "--json"])).toBe(
+      5,
+    );
+    expect(managedFetchCalls).toBe(0);
+    expect(mockPassword).not.toHaveBeenCalled();
+    expect(JSON.parse(stdout.trim())).toMatchObject({
+      reason: "personal_server_unavailable",
+      remedy: expect.stringContaining("vana server start"),
+    });
+  });
+
+  it("returns a usable recovery for an env session with no verified owner", async () => {
+    vi.stubEnv("VANA_SESSION_TOKEN", "synthetic-session");
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(await runCli(["node", "vana", "connect", "github", "--json"])).toBe(
+      7,
+    );
+    expect(JSON.parse(stdout.trim())).toMatchObject({
+      reason: "vana_owner_unknown",
+      remedy: expect.stringContaining("VANA_SESSION_TOKEN"),
+    });
+    expect(managedFetchCalls).toBe(0);
+    expect(mockRunDeviceCodeFlow).not.toHaveBeenCalled();
+  });
+
+  it("recovers Account sign-in without losing an explicit Personal Server destination", async () => {
+    vi.stubEnv("VANA_PS_URL", "http://localhost:8080");
+    vi.stubEnv("VANA_PERSONAL_SERVER_URL", "http://localhost:9090");
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(await runCli(["node", "vana", "connect", "github", "--json"])).toBe(
+      7,
+    );
+    const outcome = JSON.parse(stdout.trim());
+    const envPrefix = process.platform === "win32" ? "$env:" : "";
+    expect(outcome.remedy).toContain(`${envPrefix}VANA_PS_URL=''`);
+    expect(outcome.remedy).toContain(`${envPrefix}VANA_PERSONAL_SERVER_URL=''`);
+    expect(outcome.message.split("Then retry:")[1]).toContain(
+      `${envPrefix}VANA_PS_URL='http://localhost:8080'`,
+    );
+    expect(outcome.message.split("Then retry:")[1]).toContain(
+      `${envPrefix}VANA_PERSONAL_SERVER_URL='http://localhost:9090'`,
+    );
+    expect(managedFetchCalls).toBe(0);
+  });
+
+  it("signs in before source authentication and attributes the saved result to that account", async () => {
+    const stages: string[] = [];
+    const credentials = {
+      account: {
+        address: exportAccount,
+        session_token: "synthetic-account",
+        expires_at: "2999-01-01T00:00:00.000Z",
+      },
+      personal_server: {
+        url: "http://localhost:8080",
+        session_token: "synthetic-server",
+        expires_at: "2999-01-01T00:00:00.000Z",
+      },
+    };
+    mockListAvailableSources.mockResolvedValue([
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ]);
+    mockRunDeviceCodeFlow.mockImplementation(async (callbacks) => {
+      stages.push("vana-sign-in");
+      callbacks.onCode(
+        "TEST-CODE",
+        "https://account.vana.org/device?user_code=TEST-CODE",
+      );
+      await callbacks.onAuthorized(credentials);
+      return credentials;
+    });
+    mockSaveCredentials.mockImplementation(async (saved) => {
+      mockReadFileSync.mockReturnValue(JSON.stringify(saved));
+    });
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "available",
+      url: "http://localhost:8080",
+      source: "config",
+      health: { owner: exportAccount, status: "ok", version: "1", uptime: 1 },
+    });
+    mockResolvePersonalServerAuthConfig.mockReturnValue({
+      type: "bearerToken",
+      token: "synthetic-server",
+    });
+    mockCreatePersonalServerClient.mockReturnValue({
+      listScopes: async () => {
+        stages.push("server-ready");
+        return [];
+      },
+    });
+    mockPassword.mockImplementation(async () => {
+      stages.push("source-secret");
+      return "synthetic-secret";
+    });
+    runConnectorEvents = [
+      {
+        type: "needs-input",
+        source: "github",
+        fields: ["password"],
+        message: "Source credential",
+      },
+      {
+        type: "collection-complete",
+        source: "github",
+        resultPath: "/tmp/synthetic-collection.json",
+      },
+    ];
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({ profile: { id: "synthetic" } }),
+    );
+    mockIngestResult.mockImplementation(async () => {
+      stages.push("save");
+      return [{ type: "ingest-complete", source: "github" }];
+    });
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(
+      await atTerminal(() => runCli(["node", "vana", "connect", "github"])),
+    ).toBe(0);
+    expect(stages).toEqual([
+      "vana-sign-in",
+      "server-ready",
+      "source-secret",
+      "save",
+    ]);
+    expect(mockIngestResult.mock.calls[0]?.[3]).toMatchObject({
+      export: { receipt: { owner: { address: exportAccount } } },
+    });
+    expect(stderr).toContain("Sign in to save your GitHub data.");
+    expect(stderr).toContain("The code is filled in; choose Continue.");
+    expect(stderr).not.toContain("synthetic-secret");
+    expect(stdout).not.toContain("synthetic-secret");
+  });
+
+  it("carries a missing-source search directly to the guide without sign-in or skill installation", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ]);
+    mockSearchSelect.mockResolvedValueOnce({ missingSource: "Readwise" });
+    mockSelect.mockResolvedValueOnce("build");
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(await atTerminal(() => runCli(["node", "vana", "connect"]))).toBe(0);
+    expect(mockInput).not.toHaveBeenCalled();
+    expect(mockRunDeviceCodeFlow).not.toHaveBeenCalled();
+    expect(managedFetchCalls).toBe(0);
+    expect(stdout).toContain("Build a Readwise connector");
+    expect(stdout).toContain("/skills/create-connector/SKILL.md");
+    expect(stdout).not.toContain("#build-a-missing");
+    const skills = await import("../../src/skills/index.js");
+    expect(skills.installSkill).not.toHaveBeenCalled();
+  });
+
+  it("lets a missing-source user choose another source before any account preparation", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ]);
+    mockSearchSelect
+      .mockResolvedValueOnce({ missingSource: "Readwise" })
+      .mockRejectedValueOnce(new ExitPromptError());
+    mockSelect.mockResolvedValueOnce("back");
+    const { runCli } = await import("../../src/cli/index.js");
+    expect(await atTerminal(() => runCli(["node", "vana", "connect"]))).toBe(1);
+    expect(mockSearchSelect).toHaveBeenCalledTimes(2);
+    expect(mockRunDeviceCodeFlow).not.toHaveBeenCalled();
+  });
+
+  it("requires Vana sign-in before fetching a connector or requesting source credentials", async () => {
+    mockListAvailableSources.mockResolvedValue([
+      { id: "github", name: "GitHub", authMode: "interactive" },
+    ]);
+    const { runCli } = await import("../../src/cli/index.js");
+    const exitCode = await runCli([
+      "node",
+      "vana",
+      "connect",
+      "github",
+      "--json",
+      "--no-input",
+    ]);
+    expect(exitCode).toBe(7);
+    expect(managedFetchCalls).toBe(0);
+    expect(mockInput).not.toHaveBeenCalled();
+    expect(mockPassword).not.toHaveBeenCalled();
+    expect(mockUpdateSourceState).not.toHaveBeenCalled();
+    expect(stdout).toContain('"reason":"vana_sign_in_required"');
+    expect(stdout).toContain("vana login");
+  });
 
   it("lists available sources in json mode", async () => {
     mockListAvailableSources.mockResolvedValue([
@@ -636,6 +890,118 @@ describe("runCli", () => {
         needsAttention: 0,
       },
       next: expect.stringContaining("vana data show steam"),
+    });
+  });
+
+  describe("owner identity", () => {
+    const address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    beforeEach(() => {
+      vi.stubEnv("VANA_ENV", "dev");
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          account: {
+            address,
+            session_token: "private-account-session",
+            expires_at: "2999-01-01T00:00:00Z",
+          },
+          personal_server: null,
+        }),
+      );
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({
+            email: "owner@example.com",
+            primary_wallet_address: address,
+          }),
+        ),
+      );
+    });
+
+    afterEach(() => vi.unstubAllGlobals());
+
+    it("whoami shows the Account email, wallet and environment without exposing the session", async () => {
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli(["node", "vana", "whoami", "--network", "moksha"]),
+      ).toBe(0);
+      expect(stdout).toContain("owner@example.com");
+      expect(stdout).toContain(address);
+      expect(stdout).toContain("https://account-dev.vana.org");
+      expect(stdout).toContain("moksha");
+      expect(stdout).toContain("Not reported by Account");
+      expect(stdout + stderr).not.toContain("private-account-session");
+    });
+
+    it("status uses local identity without an Account profile request", async () => {
+      const { runCli } = await import("../../src/cli/index.js");
+      await runCli(["node", "vana", "status", "--network", "moksha", "--json"]);
+      expect(JSON.parse(stdout).auth).toMatchObject({
+        authenticated: true,
+        authentication: "account",
+        address,
+        email: null,
+        profileStatus: "not_requested",
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it.each(["whoami", "status"])(
+      "%s distinguishes a server-only login in human and JSON output",
+      async (command) => {
+        mockReadFileSync.mockReturnValue(
+          JSON.stringify({
+            account: {
+              address,
+              session_token: "",
+              expires_at: "2999-01-01T00:00:00Z",
+            },
+            personal_server: {
+              url: "https://self-hosted.example.test",
+              session_token: "private-server-session",
+              expires_at: "2999-01-01T00:00:00Z",
+            },
+          }),
+        );
+        const { runCli } = await import("../../src/cli/index.js");
+        await runCli(["node", "vana", command]);
+        expect(stdout).toContain("Personal Server session only");
+        expect(stdout).not.toContain("Authenticated (expires");
+        stdout = "";
+        await runCli(["node", "vana", command, "--json"]);
+        const payload = JSON.parse(stdout);
+        expect(command === "status" ? payload.auth : payload).toMatchObject({
+          authenticated: false,
+          authentication: "personal_server",
+          address,
+        });
+        expect(stdout + stderr).not.toContain("private-server-session");
+        expect(fetch).not.toHaveBeenCalled();
+      },
+    );
+
+    it("whoami emits a single machine-readable owner identity", async () => {
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli([
+          "node",
+          "vana",
+          "whoami",
+          "--network",
+          "moksha",
+          "--json",
+        ]),
+      ).toBe(0);
+      expect(JSON.parse(stdout)).toMatchObject({
+        authenticated: true,
+        address,
+        email: "owner@example.com",
+        loginMethod: null,
+        accountUrl: "https://account-dev.vana.org",
+        network: "moksha",
+      });
+      expect(stdout + stderr).not.toContain("private-account-session");
     });
   });
 
@@ -2187,9 +2553,292 @@ describe("runCli", () => {
       personalServerUrl: null,
       ownPersonalServer: { running: false, url: null, dataDir: myDir },
       otherPersonalServer: { url: "http://localhost:8080", owner },
-      next: "vana server start",
+      next: expect.stringContaining("vana server start --network mainnet"),
     });
   });
+
+  it.each(["status", "server status"])(
+    "%s reports all discovered foreign servers while keeping ours selected",
+    async (command) => {
+      const me = "0x1111111111111111111111111111111111111111";
+      const first = "0x2222222222222222222222222222222222222222";
+      const second = "0x3333333333333333333333333333333333333333";
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          account: {
+            address: me,
+            session_token: "synthetic-session",
+            expires_at: "2999-01-01T00:00:00Z",
+          },
+          personal_server: null,
+        }),
+      );
+      mockDetectPersonalServerTarget.mockResolvedValue({
+        state: "available",
+        url: "http://localhost:8081",
+        source: "scan",
+        health: { status: "healthy", owner: me, version: "1", uptime: 1 },
+        otherServers: [
+          { url: "http://localhost:8080", owner: first },
+          { url: "http://localhost:8082", owner: second },
+        ],
+      });
+      const { runCli } = await import("../../src/cli/index.js");
+      const args = command.split(" ");
+      await runCli(["node", "vana", ...args, "--json"]);
+      const payload = JSON.parse(stdout);
+      if (command === "status") {
+        expect(payload.ownPersonalServer).toMatchObject({
+          running: true,
+          url: "http://localhost:8081",
+        });
+        expect(payload.otherPersonalServers).toEqual([
+          { url: "http://localhost:8080", owner: first, notThisAccount: true },
+          { url: "http://localhost:8082", owner: second, notThisAccount: true },
+        ]);
+      } else {
+        expect(payload).toMatchObject({
+          running: true,
+          url: "http://localhost:8081",
+          notThisAccount: false,
+        });
+        expect(payload.otherServer).toMatchObject({
+          url: "http://localhost:8080",
+          owner: first,
+          health: null,
+          identity: null,
+        });
+        expect(payload.otherServers).toEqual([
+          { url: "http://localhost:8080", owner: first },
+          { url: "http://localhost:8082", owner: second },
+        ]);
+      }
+      stdout = "";
+      await runCli(["node", "vana", ...args]);
+      expect(stdout).toContain("http://localhost:8080 for");
+      expect(stdout).toContain("http://localhost:8082 for");
+      expect(stdout).not.toContain("http://localhost:8081 for");
+    },
+  );
+
+  it.each(["status", "server status"])(
+    "%s keeps a foreign fallback separate after Account expiry",
+    async (command) => {
+      const me = "0x1111111111111111111111111111111111111111";
+      const owner = "0x2222222222222222222222222222222222222222";
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          account: {
+            address: me,
+            session_token: "expired-session",
+            expires_at: "2000-01-01T00:00:00Z",
+          },
+          personal_server: null,
+        }),
+      );
+      mockDetectPersonalServerTarget.mockResolvedValue({
+        state: "available",
+        url: "http://localhost:8080",
+        source: "scan",
+        health: { status: "healthy", owner },
+      });
+      const { runCli } = await import("../../src/cli/index.js");
+      await runCli(["node", "vana", ...command.split(" "), "--json"]);
+      const payload = JSON.parse(stdout);
+      if (command === "status") {
+        expect(payload.ownPersonalServer).toMatchObject({
+          running: false,
+          url: null,
+        });
+        expect(payload.otherPersonalServer).toMatchObject({ owner });
+        expect(payload.auth).toMatchObject({
+          authenticated: false,
+          authentication: "none",
+        });
+      } else {
+        expect(payload).toMatchObject({
+          running: false,
+          url: null,
+          owner: null,
+          notThisAccount: true,
+        });
+        expect(payload.otherServer).toMatchObject({ owner });
+      }
+    },
+  );
+
+  it("prints PowerShell recovery syntax on Windows without losing the selected context", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const selectedHome = join(tmpdir(), "Builder's profile", ".vana");
+    const accountUrl = "https://account.example.test/team's";
+    vi.stubEnv("VANA_HOME", selectedHome);
+    vi.stubEnv("VANA_ENV", "dev");
+    vi.stubEnv("VANA_ACCOUNT_URL", accountUrl);
+    selectExportAccount();
+    mockDetectPersonalServerTarget.mockResolvedValue({
+      state: "available",
+      url: "http://localhost:8080",
+      source: "scan",
+      health: { owner: "0x2222222222222222222222222222222222222222" },
+    });
+    const { runCli } = await import("../../src/cli/index.js");
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      await runCli(["node", "vana", "status", "--network", "moksha", "--json"]);
+      const remedy = JSON.parse(stdout).next;
+      expect(remedy).toBe(
+        `$env:VANA_HOME='${join(tmpdir(), "Builder''s profile", ".vana")}'; ` +
+          "$env:VANA_ENV='dev'; " +
+          "$env:VANA_ACCOUNT_URL='https://account.example.test/team''s'; " +
+          "vana server start --network moksha",
+      );
+      stdout = "";
+      await runCli(["node", "vana", "server", "status", "--network", "moksha"]);
+      expect(stdout).toContain(remedy);
+      expect(stdout).toContain("PowerShell");
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it.skipIf(process.platform === "win32").each([
+    { label: "dev Moksha", environment: "dev", network: "moksha" },
+    { label: "production default", environment: undefined, network: undefined },
+    { label: "production Moksha", environment: undefined, network: "moksha" },
+    {
+      label: "an explicit Account deployment",
+      environment: undefined,
+      network: "moksha",
+      accountUrl: "https://account.example.test/team's",
+    },
+  ])(
+    "keeps POSIX server-start recovery in the selected account and network: $label",
+    async ({ environment, network, accountUrl }) => {
+      const me = "0x1111111111111111111111111111111111111111";
+      const other = "0x2222222222222222222222222222222222222222";
+      const selectedHome = "/tmp/CLI demo's isolated state";
+      vi.stubEnv("VANA_HOME", selectedHome);
+      vi.stubEnv("VANA_ENV", environment);
+      vi.stubEnv("VANA_ACCOUNT_URL", accountUrl);
+      vi.stubEnv("VANA_NETWORK", undefined);
+      vi.stubEnv("VANA_SESSION_TOKEN", undefined);
+      mockLoadCredentials.mockReset();
+      mockLoadCredentials.mockReturnValue(null);
+      const auth = await import("../../src/cli/auth.js");
+      const { resolveNetwork } = await import("../../src/core/network.js");
+      const selectedAuthFile = auth.getAuthFilePath();
+      const selectedAccountUrl = auth.getAccountUrl();
+      const selectedNetwork = resolveNetwork(network).name;
+      mockReadFileSync.mockImplementation((filePath: string) => {
+        if (
+          filePath !== selectedAuthFile &&
+          !String(filePath).endsWith("/auth.json")
+        ) {
+          throw new Error("missing");
+        }
+        return JSON.stringify({
+          account: {
+            address: filePath === selectedAuthFile ? me : other,
+            session_token: "synthetic-session",
+            expires_at: "2999-01-01T00:00:00Z",
+          },
+        });
+      });
+      mockExistsSync.mockReturnValue(true);
+      mockRunningCliServers.mockReturnValue([]);
+      mockListServerDataDirs.mockReturnValue([
+        {
+          dir: `/ps/${selectedNetwork}/${me}`,
+          owner: me,
+          identity: null,
+          pid: null,
+        },
+      ]);
+      mockDetectPersonalServerTarget.mockResolvedValue({
+        state: "available",
+        url: "http://localhost:8080",
+        source: "scan",
+        health: { status: "healthy", owner: other },
+      });
+      mockListAvailableSources.mockResolvedValue(
+        ["perplexity", "spotify"].map((id) => ({ id, name: id })),
+      );
+      mockReadCliState.mockResolvedValue({
+        version: 1,
+        sources: Object.fromEntries(
+          ["perplexity", "spotify"].map((id) => [
+            id,
+            {
+              lastRunOutcome: "connected_and_ingested",
+              dataState: "ingested_personal_server",
+            },
+          ]),
+        ),
+      });
+      const { runCli } = await import("../../src/cli/index.js");
+      const networkArgs = network ? ["--network", network] : [];
+      await runCli(["node", "vana", "status", ...networkArgs, "--json"]);
+      const status = JSON.parse(stdout.trim());
+      const remedy = status.next as string;
+      stdout = "";
+      await runCli(["node", "vana", "status", ...networkArgs]);
+      const humanStatus = stdout;
+      stdout = "";
+      await runCli(["node", "vana", "server", "status", ...networkArgs]);
+      const serverStatus = stdout;
+
+      // Run the copyable command in a fresh shell, as a person following the
+      // advice does. A stand-in records the environment/arguments and never
+      // invokes the installed CLI or starts a server.
+      const { execFileSync } = await import("node:child_process");
+      const replay = JSON.parse(
+        execFileSync(
+          "/bin/sh",
+          [
+            "-c",
+            `vana() { '${process.execPath}' -e 'console.log(JSON.stringify({environment:process.env.VANA_ENV,accountUrl:process.env.VANA_ACCOUNT_URL,vanaHome:process.env.VANA_HOME,args:process.argv.slice(1)}))' "$@"; }\n${remedy}`,
+          ],
+          { encoding: "utf8", env: { PATH: process.env.PATH } },
+        ),
+      );
+      expect(replay.vanaHome).toBe(selectedHome);
+      vi.stubEnv("VANA_HOME", replay.vanaHome);
+      vi.stubEnv("VANA_ENV", replay.environment);
+      vi.stubEnv("VANA_ACCOUNT_URL", replay.accountUrl);
+      const serverStart = await import("../../src/cli/server-start.js");
+      let followed:
+        | { account: string | undefined; accountUrl: string; network: string }
+        | undefined;
+      const startSpy = vi
+        .spyOn(serverStart, "runServerStart")
+        .mockImplementationOnce(async (options) => {
+          followed = {
+            account: auth.loadCredentials()?.account.address,
+            accountUrl: auth.getAccountUrl(),
+            network: options.network,
+          };
+          return 0;
+        });
+      try {
+        await runCli(["node", "vana", ...replay.args]);
+        expect(followed).toEqual({
+          account: me,
+          accountUrl: selectedAccountUrl,
+          network: selectedNetwork,
+        });
+      } finally {
+        startSpy.mockRestore();
+      }
+      expect(status.ownPersonalServer.running).toBe(false);
+      expect(status.otherPersonalServer.owner).toBe(other);
+      expect(humanStatus).toContain(`Start it with \`${remedy}\``);
+      expect(humanStatus).toContain(`Next: \`${remedy}\``);
+      expect(serverStatus).toContain(`Start it with \`${remedy}\``);
+      expect(serverStatus).toContain(`Next: \`${remedy}\``);
+    },
+  );
 
   it("server stop leaves another account's server running and says whose it is", async () => {
     mockReadFileSync.mockImplementation((filePath: string) => {
@@ -2385,6 +3034,7 @@ describe("runCli", () => {
   });
 
   it("fails cleanly in json mode when input is required", async () => {
+    readyToCollect();
     runConnectorEvents = [
       {
         type: "needs-input",
@@ -2445,6 +3095,7 @@ describe("runCli", () => {
   });
 
   it("shows a clear human message when input is required in no-input mode", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "github",
@@ -2482,6 +3133,7 @@ describe("runCli", () => {
   });
 
   it("prints a clean manual-step message for legacy connectors in no-input mode", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "shop",
@@ -2522,6 +3174,7 @@ describe("runCli", () => {
   });
 
   it("prints a human manual-step message for legacy connectors", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "shop",
@@ -2564,6 +3217,7 @@ describe("runCli", () => {
   });
 
   it("fails gracefully for legacy connectors without a local display server", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "shop",
@@ -2611,7 +3265,7 @@ describe("runCli", () => {
     expect(stderr).toContain("Run this command in a desktop terminal.");
   });
 
-  it("says a login expired instead of naming its old identity when the server has another owner", async () => {
+  it("requires renewed sign-in without presenting an expired account as current", async () => {
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },
     ]);
@@ -2644,8 +3298,8 @@ describe("runCli", () => {
 
     expect(exitCode).toBe(7);
     // copy-assertion-ok: expired credentials must not present a past account as currently signed in.
-    expect(stderr).toContain("Your vana login has expired");
-    expect(stderr).toContain("Run `vana login` to check.");
+    expect(stderr).toContain("Sign in to Vana before collecting data.");
+    expect(stderr).toContain("vana login");
     expect(stderr).not.toContain("you are signed in as");
     mockLoadCredentials.mockReset();
     mockLoadCredentials.mockReturnValue(null);
@@ -2682,7 +3336,7 @@ describe("runCli", () => {
     const { runCli } = await import("../../src/cli/index.js");
     const exitCode = await runCli(["node", "vana", "connect", "github"]);
 
-    expect(exitCode).toBe(7);
+    expect(exitCode).toBe(5);
     // copy-assertion-ok: the current-login warning identifies the live account, unlike the expired-login warning.
     expect(stderr).toContain("but you are signed in as");
     mockLoadCredentials.mockReset();
@@ -2758,17 +3412,25 @@ describe("runCli", () => {
           "--json",
         ]);
 
-        expect(exitCode).toBe(5);
+        expect(exitCode).toBe(login === "expired" ? 7 : 5);
         expect(mockConfirm).not.toHaveBeenCalled();
         expect(mockIngestResult).not.toHaveBeenCalled();
         expect(managedFetchCalls).toBe(0);
         const outcome = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
-        expect(outcome).toMatchObject({
-          type: "outcome",
-          status: "personal_server_unavailable",
-          reason: "personal_server_not_yours",
-          personalServerOwner: theirs,
-        });
+        expect(outcome).toMatchObject(
+          login === "expired"
+            ? {
+                type: "outcome",
+                status: "needs_input",
+                reason: "vana_sign_in_required",
+              }
+            : {
+                type: "outcome",
+                status: "personal_server_unavailable",
+                reason: "personal_server_not_yours",
+                personalServerOwner: theirs,
+              },
+        );
       },
     );
 
@@ -2801,7 +3463,7 @@ describe("runCli", () => {
             "--no-input",
           ]);
 
-          expect(exitCode).toBe(5);
+          expect(exitCode).toBe(login === "expired" ? 7 : 5);
           expect(mockIngestResult).not.toHaveBeenCalled();
           expect(managedFetchCalls).toBe(0);
         } finally {
@@ -3019,6 +3681,7 @@ describe("runCli", () => {
   });
 
   it("guides recovery for runtime errors during connect", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "github",
@@ -4085,6 +4748,7 @@ describe("runCli", () => {
   });
 
   it("prints a clear message when runtime setup is declined", async () => {
+    readyToCollect();
     runtimeState = "missing";
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },
@@ -4102,6 +4766,7 @@ describe("runCli", () => {
   });
 
   it("prints a human success summary after collection completes", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "github",
@@ -4180,6 +4845,7 @@ describe("runCli", () => {
   });
 
   it("handles cancelled terminal input cleanly during connect", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "github",
@@ -4223,6 +4889,7 @@ describe("runCli", () => {
   ])(
     "records $eventType with gated=$gated and exit $exitCode",
     async ({ gated, eventType, exitCode: expectedExitCode }) => {
+      readyToCollect();
       mockListAvailableSources.mockResolvedValue([
         {
           id: "github",
@@ -4311,6 +4978,7 @@ describe("runCli", () => {
   );
 
   it("shows saved and synced details when Personal Server ingest succeeds", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "github",
@@ -4333,6 +5001,7 @@ describe("runCli", () => {
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
+      health: { owner: exportAccount, status: "ok", version: "1", uptime: 1 },
     });
     mockIngestResult.mockResolvedValue([
       {
@@ -4366,6 +5035,7 @@ describe("runCli", () => {
   });
 
   it("returns connector_unavailable when no connector exists", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([]);
     fetchConnectorResult = undefined as never;
     const runtimeImport = await import("../../src/runtime/index.js");
@@ -4402,6 +5072,7 @@ describe("runCli", () => {
   });
 
   it("shows next steps when no connector exists in human mode", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "github",
@@ -4433,6 +5104,7 @@ describe("runCli", () => {
   });
 
   it("mentions reusable sessions when a browser profile exists", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "github",
@@ -4604,6 +5276,7 @@ describe("runCli", () => {
   });
 
   it("allows collect when previously connected", async () => {
+    readyToCollect();
     mockReadFile.mockResolvedValue(
       JSON.stringify({ profile: { id: "fixture" } }),
     );
@@ -4644,6 +5317,7 @@ describe("runCli", () => {
   });
 
   it("titles a collect run Collect, not Connect", async () => {
+    readyToCollect();
     mockReadFile.mockResolvedValue(
       JSON.stringify({ profile: { id: "fixture" } }),
     );
@@ -5013,6 +5687,37 @@ describe("runCli", () => {
       });
     }
 
+    it("keeps the local checkout, streams and network through sign-in recovery", async () => {
+      layOutCheckout("slack_browser", {
+        connector_key: "slack_browser",
+        version: "0.1.0",
+        streams: [{ name: "messages" }],
+      });
+      const { runCli } = await import("../../src/cli/index.js");
+      expect(
+        await runCli([
+          "node",
+          "vana",
+          "connect",
+          "slack_browser",
+          "--from",
+          dir,
+          "--streams",
+          "messages",
+          "--network",
+          "moksha",
+          "--json",
+        ]),
+      ).toBe(7);
+      const outcome = JSON.parse(stdout.trim());
+      expect(outcome.reason).toBe("vana_sign_in_required");
+      expect(outcome.message).toContain("--from '/abs/data-connectors'");
+      expect(outcome.message).toContain("--streams 'messages'");
+      expect(outcome.remedy).toContain("--network moksha");
+      expect(outcome.remedy).toContain("VANA_HOME");
+      expect(pdppRuntimeOptions).toEqual([]);
+    });
+
     it("connectors add validates the directory and saves an absolute path", async () => {
       layOutCheckout("slack_browser", {
         connector_key: "slack_browser",
@@ -5252,6 +5957,7 @@ describe("runCli", () => {
     });
 
     it("collect runs a saved local connector, not the legacy runtime", async () => {
+      readyToCollect();
       mockReadFile.mockResolvedValue(
         JSON.stringify({ profile: { id: "fixture" } }),
       );
@@ -5333,6 +6039,7 @@ describe("runCli", () => {
     });
 
     it("connect prints where a saved local connector runs from", async () => {
+      readyToCollect();
       mockReadFile.mockResolvedValue(
         JSON.stringify({ profile: { id: "fixture" } }),
       );
@@ -5750,6 +6457,7 @@ describe("runCli", () => {
   });
 
   it("shows per-scope results in post-connect messaging", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },
     ]);
@@ -5768,6 +6476,7 @@ describe("runCli", () => {
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
+      health: { owner: exportAccount, status: "ok", version: "1", uptime: 1 },
     });
     mockIngestResult.mockResolvedValue([
       {
@@ -5810,6 +6519,7 @@ describe("runCli", () => {
   });
 
   it("shows partial sync results in post-connect messaging", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },
     ]);
@@ -5828,6 +6538,7 @@ describe("runCli", () => {
     mockDetectPersonalServerTarget.mockResolvedValue({
       state: "available",
       url: "http://localhost:8080",
+      health: { owner: exportAccount, status: "ok", version: "1", uptime: 1 },
     });
     mockIngestResult.mockResolvedValue([
       {
@@ -5860,7 +6571,8 @@ describe("runCli", () => {
     expect(stderr).toContain("vana server sync");
   });
 
-  it("marks collected data as pending sync when the personal server is unavailable", async () => {
+  it("keeps an owner-attributed export pending if the server disappears after preparation", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },
     ]);
@@ -5876,12 +6588,6 @@ describe("runCli", () => {
         logPath: "/tmp/logs/run.log",
       },
     ];
-    mockDetectPersonalServerTarget.mockResolvedValue({
-      state: "unavailable",
-      url: null,
-      source: null,
-      health: null,
-    });
     mockIngestResult.mockResolvedValue([
       {
         type: "ingest-skipped",
@@ -6168,6 +6874,7 @@ describe("runCli", () => {
   });
 
   it("completes first-time setup when runtime is missing and user confirms", async () => {
+    readyToCollect();
     runtimeState = "missing";
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },
@@ -6200,6 +6907,7 @@ describe("runCli", () => {
   });
 
   it("prompts for credentials on needs-input event", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       { id: "steam", name: "Steam", authMode: "interactive" },
     ]);
@@ -6237,6 +6945,7 @@ describe("runCli", () => {
   });
 
   it("reports a run that stopped with a fatal error and no data as a failure, not Connected", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       { id: "oura", name: "Oura Ring", authMode: "interactive" },
     ]);
@@ -6363,6 +7072,7 @@ describe("runCli", () => {
   });
 
   it("tells the person to sign in in the browser the connector opened", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },
     ]);
@@ -6415,6 +7125,7 @@ describe("runCli", () => {
   });
 
   it("handles connector fetch failure for non-checksum errors", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       { id: "github", name: "GitHub", authMode: "interactive" },
     ]);
@@ -6439,6 +7150,7 @@ describe("runCli", () => {
   });
 
   it("fails for legacy auth connectors without a display server", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       { id: "shop", name: "Shop", authMode: "legacy" },
     ]);
@@ -6473,6 +7185,7 @@ describe("runCli", () => {
   });
 
   it("handles cancelled prompt input during connect (ctrl+c)", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       { id: "steam", name: "Steam", authMode: "interactive" },
     ]);
@@ -6546,6 +7259,7 @@ describe("runCli", () => {
   });
 
   it("writes traceability breadcrumbs on needs-input event", async () => {
+    readyToCollect();
     runConnectorEvents = [
       {
         type: "needs-input",
@@ -6570,6 +7284,7 @@ describe("runCli", () => {
   });
 
   it("writes traceability breadcrumbs on legacy-auth event", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "shop",
@@ -6605,6 +7320,7 @@ describe("runCli", () => {
   });
 
   it("writes traceability breadcrumbs on runtime-error event", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "github",
@@ -6640,6 +7356,7 @@ describe("runCli", () => {
   });
 
   it("preserves degraded health when collection completes after legacy-auth", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "shop",
@@ -6697,6 +7414,7 @@ describe("runCli", () => {
   });
 
   it("records lastError on result file parse failure", async () => {
+    readyToCollect();
     mockListAvailableSources.mockResolvedValue([
       {
         id: "github",
@@ -6803,6 +7521,7 @@ describe("runCli", () => {
   });
 
   it("sets connectionHealthRetryable based on error type for runtime-error", async () => {
+    readyToCollect();
     // Transient error — retryable
     runConnectorEvents = [
       {
@@ -6826,6 +7545,7 @@ describe("runCli", () => {
   });
 
   it("sets connectionHealthRetryable false for non-transient runtime-error", async () => {
+    readyToCollect();
     runConnectorEvents = [
       {
         type: "runtime-error",

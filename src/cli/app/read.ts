@@ -45,6 +45,7 @@ import {
   createReceiptsStore,
   receiptKey,
   type ReceiptsStore,
+  type StoredReceipt,
 } from "../../core/receipts.js";
 import {
   createRequestsStore,
@@ -224,21 +225,65 @@ export async function runAppRead(
   const signMessage = (message: string) => account.signMessage({ message });
   const receipts = deps.receipts ?? createReceiptsStore();
   const storedKey = receiptKey(network.name, options.grant, scope);
-  const stored = receipts.getReceipt(storedKey);
+  let stored: StoredReceipt | null;
+  try {
+    stored = receipts.getReceipt(storedKey);
+  } catch {
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "internal",
+      message: "Cannot read payment recovery state. No payment was sent.",
+      remedy:
+        "Restore the receipt store before retrying; do not reset payment nonces.",
+      network: network.name,
+    });
+  }
   const read = deps.read ?? readPersonalServerData;
   const escrowContract = (
     CONTRACTS.DataPortabilityEscrow.addresses as Record<number, `0x${string}`>
   )[network.chainId];
 
-  // Replays the stored receipt header; captures any new X-PAYMENT header.
+  const quote = (value: string) =>
+    /^[a-zA-Z0-9_./:@=-]+$/.test(value)
+      ? value
+      : `'${value.replaceAll("'", process.platform === "win32" ? "''" : `'"'"'`)}'`;
+  const retryCommand = [
+    process.platform === "win32"
+      ? `$env:VANA_ENV='${network.env}'; vana`
+      : `VANA_ENV=${network.env} vana`,
+    "app read",
+    quote(scope),
+    `--grant ${quote(options.grant)}`,
+    `--network ${network.name}`,
+    ...(options.server ? [`--server ${quote(options.server)}`] : []),
+    ...(options.json ? ["--json"] : []),
+  ].join(" ");
+
   let sentPaymentHeader: string | null = null;
-  const fetchWith = (replayHeader: string | null): PersonalServerFetch => {
+  let persistenceFailed = false;
+  const fetchWith = (
+    replayHeader: string | null,
+    paymentQuote?: { amount: string; asset: string },
+  ): PersonalServerFetch => {
     return async (input, init) => {
       const headers = { ...init.headers };
       if (replayHeader && !headers["X-PAYMENT"]) {
         headers["X-PAYMENT"] = replayHeader;
       }
       if (headers["X-PAYMENT"]) {
+        if (paymentQuote) {
+          try {
+            // Settlement can precede the response, so recovery must precede sending.
+            receipts.saveReceipt(storedKey, {
+              header: headers["X-PAYMENT"],
+              ...paymentQuote,
+              capturedAt: new Date().toISOString(),
+            });
+          } catch (error) {
+            persistenceFailed = true;
+            throw error;
+          }
+        }
         sentPaymentHeader = headers["X-PAYMENT"];
       }
       return fetch(input, { ...init, headers });
@@ -281,10 +326,17 @@ export async function runAppRead(
         lastError = error;
         continue;
       }
-      // A 402 with a stale stored receipt means the receipt no longer
-      // satisfies the server; drop it so it cannot shadow a real payment.
       if (stored) {
-        receipts.dropReceipt(storedKey);
+        return emitAppOutcome(options, {
+          status: "failed",
+          code: "payment_required",
+          message:
+            "The saved payment receipt was not accepted. No new payment was authorized.",
+          remedy:
+            "Resolve the saved receipt with the server before authorizing another payment.",
+          network: network.name,
+          data: { server: personalServerUrl },
+        });
       }
       const details =
         (error as { details?: { amount?: string; asset?: string } }).details ??
@@ -364,19 +416,20 @@ export async function runAppRead(
               account.signTypedData(
                 typedData as Parameters<typeof account.signTypedData>[0],
               ),
-            nonceSource: (payer) => receipts.nextNonce(payer),
+            nonceSource: (payer) => {
+              try {
+                return receipts.nextNonce(payer);
+              } catch (error) {
+                persistenceFailed = true;
+                throw error;
+              }
+            },
           },
-          fetchFn: fetchWith(null),
-        });
-        if (sentPaymentHeader) {
-          receipts.saveReceipt(storedKey, {
-            header: sentPaymentHeader,
+          fetchFn: fetchWith(null, {
             amount: amountRaw,
             asset: details.asset ?? "",
-            capturedAt: new Date().toISOString(),
-            payment: result.payment as Record<string, unknown> | undefined,
-          });
-        }
+          }),
+        });
         return emitReadSuccess(options, network, scope, result.data, {
           paid: true,
           amount: amountRaw,
@@ -385,6 +438,19 @@ export async function runAppRead(
           payment: result.payment,
         });
       } catch (paidError) {
+        if (persistenceFailed && !sentPaymentHeader) {
+          return emitAppOutcome(options, {
+            status: "failed",
+            code: "internal",
+            message:
+              "Cannot save payment recovery state; payment was not sent.",
+            remedy:
+              "Repair receipt storage, then retry without authorizing a new payment: " +
+              retryCommand,
+            network: network.name,
+            data: { spentFee: null, server: personalServerUrl },
+          });
+        }
         // The fee may already be settled: report it instead of inviting a
         // blind retry that pays again.
         const spent = sentPaymentHeader ? amountRaw : null;
@@ -396,8 +462,9 @@ export async function runAppRead(
           message: `Read failed after payment was attempted: ${
             paidError instanceof Error ? paidError.message : String(paidError)
           }`,
-          remedy:
-            "the signed payment header is stored; re-running replays it without paying again",
+          remedy: sentPaymentHeader
+            ? `The signed payment header is saved. Retry without authorizing a new payment: ${retryCommand}`
+            : `No payment header was sent. Retry without authorizing a new payment: ${retryCommand}`,
           network: network.name,
           data: { spentFee: spent, server: personalServerUrl },
         });

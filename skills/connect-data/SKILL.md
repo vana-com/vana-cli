@@ -1,246 +1,194 @@
 ---
 name: connect-data
 description: >
-  Connect personal data from any web platform using browser automation.
-  Use when: (1) user wants to connect a data source like ChatGPT, Instagram,
-  Spotify, or any platform, (2) user says "connect my [platform]",
-  (3) user wants to generate or update their profile from connected data.
-  Also triggers on: "create a connector for [platform]".
+  Collect a person's own data with the Vana CLI. Use for requests such as
+  "use Vana to connect my data", source collection or refresh, and inspection
+  of collected results. Route a missing connector to create-connector.
 ---
 
-# Connect
+# Connect personal data
 
-Connect personal data from web platforms using the `vana` CLI and local browser automation.
+Read workflows with `vana skills show <id> --json`. The response includes full
+instructions and required reference content; installation into the agent's
+harness is optional. Use `connect-data`, `create-connector` or `builder` as the
+requested goal needs them.
 
-## Setup
+Use the Vana CLI for discovery, collection, owner identity and results. The
+person completes provider sign-in and human checks in the browser when needed.
+App access to collected data is a separate Builder workflow.
 
-Prefer an installed `vana` CLI on `PATH`:
+Start from the person's data goal, such as "Use Vana to collect my highlights".
+Select and load the required skills yourself. Continue through discovery,
+any necessary connector authoring, collection, and result inspection. The
+person does not need to name a skill, choose a helper, or supply another
+implementation prompt. Ask for account/data choices and human authentication.
+The public
+[walkthrough](https://github.com/vana-com/vana-cli/blob/main/skills/README.md)
+pairs the user's part with the commands.
+
+## Select the CLI and owner context
+
+Check the available CLI:
 
 ```bash
-command -v vana
+vana --version
+vana --help
 ```
 
-If that succeeds, use:
+If it is missing, use the [official installation instructions](https://github.com/vana-com/vana-cli#readme).
+The published package is `vana-cli`, with a `vana` binary.
+
+When testing local changes, run these from the actual `vana-cli` checkout:
 
 ```bash
-vana
+pnpm build
+node dist/cli/bin.js --help
 ```
 
-If `vana` is unavailable, install the current published canary. Prefer:
+Use that checkout's absolute `dist/cli/bin.js` path in place of `vana` for the
+remaining commands. Keep the same entry point throughout the task.
 
-macOS with Homebrew:
-
-```bash
-brew install vana-com/tap/vana
-```
-
-macOS and Linux:
+Preserve the selected `VANA_HOME`, Account deployment (`VANA_ENV` or
+`VANA_ACCOUNT_URL`) and network. Carry the same `--network` option through
+commands when a network was explicitly selected. Check before collecting:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vana-com/vana-connect/main/install/install.sh | sh
-```
-
-Only if the installed CLI path is unavailable or blocked, fall back to:
-
-```bash
-npx -y @opendatalabs/connect@canary
-```
-
-If the user is explicitly testing local changes, fall back to:
-
-```bash
-node /home/tnunamak/code/vana-connect/dist/cli/bin.js
-```
-
-If neither path is available, follow `SETUP.md` in this folder.
-
-Before connecting a source, check runtime state with:
-
-```bash
+vana whoami --json
 vana status --json
-```
-
-If the user needs install, path, or upgrade diagnostics, use:
-
-```bash
-vana doctor
-```
-
-If the user needs recent setup, fetch, or run logs, use:
-
-```bash
-vana logs
-vana logs <platform>
-```
-
-If the runtime is missing, tell the user: "I need to do a one-time setup first. This downloads a browser engine and some dependencies into `~/.vana/` and usually takes about a minute." Then run:
-
-```bash
-vana setup --yes
-```
-
-## Flow
-
-### 1. Explore available sources
-
-```bash
 vana sources --json
+vana connectors list --json
 ```
 
-This is the source of truth for what the CLI can currently connect. Prefer it over inspecting repo files manually.
+`vana whoami` identifies the person. `vana app whoami` identifies an app and
+does not select the person's login. A Personal Server session alone is not an
+authenticated Vana Account. Inspect the selected server and any servers listed
+under other accounts before writing data.
 
-If the requested platform is present, use the CLI flow below.
+For installation or runtime problems, inspect `vana doctor` and `vana logs`.
+If the browser runtime is missing and collection needs it, run `vana setup --yes`.
+Use the CLI's recovery command with its environment and network intact.
 
-**If no connector exists for the platform,** tell the user you'll build one — this involves researching the platform's data APIs, writing the extraction code, and testing it. Let them know it'll take a bit and they're welcome to do something else while you work. Then read `CREATE.md` and follow it.
+## Select the source
 
-### 2. Check the source's auth mode
-
-Each source has an `authMode` in `vana sources --json`:
-
-- `interactive` — prompts for credentials in the terminal. **You can handle this directly.**
-- `legacy` — opens a headed browser window. **You cannot do this. Tell the user to run it in their own terminal.**
-- `automated` — no auth needed. Fully autonomous.
-
-### 3. Connect with the CLI
-
-**For `interactive` or `automated` sources:** Use IPC mode with `run_in_background`.
-
-IMPORTANT: You MUST use `run_in_background: true` for the connect command. The process will block while waiting for credentials. If you run it in the foreground, your bash call will hang and you won't be able to respond to prompts.
-
-Step 1: Start the connect in the background.
+Use `sources` for available sources and `connectors list` for saved checkout
+paths. Replace `<source>` with the selected key and inspect it:
 
 ```bash
-vana connect <platform> --json --ipc 2>&1
+vana sources <source> --json
 ```
 
-Use `run_in_background: true` for this command.
+When changing a local connector, read its manifest from the path reported by
+`connectors list`.
 
-Step 2: Immediately read the background task output. Look for a `needs-input` JSON line containing `pendingInputPath` and `responseInputPath`. If you see `connected` instead, the saved session worked and you're done.
-
-Step 3: If credentials are needed, read the pending input file to see what fields are required:
+If the source is missing or needs a code change, read Create Connector:
 
 ```bash
-cat <pendingInputPath from the needs-input event>
+vana skills show create-connector --json
 ```
 
-Step 4: Ask the user for the required credentials.
+Read its returned `instructions` and required `resources`. That skill owns the
+current PDP-Connect authoring and local-checkout workflow. Check upstream's
+existing connectors before deciding a provider needs a new implementation;
+an empty or unavailable catalog alone does not establish that.
 
-Step 5: Write the response file (use the exact `responseInputPath` from the event):
+Reuse discovery already completed in this task rather than repeating the same
+search. Connector creation returns a directory, connector key and selected
+streams to this collection workflow; it does not require Vana sign-in.
+
+## Prepare Vana before collection
+
+Once the connector is available, establish the Vana account and intended server
+BEFORE requesting source credentials or running the provider. Reuse a valid
+session. If signed out, run `vana login --json`, relay the returned browser URI,
+and wait for the person to finish signing in there. No code is entered in the
+terminal. Then check `vana whoami --json` and `vana status --json` in the same
+home, Account deployment and network. JSON login does not start a server or
+approve its CLI session. Follow the reported server-start or approval command;
+an existing server owned by another account is not this person's destination.
+If `VANA_PS_URL` or `VANA_PERSONAL_SERVER_URL` explicitly selects a server, use
+the collection command's reported sign-in remedy: it targets Account sign-in
+and preserves the selected server in the collection retry command.
+
+Every collection entry checks readiness. Automated runs return `needs_input`
+(exit 7) for Vana sign-in or server approval, or `personal_server_unavailable`
+(exit 5) for an unavailable/unverified destination, with `reason` and `remedy`.
+Follow the remedy, then retry the ORIGINAL collection command including `--from`,
+`--streams` and its context. These outcomes precede connector credential prompts
+and provider reads. A bare `VANA_SESSION_TOKEN` has no verified owner identity;
+use a saved Account sign-in instead. Do not collect anonymously and try to
+assign the export to an account later.
+
+## Collect and handle human input
+
+For an agent-controlled browser or protected local credential handoff, run
+collection in a background process you can inspect while the person signs in:
 
 ```bash
-echo '{"username":"value","password":"value"}' > <responseInputPath>
+vana connect <source> --json --ipc
 ```
 
-Step 6: Check the background task output again. The connector may prompt again (e.g. for 2FA). If so, repeat steps 3-5 with the new pending input file. If the task completes, you're done.
+For a Collection Profile source, select only the requested manifest stream
+names with `--streams <stream,stream>`. An explicit source is required.
+For a local implementation, add `--from /absolute/path/to/data-connectors`
+without registering a persistent override for a one-off trial.
 
-Note: The connector polls for up to 5 minutes per prompt. If the user takes longer, it will time out and you'll need to rerun.
+For a person entering a token or password, give them the exact interactive
+command to run in their own terminal, with the real source/path/streams and
+selected network. Explain where to paste the secret and that hidden input
+does not echo. Verify secret fields have password metadata in the connector's
+interaction schema. Keep the secret out of chat, command arguments, scripts,
+and logs. A credential form in the chat is not the local terminal prompt.
 
-**For `legacy` (browser) sources:** You cannot connect these. Tell the user:
+Keep progress visible. In agent mode, relay meaningful stage/count events;
+in human mode, leave the CLI's progress on the terminal. `vana connect`
+collects and ingests in one run. The upstream developer runner is optional
+diagnostics, not a prerequisite that collects from the provider a second time.
 
-> Run `vana connect <platform>` in your terminal. It will open a browser for you to log in. Say "done" when finished.
+Read the emitted events until the process finishes. A Collection Profile
+connector can request browser sign-in through `headed-required` and then a
+`needs-input` event. Complete that handoff rather than treating every browser
+source as unsupported by agents.
 
-**For a quick status check without connecting:** Use the `--json --no-input` probe. This checks if a saved session works without prompting:
+For `needs-input` events with `pendingInputPath` and `responseInputPath`:
 
-```bash
-vana connect <platform> --json --no-input
-```
+1. Read the exact pending file and its requested fields.
+2. Have the person complete browser sign-in or a human check. For secret
+   fields, use an available protected local input channel. If none is available,
+   stop/cancel this waiting run and hand over the interactive terminal command.
+3. Write the resulting JSON to the exact response path using a file API.
+   Restrict credential files to the current user; keep secrets out of chat,
+   shell arguments, and logs.
+4. For a Collection Profile manual action with no fields, write `{}` only
+   after the person confirms completion. To decline, write `{"status":"cancelled"}`.
+5. Continue reading events. Further prompts may follow, and input can expire.
 
-Outcomes: `needs_input`, `legacy_auth`, `connected_local_only`, or `connected_and_ingested`.
+Use the running CLI's message for legacy connectors that require a manual
+terminal or browser handoff. An intermediate event is not a successful collection.
 
-If the user specifically wants to inspect current state before rerunning, use:
+`--no-input` refuses human prompts, but it can still collect and upload data
+when a session is available. Use `status` and `data` commands for inspection.
 
-```bash
-vana status
-```
+## Verify the result
 
-### 3. Handle outcomes
-
-The CLI emits structured JSON events in `--json` mode.
-
-Key outcomes:
-
-- `needs_input`
-  The connector needs a live login or another manual step. Explain that you'll rerun interactively.
-- `legacy_auth`
-  The connector still depends on `showBrowser` / `promptUser`. Explain that this source still needs a headed/manual session path and may not work in fully headless batch mode yet.
-- `connected_local_only`
-  Data was collected locally but no Personal Server target was available.
-- `connected_and_ingested`
-  Data was collected and synced to the Personal Server.
-
-If setup, fetch, or run output is truncated, use:
-
-```bash
-vana logs
-vana logs <platform>
-```
-
-Prefer that over manually hunting through `~/.vana/logs/` or rerunning blindly.
-
-After a successful connect, prefer the CLI data surfaces over raw file inspection when possible:
+Distinguish `connected_and_ingested` from `connected_local_only`. Local
+collection does not prove Personal Server ingestion or delivery to an app.
+Inspect the result and logs without starting another collection:
 
 ```bash
 vana data list
-vana data show <platform>
-vana data path <platform>
-vana logs <platform>
+vana data show <source>
+vana data path <source>
+vana logs <source>
 ```
 
-### 4. Validate, present results, and offer to contribute
+Summarize the requested records, any skipped streams, and whether ingestion
+succeeded. Preserve saved results and follow the reported recovery action on
+failure. Do not rerun automatically just to obtain a cleaner transcript.
+Inspect private records locally and report counts/status instead of copying
+payloads into chat or a repository. Compare recognizable records and any
+independent provider counts before claiming completeness.
 
-If you built or modified a connector, immediately run validation — before presenting results to the user:
-
-```bash
-node scripts/validate.cjs <company>/<name>-playwright.js --check-result ~/.vana/last-result.json
-```
-
-Fix any issues the validator reports. The validator checks debug code, login method diversity, schema descriptions, data cleanliness, and more — it is the quality gate. Iterate until validation passes.
-
-Then read the result file and summarize for the user in human terms (see "Communicating with the user" below).
-
-If you built a new connector (not one from the registry), ask the user:
-
-> "Want to share this connector so others can connect their [Platform] data too? Contributing means the community helps maintain it when [Platform] changes their site."
-
-If yes, run `node scripts/validate.cjs <company>/<name>-playwright.js --contribute`. If no, move on.
-
-### 5. Suggest what to do with the data
-
-After the contribution question is resolved (or if using an existing connector), suggest use cases from `RECIPES.md`: user profile generation, personal knowledge base, data backup, cross-platform synthesis, activity analytics.
-
-## Communicating with the user
-
-The user can't see what you're doing behind the scenes. Keep them informed at key moments:
-
-1. **Before asking for credentials**, explain the approach and reassure on privacy:
-   - "I'll connect to [Platform] using a local browser on your machine. Your credentials stay local — nothing is sent to any server except [Platform] itself."
-   - If using an API key: "This uses [Platform]'s API key. You can find it at [location]. The key stays on your machine."
-
-2. **During long operations** (building a connector, collecting paginated data), give brief progress updates. Don't go silent for more than ~30 seconds.
-
-3. **After collection**, summarize results in human terms — not file paths:
-   - Good: "Connected! I collected 249 issues, 63 projects, 9 teams, and your profile from Linear."
-   - Bad: "Data saved to ~/.vana/last-result.json"
-   - Prefer the CLI outcome plus the result file. Build the summary from `exportSummary` and the scoped keys.
-
-4. **On failure**, explain what went wrong and what the user can do:
-   - Auth failed → "Login didn't work. Can you double-check your credentials?"
-   - Platform API changed → "The connector couldn't find the expected data. The platform may have changed their site."
-
-## Rules
-
-1. **Ask before saving** -- no writes to user profile without approval
-2. **Never log credentials** -- no echo, print, or output of secrets
-3. **One platform at a time**
-4. **Check session first** -- try without credentials if a browser profile exists
-5. **Read connectors before running them**
-6. **Use the CLI as the primary interface** -- only drop to raw scripts when debugging or updating connector internals
-
-## CLI fallback order
-
-Use this order when choosing the CLI entrypoint:
-
-1. installed `vana`
-2. official installer path for the current canary
-3. `npx -y @opendatalabs/connect@canary`
-4. `node /home/tnunamak/code/vana-connect/dist/cli/bin.js` only for local development or debugging
+If the person wants an app to consume the data, read
+`vana skills show builder --json` and follow its instructions and resources.
+Keep app identity, explicit
+consent and paid app reads separate from owner-side collection.

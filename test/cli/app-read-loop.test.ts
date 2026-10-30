@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewayClient } from "@opendatalabs/vana-sdk";
+import { readPersonalServerData } from "@opendatalabs/vana-sdk/direct/personal-server-read";
 import { privateKeyToAccount } from "viem/accounts";
 import { runAppRead } from "../../src/cli/app/read.js";
 import {
@@ -89,6 +90,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
@@ -119,9 +121,226 @@ describe("receipts store", () => {
     s.dropReceipt(key);
     expect(s.getReceipt(key)).toBeNull();
   });
+
+  it("preserves the prior receipt and nonce when a replacement write is interrupted", () => {
+    const receipts = store();
+    const key = receiptKey("moksha", GRANT, "github.repos");
+    receipts.nextNonce(appKey.address);
+    receipts.saveReceipt(key, {
+      header: "original",
+      amount: "1",
+      asset: "0x0",
+      capturedAt: "now",
+    });
+    const write = fs.writeFileSync;
+    vi.spyOn(fs, "writeFileSync").mockImplementationOnce((file) => {
+      write(file, '{"version":');
+      throw new Error("interrupted write");
+    });
+    expect(() =>
+      receipts.saveReceipt(key, {
+        header: "replacement",
+        amount: "1",
+        asset: "0x0",
+        capturedAt: "now",
+      }),
+    ).toThrow("interrupted write");
+    expect(store().getReceipt(key)?.header).toBe("original");
+    expect(store().nextNonce(appKey.address)).toBe(2n);
+    expect(fs.statSync(path.join(tempDir, "receipts.json")).mode & 0o777).toBe(
+      0o600,
+    );
+  });
 });
 
 describe("vana app read", () => {
+  it("refuses to read or reset payment state when the receipt file is corrupt", async () => {
+    const file = path.join(tempDir, "receipts.json");
+    fs.writeFileSync(file, '{"version":1,"nonces":');
+    const read = vi.fn();
+    const exitCode = await runAppRead(
+      "github.repos",
+      { json: true, grant: GRANT, pay: true },
+      {
+        resolveKey: () => appKey,
+        createClient: () => grantClient(),
+        receipts: store(),
+        read,
+      },
+    );
+    expect(read).not.toHaveBeenCalled();
+    expect(exitCode).toBe(1);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).code).toBe("internal");
+    expect(fs.readFileSync(file, "utf8")).toBe('{"version":1,"nonces":');
+  });
+
+  it("retains a paid read's exact header before a lost response and replays it after restart", async () => {
+    vi.stubEnv("VANA_ENV", "dev");
+    const server = "https://ps.example/private?x=1&y=2";
+    const headers: string[] = [];
+    const durableBeforeSend: boolean[] = [];
+    let loseResponse = true;
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const header = new Headers(init?.headers).get("X-PAYMENT");
+      if (!header) {
+        return Response.json(
+          { grantId: GRANT, amount: "250000000000000000" },
+          { status: 402 },
+        );
+      }
+      headers.push(header);
+      durableBeforeSend.push(
+        store().getReceipt(receiptKey("moksha", GRANT, "github.repos"))
+          ?.header === header,
+      );
+      if (loseResponse) throw new Error("response lost after settlement");
+      return Response.json({ rows: 1 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const read: typeof readPersonalServerData = (params) =>
+      readPersonalServerData({ ...params, transportRetry: { attempts: 1 } });
+    const deps = {
+      resolveKey: () => appKey,
+      createClient: () => grantClient(),
+      read,
+    };
+
+    expect(
+      await runAppRead(
+        "github.repos",
+        {
+          json: true,
+          network: "moksha",
+          grant: GRANT,
+          pay: true,
+          maxFee: "0.25",
+          server,
+        },
+        { ...deps, receipts: store() },
+      ),
+    ).toBe(5);
+    expect(headers).toHaveLength(1);
+    expect(durableBeforeSend).toEqual([true]);
+    const persisted = store().getReceipt(
+      receiptKey("moksha", GRANT, "github.repos"),
+    );
+    expect(persisted?.header).toBe(headers[0]);
+    expect(
+      JSON.parse(Buffer.from(headers[0], "base64").toString()).payload.message
+        .paymentNonce,
+    ).toBe("1");
+    const failure = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(failure.remedy).toContain(`--grant ${GRANT}`);
+    expect(failure.remedy).toContain("--network moksha");
+    expect(failure.remedy).toContain(
+      process.platform === "win32" ? "$env:VANA_ENV='dev'" : "VANA_ENV=dev",
+    );
+    expect(failure.remedy).toContain(`--server '${server}'`);
+    expect(failure.remedy).not.toContain("--pay");
+
+    stdout = "";
+    loseResponse = false;
+    expect(
+      await runAppRead(
+        "github.repos",
+        { json: true, network: "moksha", grant: GRANT, server },
+        { ...deps, receipts: store() },
+      ),
+    ).toBe(0);
+    expect(headers).toEqual([persisted?.header, persisted?.header]);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).data).toMatchObject({
+      paid: false,
+      replayedReceipt: true,
+      result: { rows: 1 },
+    });
+    expect(store().nextNonce(appKey.address)).toBe(2n);
+  });
+
+  it("does not transmit a signed payment when its receipt cannot be saved", async () => {
+    const transmitted: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        const header = new Headers(init?.headers).get("X-PAYMENT");
+        if (header) transmitted.push(header);
+        return header
+          ? Response.json({ rows: 1 })
+          : Response.json({ grantId: GRANT, amount: "1" }, { status: 402 });
+      }),
+    );
+    const exitCode = await runAppRead(
+      "github.repos",
+      { json: true, grant: GRANT, pay: true },
+      {
+        resolveKey: () => appKey,
+        createClient: () => grantClient(),
+        receipts: {
+          ...store(),
+          saveReceipt: () => {
+            throw new Error("disk full");
+          },
+        },
+        read: (params) =>
+          readPersonalServerData({
+            ...params,
+            transportRetry: { attempts: 1 },
+          }),
+      },
+    );
+    expect(transmitted).toEqual([]);
+    expect(exitCode).toBe(1);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.code).toBe("internal");
+    expect(outcome.message).toContain("payment was not sent");
+    expect(outcome.remedy).not.toContain("--pay");
+    expect(outcome.data?.spentFee).toBeNull();
+  });
+
+  it.each([false, true])(
+    "refuses a new payment after a saved receipt is rejected (--pay=%s)",
+    async (pay) => {
+      const receipts = store();
+      const key = receiptKey("moksha", GRANT, "github.repos");
+      receipts.saveReceipt(key, {
+        header: "saved-receipt",
+        amount: "1",
+        asset: "0x0",
+        capturedAt: "now",
+      });
+      const sent: Array<string | null> = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (_input: unknown, init?: RequestInit) => {
+          sent.push(new Headers(init?.headers).get("X-PAYMENT"));
+          return Response.json(
+            { grantId: GRANT, amount: "1" },
+            { status: 402 },
+          );
+        }),
+      );
+      const exitCode = await runAppRead(
+        "github.repos",
+        { json: true, grant: GRANT, pay },
+        {
+          resolveKey: () => appKey,
+          createClient: () => grantClient(),
+          receipts,
+          read: (params) =>
+            readPersonalServerData({
+              ...params,
+              transportRetry: { attempts: 1 },
+            }),
+        },
+      );
+      expect(exitCode).toBe(4);
+      expect(sent).toEqual(["saved-receipt"]);
+      expect(store().getReceipt(key)?.header).toBe("saved-receipt");
+      expect(appOutcomeSchema.parse(JSON.parse(stdout)).remedy).not.toContain(
+        "--pay",
+      );
+    },
+  );
+
   it("rejects a grant that does not cover the scope with exit 3", async () => {
     const exitCode = await runAppRead(
       "spotify.history",

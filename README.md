@@ -84,6 +84,31 @@ never implied: a paid read stops with the exact price until you add `--pay`,
 and `--max-fee` caps it. `--network moksha` is the testnet, where fees are
 play money.
 
+On Moksha, `vana app request --network moksha --scopes github.repositories`
+automatically requests free test credit before creating the approval request.
+If the app needs claiming, it prints a Vana Account link; open it and run the
+printed resume command. Credit is deposited directly into the app's escrow.
+The service decides eligibility and limits; the CLI never visits a faucet or
+moves tokens through the app wallet.
+
+Setup is saved before funding starts. If the command is interrupted, use
+`vana app requests list --network moksha` to find its setup ID and resume it:
+
+```bash
+vana app request --network moksha --resume <setupId>
+```
+
+Resume keeps the same app, environment, funding operation and consent request.
+With `--no-input`, pending credit exits 6 with a resume command, and claiming
+or data approval exits 7 with the required link. Interactive runs wait up to
+120 seconds for credit by default (`--timeout` overrides this; it also sets
+the approval wait). `requests show <setupId>` inspects saved progress without
+requesting credit or creating consent. If the test-credit service is disabled,
+unavailable or at its limit, setup stays resumable and does not report success.
+This path requires the Account test-credit service to be deployed and enabled;
+mainnet requests retain their existing behavior. Saved consent intents from
+older CLI versions resume without adding a funding step.
+
 ## Make an existing app available on mainnet
 
 After the app is registered and claimed by your Account on Moksha, run:
@@ -119,13 +144,54 @@ agent can branch on: `0` done, `1` failed, `2` bad usage, `3` no grant,
 person has to act. The full contract is in
 [docs/CLI-EXIT-CODE-MATRIX.md](./docs/CLI-EXIT-CODE-MATRIX.md).
 
-Install the skills that teach an agent each half:
+For a request such as “Use Vana to collect my highlights from Readwise,” the
+agent installs the CLI if needed, then reads the bundled workflow:
 
 ```bash
-vana skills install builder        # ask for access, read, pay
-vana skills install agent-access   # give your own agent (OpenClaw, Hermes) scoped, paid access
-vana skills install connect-data   # collect your own data
+vana skills show connect-data --json
 ```
+
+The response includes `instructions` and the content of required `resources`,
+plus skill metadata and installed status. Reading them does not install skills,
+write a cache or change agent configuration. The running agent can continue
+immediately. Use `create-connector` for a missing source and `builder` for app
+integration. `vana --help` lists these entry points. Files match the CLI version
+and need no additional download or private repository.
+
+For humans, interactive `vana` offers “Collect or manage my data,” “Use or share
+data,” “Build or test a connector,” and “Manage my Personal Server.” Explicit
+commands and automated runs skip that menu. Source search shows up to 12 rows;
+Ctrl+O opens “Source not listed” from anywhere, and Enter continues from a
+search with no matches without asking you to retype its name. Missing sources link to the
+[connector guide](./skills/create-connector/SKILL.md).
+
+Browsing sources and building a connector do not require sign-in. Before live
+collection, the CLI requires a known Vana account and a ready, approved Personal
+Server, then requests source credentials. Interactive terminals guide those
+steps; automated modes return a reason and a recovery command without prompting
+or contacting the provider. Keep the original source, checkout and streams when
+retrying after setup. A server that fails after collection starts can still
+leave an owner-attributed local export for later sync.
+
+Persistent skill installation is optional convenience for future agent sessions.
+An interactive npm install may offer it; the offer names destination folders,
+defaults to no and copies or replaces skills only after confirmation. Run it any time:
+
+```bash
+vana skills setup
+```
+
+Individual installs remain available with `vana skills install <name>`, including
+optional `agent-access`. The public skills also work with `npx skills`; that
+installer is not required to use Vana. Current native setup targets the shared
+`~/.agents/skills/` directory and Claude Code when `~/.claude/` exists. Neither
+path is a prerequisite for reading workflows through the CLI.
+
+For a complete walkthrough, use [Build and collect a connector with an agent](./skills/README.md).
+It pairs one starting prompt with the commands the agent runs, human sign-in,
+visible progress, and checks that the data reached your Personal Server.
+It also documents installation through `npx skills` and works without access
+to the private Connector Factory.
 
 There is also an MCP server over stdio for clients that prefer tools:
 

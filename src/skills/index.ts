@@ -1,5 +1,6 @@
 export {
   listAvailableSkills,
+  readSkillContent,
   fetchSkillToCache,
   installSkill,
   readInstalledSkills,
