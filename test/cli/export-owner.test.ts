@@ -434,6 +434,35 @@ await new Promise((resolve) => input.once("close", resolve));
     expect(uploads).toEqual([]);
   });
 
+  it("points a --from run at connectors add instead of a schedule it cannot run", async () => {
+    await login(A);
+    const adHoc = await run([
+      "connect",
+      "fake",
+      "--from",
+      checkout,
+      "--no-input",
+    ]);
+    expect(adHoc.code, adHoc.stdout + adHoc.stderr).toBe(0);
+    const adHocText = adHoc.stdout + adHoc.stderr;
+    expect(adHocText).toContain(
+      `vana connectors add fake --from ${path.resolve(checkout)}`,
+    );
+    expect(adHocText).not.toContain("vana schedule add");
+
+    // Following the hint makes the source collectable without --from.
+    const added = await run(["connectors", "add", "fake", "--from", checkout]);
+    expect(added.code, added.stdout + added.stderr).toBe(0);
+    const connected = await run(["connect", "fake", "--no-input"]);
+    expect(connected.code, connected.stdout + connected.stderr).toBe(0);
+    expect(connected.stdout + connected.stderr).toContain("vana schedule add");
+    expect(connected.stdout + connected.stderr).not.toContain(
+      "vana connectors add",
+    );
+    const collected = await run(["collect", "fake", "--no-input"]);
+    expect(collected.code, collected.stdout + collected.stderr).toBe(0);
+  });
+
   it("reports B's automatic and scheduled exclusion of a partially synced A export", async () => {
     await login(A);
     await write(path.join(checkout, "connectors/fake/manifest.json"), {

@@ -2859,7 +2859,24 @@ async function runConnect(
       renderer?.next(`vana data show ${source}`);
     }
 
-    if (!hasSchedule) {
+    // A --from run is not remembered: unless the key also resolves without
+    // --from (registered, pinned or catalog), `vana collect` and schedules
+    // cannot find the connector again until its directory is registered.
+    const ranUnregisteredDirectory =
+      connectOptions.from !== undefined &&
+      (await resolvePdppSource(source).catch(() => null)) === null &&
+      !(await loadCatalogIds().catch(() => [] as string[])).some(
+        (id) => id.toLowerCase() === source,
+      );
+    if (ranUnregisteredDirectory) {
+      const directory = path.resolve(connectOptions.from!);
+      const shown = /\s/.test(directory)
+        ? JSON.stringify(directory)
+        : directory;
+      renderer?.detail(
+        `This run used --from only. To collect again or on a schedule, register it: \`vana connectors add ${source} --from ${shown}\`, then \`vana connect ${source}\`.`,
+      );
+    } else if (!hasSchedule) {
       renderer?.detail(
         "Keep this fresh automatically — run `vana schedule add` to collect on a schedule.",
       );
