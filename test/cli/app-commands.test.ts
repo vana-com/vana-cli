@@ -119,7 +119,7 @@ describe("vana app register", () => {
   it("signs a verifiable EIP-712 registration and posts it", async () => {
     let posted: Record<string, string> | undefined;
     const exitCode = await runAppRegister(
-      { json: true, network: "moksha" },
+      { json: true, network: "moksha", appUrl: "https://openclaw.ai" },
       {
         resolveKey: () => resolvedKey,
         createClient: () =>
@@ -155,6 +155,68 @@ describe("vana app register", () => {
 
     const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
     expect(outcome.data).toMatchObject({ builderId: "b-1" });
+  });
+
+  it("refuses a new registration without --app-url, before signing", async () => {
+    const registerBuilder = vi.fn();
+    const exitCode = await runAppRegister(
+      { json: true, network: "moksha", appUrl: "  " },
+      {
+        resolveKey: () => resolvedKey,
+        createClient: () =>
+          clientWith({
+            isRegisteredBuilder: async () => false,
+            registerBuilder,
+          }),
+      },
+    );
+
+    expect(exitCode).toBe(2);
+    expect(registerBuilder).not.toHaveBeenCalled();
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.code).toBe("bad_usage");
+    expect(outcome.message).toContain("--app-url");
+  });
+
+  it("refuses a new registration whose --app-url is not an http(s) URL", async () => {
+    const registerBuilder = vi.fn();
+    const exitCode = await runAppRegister(
+      { json: true, network: "moksha", appUrl: "localhost:3000" },
+      {
+        resolveKey: () => resolvedKey,
+        createClient: () =>
+          clientWith({
+            isRegisteredBuilder: async () => false,
+            registerBuilder,
+          }),
+      },
+    );
+
+    expect(exitCode).toBe(2);
+    expect(registerBuilder).not.toHaveBeenCalled();
+  });
+
+  it("says an existing registration without an app URL cannot be claimed", async () => {
+    const exitCode = await runAppRegister(
+      { json: true, network: "moksha", appUrl: "http://localhost:3000" },
+      {
+        resolveKey: () => resolvedKey,
+        createClient: () =>
+          clientWith({
+            isRegisteredBuilder: async () => true,
+            getBuilder: async () => ({ appUrl: "" }) as never,
+            registerBuilder: vi.fn(),
+          }),
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.message).toContain("cannot claim");
+    expect(outcome.data).toMatchObject({
+      alreadyRegistered: true,
+      claimable: false,
+    });
   });
 
   it("maps gateway failures to exit 1 with a gateway_unreachable code", async () => {

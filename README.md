@@ -56,7 +56,7 @@ signed and notarized by Vana (or Vana Desktop's copy, when installed).
 else's data, with their consent:
 
 ```bash
-vana app register --network moksha                 # create and test the app first
+vana app register --network moksha --app-url http://localhost:3000 --app-name "Your app"  # create and test the app first
 vana app request --network moksha --scopes github.repositories      # prints an approval URL, waits
 vana app read --network moksha github.repositories --grant <id>     # signed read
 ```
