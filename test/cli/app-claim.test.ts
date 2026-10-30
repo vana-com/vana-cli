@@ -223,6 +223,50 @@ describe("vana app claim", () => {
     expect(outcome.remedy).toBe("vana app register");
   });
 
+  it("refuses before linking when the registration has no app URL", async () => {
+    const openUrl = vi.fn();
+    const exitCode = await runAppClaim(
+      { json: true, network: "moksha" },
+      {
+        resolveKey: () => resolvedKey,
+        createClient: () =>
+          ({
+            isRegisteredBuilder: async () => true,
+            getBuilder: async () => ({ appUrl: "" }),
+          }) as unknown as GatewayClient,
+        openUrl,
+        isTty: true,
+      },
+    );
+
+    expect(exitCode).toBe(2);
+    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+    expect(outcome.code).toBe("bad_usage");
+    expect(outcome.message).toContain("without an app URL");
+    expect(outcome.data).not.toHaveProperty("claimUrl");
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("links an app whose registration has an app URL", async () => {
+    const exitCode = await runAppClaim(
+      { json: true, network: "moksha" },
+      {
+        resolveKey: () => resolvedKey,
+        createClient: () =>
+          ({
+            isRegisteredBuilder: async () => true,
+            getBuilder: async () => ({ appUrl: "http://localhost:5178" }),
+          }) as unknown as GatewayClient,
+        openUrl: vi.fn(),
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).data).toHaveProperty(
+      "claimUrl",
+    );
+  });
+
   it("points a machine with no app key at register", async () => {
     const exitCode = await runAppClaim(
       { json: true, network: "mainnet" },
