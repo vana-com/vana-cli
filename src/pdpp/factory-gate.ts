@@ -108,6 +108,16 @@ export class FactoryCollectionFailure extends Error {
     return new FactoryCollectionFailure(attemptSchema.parse(attempt));
   }
 }
+/** A validated schema location, rather than the Factory subprocess's raw error text. */
+export class FactoryPreflightFailure extends Error {
+  constructor(diagnostic: { stream: string; path: string; keyword: string }) {
+    super(
+      `Factory cannot verify ${diagnostic.stream}.${diagnostic.path}: unsupported ${diagnostic.keyword}. Repair the manifest or install a compatible Factory, then check the same job again. No connector was started.`,
+    );
+    this.name = "FactoryPreflightFailure";
+  }
+}
+
 /** Keeps actual private wire evidence outside the checkout and all public output. */
 export class FactoryCollectionGate {
   private fd: number | null = null;
@@ -159,6 +169,28 @@ export class FactoryCollectionGate {
       request,
       signal,
     );
+    const schemaError = z
+      .object({
+        version: z.literal(1),
+        error: z.object({
+          code: z.literal("unsupported_schema"),
+          diagnostic: z
+            .object({
+              stream: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$-]{0,63}$/),
+              path: z
+                .string()
+                .max(512)
+                .regex(
+                  /^schema(?:\.(?:properties\.[A-Za-z_$][A-Za-z0-9_$-]{0,63}|items))*$/,
+                ),
+              keyword: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$-]{0,63}$/),
+            })
+            .strict(),
+        }),
+      })
+      .safeParse(result.value);
+    if (result.exitCode === 1 && !result.interrupted && schemaError.success)
+      throw new FactoryPreflightFailure(schemaError.data.error.diagnostic);
     const attempt = attemptSchema.parse(result.value);
     if (
       result.exitCode !== 0 ||
