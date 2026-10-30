@@ -1,6 +1,7 @@
 import {
   FactoryCollectionGate,
   FactoryCollectionFailure,
+  FactoryPreflightFailure,
   type FactoryBindingOptions,
 } from "./factory-gate.js";
 import { exportDigest } from "../core/source-export.js";
@@ -217,7 +218,8 @@ export class PdppRuntime {
     const run = this.execute(launch, options, logPath, log, push).catch(
       (error: unknown) => {
         const message = this.options.factory
-          ? error instanceof FactoryCollectionFailure
+          ? error instanceof FactoryCollectionFailure ||
+            error instanceof FactoryPreflightFailure
             ? error.message
             : "Factory collection failed. Previous data and checkpoints were kept; inspect the private attempt evidence."
           : error instanceof Error

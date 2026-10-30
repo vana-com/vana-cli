@@ -1,5 +1,31 @@
 # BUI-951 implementation record
 
+## BUI-951 API/export release candidate, 30 October 2026
+
+Prepare only the approved schema/display-metadata repair, safe CLI diagnostics,
+matching public installation pins and contributor verification skill against
+current main. Preserve original mixed worktrees. Callum subsequently authorized
+scoped commits, branch pushes and two PRs. Do not merge, dispatch workflows,
+upload release artifacts, collect real-provider data, access credentials or pay. Browser creation and broader new-provider acceptance remain separate.
+The local release brief owns the exact shipping inventory and smallest real
+provider test. Prior synthetic proof will be repeated against these isolated
+main-based candidates before handing off.
+
+Local candidate: main `40103bc`, pinned Factory 0.0.3 tarball SHA256
+`4261fd7b786f6387759629b7dfdb78fe6c659918a91a2d850e82b342eb4c8e47`.
+Full validation passes 977 tests, types/lint/format; CLI preflight passes 211
+tests, build and guarded fixture transcript capture. Generated transcript drift
+is retained outside the patch. Package check passes 475 files. The local preview
+retains 0.47.0 and must not replace that public version; semantic-release owns
+the next version. The packaged synthetic integration proof passes, including
+genuine Factory verification and independent Personal Server comparisons.
+The original session checkout advanced separately through paid-read commits;
+those changes remain outside this detached candidate and were not reverted.
+Deliver this slice on `callum/bui-951-api-export-release` targeting main.
+Publishing and real-provider collection remain held. The pinned Factory artifact
+must be published and its anonymous-download hash checked before any eventual
+CLI release; its URL is intentionally unavailable during PR review.
+
 ## Scope and ownership
 
 The CLI adapter keeps the requesting agent in charge of connector code. It uses
