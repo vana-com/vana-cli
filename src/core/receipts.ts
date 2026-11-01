@@ -15,9 +15,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getVanaHome } from "./paths.js";
+import { acquireReceiptLock } from "./receipts-lock.js";
 
 export interface StoredReceipt {
   /** The signed X-PAYMENT header exactly as sent. */
@@ -63,6 +64,8 @@ export function receiptKey(
 }
 
 export interface ReceiptsStore {
+  /** Exclude overlapping decisions and payments for one read intent. */
+  withReadLock<T>(key: string, operation: () => Promise<T>): Promise<T>;
   /** Next monotonically-increasing payment nonce for a payer; persisted. */
   nextNonce(payerAddress: string): bigint;
   getReceipt(key: string): StoredReceipt | null;
@@ -73,6 +76,15 @@ export interface ReceiptsStore {
 
 export function createReceiptsStore(filePath?: string): ReceiptsStore {
   const file = filePath ?? path.join(getVanaHome(), "app", "receipts.json");
+
+  function mutate<T>(operation: () => T): T {
+    const release = acquireReceiptLock(`${file}.lock`);
+    try {
+      return operation();
+    } finally {
+      release();
+    }
+  }
 
   function read(): ReceiptsFile {
     try {
@@ -114,28 +126,46 @@ export function createReceiptsStore(filePath?: string): ReceiptsStore {
   }
 
   return {
+    async withReadLock<T>(
+      key: string,
+      operation: () => Promise<T>,
+    ): Promise<T> {
+      const intent = createHash("sha256").update(key).digest("hex");
+      const release = acquireReceiptLock(`${file}.${intent}.read.lock`);
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    },
     nextNonce(payerAddress: string): bigint {
-      const state = read();
-      const key = payerAddress.toLowerCase();
-      const next = BigInt(state.nonces[key] ?? "0") + 1n;
-      state.nonces[key] = next.toString();
-      write(state);
-      return next;
+      return mutate(() => {
+        const state = read();
+        const key = payerAddress.toLowerCase();
+        const next = BigInt(state.nonces[key] ?? "0") + 1n;
+        state.nonces[key] = next.toString();
+        write(state);
+        return next;
+      });
     },
     getReceipt(key: string): StoredReceipt | null {
       return read().receipts[key] ?? null;
     },
     saveReceipt(key: string, receipt: StoredReceipt): void {
-      const state = read();
-      state.receipts[key] = receipt;
-      write(state);
+      mutate(() => {
+        const state = read();
+        state.receipts[key] = receipt;
+        write(state);
+      });
     },
     dropReceipt(key: string): void {
-      const state = read();
-      if (key in state.receipts) {
-        delete state.receipts[key];
-        write(state);
-      }
+      mutate(() => {
+        const state = read();
+        if (key in state.receipts) {
+          delete state.receipts[key];
+          write(state);
+        }
+      });
     },
   };
 }
