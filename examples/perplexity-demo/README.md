@@ -108,6 +108,11 @@ The Web owner-only unfamiliar-source approval is BUI-924's separate dependency. 
 
 ## Verify
 
+For an actual browser run, failure sensitivity and live step 4/5 acceptance, use
+the [Research Shelf verifier](../../.agents/skills/verify-research-shelf/SKILL.md).
+Its controlled lane isolates external services; it does not certify live consent
+or provider collection.
+
 ```sh
 pnpm test test/examples/perplexity-demo.test.ts test/examples/nextjs-starter.test.ts examples/perplexity-demo/src/components/ConnectFlow.test.js
 pnpm --filter perplexity-demo build

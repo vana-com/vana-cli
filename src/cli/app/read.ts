@@ -45,12 +45,14 @@ import {
   createReceiptsStore,
   receiptKey,
   type ReceiptsStore,
+  type StoredReceipt,
 } from "../../core/receipts.js";
 import {
   createRequestsStore,
   type RequestsStore,
 } from "../../core/requests-store.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
+import { ReceiptsStoreBusyError } from "../../core/receipts-lock.js";
 
 export interface ReadCommandOptions extends AppCommandOptions {
   grant?: string;
@@ -220,25 +222,111 @@ export async function runAppRead(
     }
   }
 
+  const receipts = deps.receipts ?? createReceiptsStore();
+  const grantId = options.grant;
+  const intent = receiptKey(network.name, grantId, scope);
+  try {
+    return await receipts.withReadLock(intent, () =>
+      runPersonalServerRead(
+        scope,
+        { ...options, grant: grantId },
+        {
+          network,
+          key,
+          serverUrls,
+          receipts,
+          read: deps.read ?? readPersonalServerData,
+        },
+      ),
+    );
+  } catch (error) {
+    if (!(error instanceof ReceiptsStoreBusyError)) throw error;
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "not_ready",
+      network: network.name,
+      message:
+        "Another read is using this payment state. No new payment was authorized.",
+      remedy:
+        "Wait for the active command to finish, then rerun this read to reload its saved receipt.",
+    });
+  }
+}
+
+async function runPersonalServerRead(
+  scope: string,
+  options: ReadCommandOptions & { grant: string },
+  context: {
+    network: ResolvedNetwork;
+    key: ResolvedAppKey;
+    serverUrls: string[];
+    receipts: ReceiptsStore;
+    read: typeof readPersonalServerData;
+  },
+): Promise<number> {
+  const { network, key, serverUrls, receipts, read } = context;
   const account = privateKeyToAccount(key.privateKey);
   const signMessage = (message: string) => account.signMessage({ message });
-  const receipts = deps.receipts ?? createReceiptsStore();
-  const storedKey = receiptKey(network.name, options.grant, scope);
-  const stored = receipts.getReceipt(storedKey);
-  const read = deps.read ?? readPersonalServerData;
+  const grantId = options.grant;
+  const storedKey = receiptKey(network.name, grantId, scope);
+  let stored: StoredReceipt | null;
+  try {
+    stored = receipts.getReceipt(storedKey);
+  } catch {
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "internal",
+      message: "Cannot read payment recovery state. No payment was sent.",
+      remedy:
+        "Restore the receipt store before retrying; do not reset payment nonces.",
+      network: network.name,
+    });
+  }
   const escrowContract = (
     CONTRACTS.DataPortabilityEscrow.addresses as Record<number, `0x${string}`>
   )[network.chainId];
 
-  // Replays the stored receipt header; captures any new X-PAYMENT header.
+  const quote = (value: string) =>
+    /^[a-zA-Z0-9_./:@=-]+$/.test(value)
+      ? value
+      : `'${value.replaceAll("'", process.platform === "win32" ? "''" : `'"'"'`)}'`;
+  const retryCommand = [
+    process.platform === "win32"
+      ? `$env:VANA_ENV='${network.env}'; vana`
+      : `VANA_ENV=${network.env} vana`,
+    "app read",
+    quote(scope),
+    `--grant ${quote(grantId)}`,
+    `--network ${network.name}`,
+    ...(options.server ? [`--server ${quote(options.server)}`] : []),
+    ...(options.json ? ["--json"] : []),
+  ].join(" ");
+
   let sentPaymentHeader: string | null = null;
-  const fetchWith = (replayHeader: string | null): PersonalServerFetch => {
+  let persistenceFailed = false;
+  const fetchWith = (
+    replayHeader: string | null,
+    paymentQuote?: { amount: string; asset: string },
+  ): PersonalServerFetch => {
     return async (input, init) => {
       const headers = { ...init.headers };
       if (replayHeader && !headers["X-PAYMENT"]) {
         headers["X-PAYMENT"] = replayHeader;
       }
       if (headers["X-PAYMENT"]) {
+        if (paymentQuote) {
+          try {
+            // Settlement can precede the response, so recovery must precede sending.
+            receipts.saveReceipt(storedKey, {
+              header: headers["X-PAYMENT"],
+              ...paymentQuote,
+              capturedAt: new Date().toISOString(),
+            });
+          } catch (error) {
+            persistenceFailed = true;
+            throw error;
+          }
+        }
         sentPaymentHeader = headers["X-PAYMENT"];
       }
       return fetch(input, { ...init, headers });
@@ -252,7 +340,7 @@ export async function runAppRead(
       const result = await read({
         personalServerUrl,
         scope,
-        grantId: options.grant,
+        grantId: grantId,
         payerAddress: key.address,
         signMessage,
         fetchFn: fetchWith(stored?.header ?? null),
@@ -281,10 +369,17 @@ export async function runAppRead(
         lastError = error;
         continue;
       }
-      // A 402 with a stale stored receipt means the receipt no longer
-      // satisfies the server; drop it so it cannot shadow a real payment.
       if (stored) {
-        receipts.dropReceipt(storedKey);
+        return emitAppOutcome(options, {
+          status: "failed",
+          code: "payment_required",
+          message:
+            "The saved payment receipt was not accepted. No new payment was authorized.",
+          remedy:
+            "Resolve the saved receipt with the server before authorizing another payment.",
+          network: network.name,
+          data: { server: personalServerUrl },
+        });
       }
       const details =
         (error as { details?: { amount?: string; asset?: string } }).details ??
@@ -301,7 +396,7 @@ export async function runAppRead(
           status: "failed",
           code: "payment_required",
           message: `This read costs ${amountHuman} and --pay is not set.`,
-          remedy: `vana app read ${scope} --grant ${options.grant} --pay`,
+          remedy: `vana app read ${scope} --grant ${grantId} --pay`,
           network: network.name,
           data: {
             amount: amountRaw,
@@ -354,7 +449,7 @@ export async function runAppRead(
         const result = await read({
           personalServerUrl,
           scope,
-          grantId: options.grant,
+          grantId: grantId,
           payerAddress: key.address,
           signMessage,
           escrow: {
@@ -364,19 +459,20 @@ export async function runAppRead(
               account.signTypedData(
                 typedData as Parameters<typeof account.signTypedData>[0],
               ),
-            nonceSource: (payer) => receipts.nextNonce(payer),
+            nonceSource: (payer) => {
+              try {
+                return receipts.nextNonce(payer);
+              } catch (error) {
+                persistenceFailed = true;
+                throw error;
+              }
+            },
           },
-          fetchFn: fetchWith(null),
-        });
-        if (sentPaymentHeader) {
-          receipts.saveReceipt(storedKey, {
-            header: sentPaymentHeader,
+          fetchFn: fetchWith(null, {
             amount: amountRaw,
             asset: details.asset ?? "",
-            capturedAt: new Date().toISOString(),
-            payment: result.payment as Record<string, unknown> | undefined,
-          });
-        }
+          }),
+        });
         return emitReadSuccess(options, network, scope, result.data, {
           paid: true,
           amount: amountRaw,
@@ -385,6 +481,28 @@ export async function runAppRead(
           payment: result.payment,
         });
       } catch (paidError) {
+        if (paidError instanceof ReceiptsStoreBusyError) {
+          return emitAppOutcome(options, {
+            status: "failed",
+            code: "not_ready",
+            network: network.name,
+            message: "Payment state is busy. Retry using the saved receipt.",
+            remedy: retryCommand,
+          });
+        }
+        if (persistenceFailed && !sentPaymentHeader) {
+          return emitAppOutcome(options, {
+            status: "failed",
+            code: "internal",
+            message:
+              "Cannot save payment recovery state; payment was not sent.",
+            remedy:
+              "Repair receipt storage, then retry without authorizing a new payment: " +
+              retryCommand,
+            network: network.name,
+            data: { spentFee: null, server: personalServerUrl },
+          });
+        }
         // The fee may already be settled: report it instead of inviting a
         // blind retry that pays again.
         const spent = sentPaymentHeader ? amountRaw : null;
@@ -396,8 +514,9 @@ export async function runAppRead(
           message: `Read failed after payment was attempted: ${
             paidError instanceof Error ? paidError.message : String(paidError)
           }`,
-          remedy:
-            "the signed payment header is stored; re-running replays it without paying again",
+          remedy: sentPaymentHeader
+            ? `The signed payment header is saved. Retry without authorizing a new payment: ${retryCommand}`
+            : `No payment header was sent. Retry without authorizing a new payment: ${retryCommand}`,
           network: network.name,
           data: { spentFee: spent, server: personalServerUrl },
         });

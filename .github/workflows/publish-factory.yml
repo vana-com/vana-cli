@@ -15,10 +15,10 @@ jobs:
           node-version: 24.22.1
           registry-url: https://registry.npmjs.org
       - name: Download the licensed public package
-        run: curl --fail --location --output vana-factory-core-0.0.2.tgz https://github.com/vana-com/vana-cli/releases/download/v0.45.1/vana-factory-core-0.0.2.tgz
+        run: curl --fail --location --output vana-factory-core-0.0.3.tgz https://github.com/vana-com/vana-cli/releases/download/v0.47.0/vana-factory-core-0.0.3.tgz
       - name: Verify the reviewed artifact
-        run: echo '089a528f4a7a302d2dae9a0724e4b25f62ada14c61eb7728507c4139875a30d9  vana-factory-core-0.0.2.tgz' | sha256sum --check
+        run: echo '4261fd7b786f6387759629b7dfdb78fe6c659918a91a2d850e82b342eb4c8e47  vana-factory-core-0.0.3.tgz' | sha256sum --check
       - name: Publish the exact artifact to npm
-        run: npm publish ./vana-factory-core-0.0.2.tgz --ignore-scripts --access public --tag latest
+        run: npm publish ./vana-factory-core-0.0.3.tgz --ignore-scripts --access public --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

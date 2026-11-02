@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "requests": [],
+  "intents": [
+    {
+      "setupId": "setup_00000000-0000-4000-8000-000000000001",
+      "createdAt": "2026-10-28T00:00:00.000Z",
+      "appAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+      "network": "moksha",
+      "env": "dev",
+      "gatewayUrl": "https://dp-rpc-dev.vana.org",
+      "approvalBaseUrl": "https://app-dev.vana.org",
+      "app": {
+        "id": "vana-cli",
+        "name": "Vana CLI",
+        "homepageUrl": "https://github.com/vana-com/vana-cli"
+      },
+      "source": "github",
+      "scopes": ["github.repositories"],
+      "input": {
+        "returnUrl": "https://github.com/vana-com/vana-cli",
+        "idempotencyKey": "00000000-0000-4000-8000-000000000002"
+      },
+      "requestOptions": {
+        "scopes": "github.repositories",
+        "mergeGrant": false
+      },
+      "grantData": {},
+      "payloadHash": "a1d71db2a83e36e5ec28e8e5d4ea22d029d9033f226604e0d7a45aea1a477302"
+    }
+  ]
+}

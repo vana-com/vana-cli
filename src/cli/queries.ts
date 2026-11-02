@@ -71,6 +71,7 @@ import {
 export interface StatusQueryResult {
   status: CliStatus;
   nextSteps: string[];
+  otherServers?: { url: string; owner: string }[];
 }
 
 /** Result of `querySources()`. Matches the `--json` output shape exactly. */
@@ -191,7 +192,9 @@ export type DoctorQueryResult = CliDoctor;
  */
 export async function queryStatus(): Promise<StatusQueryResult> {
   const runtime = new ManagedPlaywrightRuntime();
-  const personalServer = await detectPersonalServerTarget();
+  const personalServer = await detectPersonalServerTarget({
+    purpose: "owner-inspection",
+  });
   const state = await readCliState();
   const registrySources = await loadRegistrySources();
   const sourceLabels = createSourceLabelMap(registrySources);
@@ -292,7 +295,7 @@ export async function queryStatus(): Promise<StatusQueryResult> {
     );
   }
 
-  return { status, nextSteps };
+  return { status, nextSteps, otherServers: personalServer.otherServers };
 }
 
 /**

@@ -15,7 +15,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 import { getVanaHome } from "./paths.js";
+import { acquireReceiptLock } from "./receipts-lock.js";
 
 export interface StoredReceipt {
   /** The signed X-PAYMENT header exactly as sent. */
@@ -37,6 +40,20 @@ interface ReceiptsFile {
 }
 
 const EMPTY: ReceiptsFile = { version: 1, nonces: {}, receipts: {} };
+const receiptsFileSchema = z.object({
+  version: z.literal(1),
+  nonces: z.record(z.string(), z.string().regex(/^(0|[1-9]\d*)$/)),
+  receipts: z.record(
+    z.string(),
+    z.object({
+      header: z.string().min(1),
+      amount: z.string(),
+      asset: z.string(),
+      capturedAt: z.string(),
+      payment: z.record(z.string(), z.unknown()).optional(),
+    }),
+  ),
+});
 
 export function receiptKey(
   network: string,
@@ -47,6 +64,8 @@ export function receiptKey(
 }
 
 export interface ReceiptsStore {
+  /** Exclude overlapping decisions and payments for one read intent. */
+  withReadLock<T>(key: string, operation: () => Promise<T>): Promise<T>;
   /** Next monotonically-increasing payment nonce for a payer; persisted. */
   nextNonce(payerAddress: string): bigint;
   getReceipt(key: string): StoredReceipt | null;
@@ -58,52 +77,95 @@ export interface ReceiptsStore {
 export function createReceiptsStore(filePath?: string): ReceiptsStore {
   const file = filePath ?? path.join(getVanaHome(), "app", "receipts.json");
 
+  function mutate<T>(operation: () => T): T {
+    const release = acquireReceiptLock(`${file}.lock`);
+    try {
+      return operation();
+    } finally {
+      release();
+    }
+  }
+
   function read(): ReceiptsFile {
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as ReceiptsFile;
-      if (parsed?.version !== 1) {
+      return receiptsFileSchema.parse(
+        JSON.parse(fs.readFileSync(file, "utf8")),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return structuredClone(EMPTY);
       }
-      return {
-        version: 1,
-        nonces: parsed.nonces ?? {},
-        receipts: parsed.receipts ?? {},
-      };
-    } catch {
-      return structuredClone(EMPTY);
+      throw error;
     }
   }
 
   function write(state: ReceiptsFile): void {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(state, null, 2) + "\n", {
-      mode: 0o600,
-    });
+    const directory = path.dirname(file);
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    try {
+      const fd = fs.openSync(temporary, "wx", 0o600);
+      try {
+        fs.writeFileSync(fd, JSON.stringify(state, null, 2) + "\n");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(temporary, file);
+      if (process.platform !== "win32") {
+        const directoryFd = fs.openSync(directory, "r");
+        try {
+          fs.fsyncSync(directoryFd);
+        } finally {
+          fs.closeSync(directoryFd);
+        }
+      }
+    } finally {
+      fs.rmSync(temporary, { force: true });
+    }
   }
 
   return {
+    async withReadLock<T>(
+      key: string,
+      operation: () => Promise<T>,
+    ): Promise<T> {
+      const intent = createHash("sha256").update(key).digest("hex");
+      const release = acquireReceiptLock(`${file}.${intent}.read.lock`);
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    },
     nextNonce(payerAddress: string): bigint {
-      const state = read();
-      const key = payerAddress.toLowerCase();
-      const next = BigInt(state.nonces[key] ?? "0") + 1n;
-      state.nonces[key] = next.toString();
-      write(state);
-      return next;
+      return mutate(() => {
+        const state = read();
+        const key = payerAddress.toLowerCase();
+        const next = BigInt(state.nonces[key] ?? "0") + 1n;
+        state.nonces[key] = next.toString();
+        write(state);
+        return next;
+      });
     },
     getReceipt(key: string): StoredReceipt | null {
       return read().receipts[key] ?? null;
     },
     saveReceipt(key: string, receipt: StoredReceipt): void {
-      const state = read();
-      state.receipts[key] = receipt;
-      write(state);
+      mutate(() => {
+        const state = read();
+        state.receipts[key] = receipt;
+        write(state);
+      });
     },
     dropReceipt(key: string): void {
-      const state = read();
-      if (key in state.receipts) {
-        delete state.receipts[key];
-        write(state);
-      }
+      mutate(() => {
+        const state = read();
+        if (key in state.receipts) {
+          delete state.receipts[key];
+          write(state);
+        }
+      });
     },
   };
 }

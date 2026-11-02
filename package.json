@@ -1,6 +1,6 @@
 {
   "name": "vana-cli",
-  "version": "0.47.0",
+  "version": "0.48.1",
   "description": "Collect your data into a Vana Personal Server, or request, read and pay for someone else's with their consent",
   "keywords": [
     "vana",
@@ -30,7 +30,8 @@
     "vana": "./dist/cli/bin.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "scripts/postinstall.mjs"
   ],
   "exports": {
     ".": {
@@ -94,7 +95,8 @@
     "release:collect-assets": "node ./scripts/collect-release-assets.mjs",
     "runtime:footprint": "node ./scripts/report-runtime-footprint.mjs",
     "validate": "npm run lint && npm run lint:eslint && npm run format:check && npm test",
-    "prepare": "husky"
+    "prepare": "husky",
+    "postinstall": "node ./scripts/postinstall.mjs"
   },
   "lint-staged": {
     "*.{ts,tsx,js}": [

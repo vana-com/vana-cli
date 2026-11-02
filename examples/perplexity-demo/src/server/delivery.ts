@@ -11,6 +11,12 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { parseEther, zeroAddress } from "viem";
 import { ShelfStore, type Connection, type Thread } from "./store.js";
+import {
+  createShelfObserver,
+  shelfReasons,
+  type ShelfObserver,
+  type ShelfObservation,
+} from "./observability.js";
 
 const SCOPE = "perplexity.conversations";
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -35,6 +41,7 @@ export interface DeliveryConfig {
   maxFee?: string;
   maxTotal?: string;
   resumeRequestId?: string;
+  observer?: ShelfObserver;
 }
 
 /** The selected connector emits a legacy envelope containing conversations records. */
@@ -154,6 +161,142 @@ export function createShelf(config: DeliveryConfig) {
   const uint = (value: string) =>
     /^(0|[1-9]\d*)$/.test(value) && BigInt(value) < 2n ** 256n;
 
+  const observer = config.observer ?? createShelfObserver();
+  interface ObservationContext {
+    attempt: string;
+    requestId?: string;
+    grantId?: string;
+    revision?: string;
+  }
+  function context(requestId?: string): ObservationContext {
+    return { attempt: observer.attempt(), requestId };
+  }
+  async function observe(input: ShelfObservation) {
+    try {
+      await observer.observe(input);
+    } catch {
+      /* A local observer cannot change the operation's result. */
+    }
+  }
+  function failureReason(
+    error: unknown,
+  ): NonNullable<ShelfObservation["reason"]> {
+    if (
+      error instanceof DeliveryError &&
+      shelfReasons.some((reason) => reason === error.code)
+    )
+      return error.code as NonNullable<ShelfObservation["reason"]>;
+    if (
+      error instanceof Error &&
+      (["TypeError", "AbortError", "TimeoutError"].includes(error.name) ||
+        ("code" in error &&
+          ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EPIPE"].includes(
+            String(error.code),
+          )))
+    )
+      return "transport_error";
+    if (
+      error instanceof Error &&
+      "status" in error &&
+      typeof error.status === "number" &&
+      error.status >= 400
+    )
+      return "http_error";
+    return "unknown_error";
+  }
+  async function observed<T>(
+    ctx: ObservationContext,
+    boundary: ShelfObservation["boundary"],
+    stage: ShelfObservation["stage"],
+    run: () => Promise<T>,
+    reason?: ShelfObservation["reason"],
+  ): Promise<T> {
+    const start = Date.now();
+    await observe({ ...ctx, boundary, stage, outcome: "started", reason });
+    try {
+      const result = await run();
+      await observe({
+        ...ctx,
+        boundary,
+        stage,
+        outcome: "ok",
+        reason,
+        durationMs: Date.now() - start,
+      });
+      return result;
+    } catch (error) {
+      const detected = failureReason(error);
+      const reason =
+        stage === "save"
+          ? "save_failed"
+          : stage === "ack" && detected === "unknown_error"
+            ? "ack_failed"
+            : detected;
+      await observe({
+        ...ctx,
+        boundary,
+        stage,
+        outcome:
+          stage === "read" && reason === "transport_error"
+            ? "interrupted"
+            : "failed",
+        reason,
+        durationMs: Date.now() - start,
+      });
+      throw error;
+    }
+  }
+  async function paymentAttempt(
+    ctx: ObservationContext,
+    send: () => Promise<Response>,
+  ) {
+    const start = Date.now();
+    await observe({
+      ...ctx,
+      boundary: "personal-server",
+      stage: "payment",
+      outcome: "started",
+    });
+    try {
+      const response = await send();
+      await observe({
+        ...ctx,
+        boundary: "personal-server",
+        stage: "payment",
+        outcome: response.ok ? "ok" : "failed",
+        status: response.status,
+        reason: response.ok ? undefined : "http_error",
+        durationMs: Date.now() - start,
+      });
+      return response;
+    } catch (error) {
+      await observe({
+        ...ctx,
+        boundary: "personal-server",
+        stage: "payment",
+        outcome: "interrupted",
+        reason: failureReason(error),
+        durationMs: Date.now() - start,
+      });
+      throw error;
+    }
+  }
+  async function approval(ctx: ObservationContext, requestId: string) {
+    return observed(ctx, "approval", "approval", async () => {
+      const result = await access.getAccessRequestStatus(requestId);
+      ctx.grantId = result.grantId ?? ctx.grantId;
+      const reason = shelfReasons.find((reason) => reason === result.status);
+      await observe({
+        ...ctx,
+        boundary: "approval",
+        stage: "approval",
+        outcome: "ok",
+        reason,
+      });
+      return result;
+    });
+  }
+
   async function connection(token: string): Promise<Connection> {
     const state = await store.read(token);
     if (
@@ -170,8 +313,12 @@ export function createShelf(config: DeliveryConfig) {
     return state;
   }
 
-  async function liveBinding(state: Connection, requireCompleted = false) {
-    const status = await access.getAccessRequestStatus(state.requestId);
+  async function liveBinding(
+    state: Connection,
+    requireCompleted = false,
+    ctx = context(state.requestId),
+  ) {
+    const status = await approval(ctx, state.requestId);
     if (!["approved", "ready_for_read", "completed"].includes(status.status)) {
       throw new DeliveryError(
         "approval_required",
@@ -248,6 +395,7 @@ export function createShelf(config: DeliveryConfig) {
         403,
       );
     }
+    ctx.grantId = grantId;
     state.binding = {
       grantId,
       owner: grant.grantorAddress,
@@ -263,23 +411,37 @@ export function createShelf(config: DeliveryConfig) {
         [key: string]: unknown;
       }>,
     ) {
-      const request = config.resumeRequestId
-        ? {
-            requestId: config.resumeRequestId,
-            approvalUrl: `${config.approvalUrl}/data-connection-requests/${config.resumeRequestId}?mode=page`,
-            expiresAt: new Date(Date.now() + 300_000).toISOString(),
-          }
-        : await createRequest();
-      if (!/^dcr_[a-z0-9_-]+$/i.test(request.requestId))
-        throw new DeliveryError("invalid_request", "Invalid access request.");
+      const ctx = context(config.resumeRequestId);
+      const request = await observed(
+        ctx,
+        "approval",
+        "approval",
+        async () => {
+          const created = config.resumeRequestId
+            ? {
+                requestId: config.resumeRequestId,
+                approvalUrl: `${config.approvalUrl}/data-connection-requests/${config.resumeRequestId}?mode=page`,
+                expiresAt: new Date(Date.now() + 300_000).toISOString(),
+              }
+            : await createRequest();
+          if (!/^dcr_[a-z0-9_-]+$/i.test(created.requestId))
+            throw new DeliveryError(
+              "invalid_request",
+              "Invalid access request.",
+            );
+          ctx.requestId = created.requestId;
+          return created;
+        },
+        "request_created",
+      );
       const token = randomBytes(32).toString("hex");
       const state: Connection = {
         requestId: request.requestId,
         appAddress: account.address,
         environment: config.environment,
       };
-      if (config.resumeRequestId) await liveBinding(state);
-      await store.save(token, state);
+      if (config.resumeRequestId) await liveBinding(state, false, ctx);
+      await observed(ctx, "consumer", "save", () => store.save(token, state));
       return { token, request };
     },
     async status(token: string, requestId: string) {
@@ -290,10 +452,18 @@ export function createShelf(config: DeliveryConfig) {
           "This request does not belong to this browser.",
           403,
         );
-      return access.getAccessRequestStatus(state.requestId);
+      return approval(context(state.requestId), state.requestId);
     },
     async snapshot(token: string) {
       const state = await connection(token);
+      await observe({
+        ...context(state.requestId),
+        grantId: state.binding?.grantId,
+        revision: state.saved?.revision,
+        boundary: "consumer",
+        stage: "reload",
+        outcome: state.saved ? "ok" : "unknown",
+      });
       return {
         saved: state.saved,
         acknowledged:
@@ -301,8 +471,11 @@ export function createShelf(config: DeliveryConfig) {
       };
     },
     async read(token: string, requestId?: string) {
+      const ctx = context(requestId);
       return store.exclusive(token, async () => {
         const state = await connection(token);
+        ctx.requestId = state.requestId;
+        ctx.grantId = state.binding?.grantId;
         if (requestId && requestId !== state.requestId)
           throw new DeliveryError(
             "invalid_request",
@@ -327,7 +500,7 @@ export function createShelf(config: DeliveryConfig) {
             "delivery_incomplete",
             "Save, display and confirm the initial delivery before reading latest.",
           );
-        const grant = await liveBinding(state, !requestId);
+        const grant = await liveBinding(state, !requestId, ctx);
         await store.save(token, state);
         const binding = state.binding!;
         const ledgerKey = createHash("sha256")
@@ -378,7 +551,10 @@ export function createShelf(config: DeliveryConfig) {
               savedAt: received.receivedAt,
               threads: threadsFrom(received.body),
             };
-            await store.save(token, state);
+            ctx.revision = state.saved.revision;
+            await observed(ctx, "consumer", "save", () =>
+              store.save(token, state),
+            );
             return { scope: SCOPE, data: state.saved };
           }
           // Recover a delivered body after decoder/save failure without another paid read.
@@ -422,13 +598,17 @@ export function createShelf(config: DeliveryConfig) {
               );
               headers["X-PAYMENT"] = ledger.payment.header;
             }
-            const response = await fetch(input, {
-              ...init,
-              headers,
-              signal: AbortSignal.timeout(30_000),
-              cache: "no-store",
-              redirect: "error",
-            });
+            const send = () =>
+              fetch(input, {
+                ...init,
+                headers,
+                signal: AbortSignal.timeout(30_000),
+                cache: "no-store",
+                redirect: "error",
+              });
+            const response = headers["X-PAYMENT"]
+              ? await paymentAttempt(ctx, send)
+              : await send();
             if (response.status === 402) {
               const required = await parsePersonalServerPaymentRequired(
                 response.clone(),
@@ -497,23 +677,26 @@ export function createShelf(config: DeliveryConfig) {
             }
             return response;
           };
-          const result = await readPersonalServerData({
-            personalServerUrl: binding.serverUrl,
-            scope: SCOPE,
-            grantId: binding.grantId,
-            payerAddress: account.address,
-            signMessage: (message) => account.signMessage({ message }),
-            escrow: {
-              chainId: 14800,
-              escrowContract: CONTRACTS.DataPortabilityEscrow.addresses[14800],
-              signTypedData: (typed) =>
-                account.signTypedData(
-                  typed as Parameters<typeof account.signTypedData>[0],
-                ),
-            },
-            fetchFn: fetchRead,
-            transportRetry: { attempts: 1 },
-          });
+          const result = await observed(ctx, "personal-server", "read", () =>
+            readPersonalServerData({
+              personalServerUrl: binding.serverUrl,
+              scope: SCOPE,
+              grantId: binding.grantId,
+              payerAddress: account.address,
+              signMessage: (message) => account.signMessage({ message }),
+              escrow: {
+                chainId: 14800,
+                escrowContract:
+                  CONTRACTS.DataPortabilityEscrow.addresses[14800],
+                signTypedData: (typed) =>
+                  account.signTypedData(
+                    typed as Parameters<typeof account.signTypedData>[0],
+                  ),
+              },
+              fetchFn: fetchRead,
+              transportRetry: { attempts: 1 },
+            }),
+          );
           ledger.received = {
             revision: randomUUID(),
             receivedAt: new Date().toISOString(),
@@ -528,18 +711,24 @@ export function createShelf(config: DeliveryConfig) {
       });
     },
     async acknowledge(token: string, revision: string) {
-      return store.exclusive(token, async () => {
-        const state = await connection(token);
-        if (!state.saved || state.saved.revision !== revision)
-          throw new DeliveryError(
-            "save_required",
-            "Save and display this result before confirming it.",
-          );
-        if (state.acknowledged === revision) return;
-        await access.acknowledgeRead!(state.requestId);
-        state.acknowledged = revision;
-        await store.save(token, state);
-      });
+      const ctx = context();
+      ctx.revision = revision;
+      return observed(ctx, "consumer", "ack", () =>
+        store.exclusive(token, async () => {
+          const state = await connection(token);
+          ctx.requestId = state.requestId;
+          ctx.grantId = state.binding?.grantId;
+          if (!state.saved || state.saved.revision !== revision)
+            throw new DeliveryError(
+              "save_required",
+              "Save and display this result before confirming it.",
+            );
+          if (state.acknowledged === revision) return;
+          await access.acknowledgeRead!(state.requestId);
+          state.acknowledged = revision;
+          await store.save(token, state);
+        }),
+      );
     },
   };
 }

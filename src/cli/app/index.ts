@@ -47,6 +47,10 @@ export function registerAppCommands(
     .command("request")
     .description("Ask a person for access and wait for the grant")
     .option(
+      "--resume <setupId>",
+      "Continue saved setup, test credit and consent without changing them",
+    )
+    .option(
       "--scopes <list>",
       "Comma-separated scopes to request (with --question, defaults to --derived)",
     )
@@ -71,16 +75,23 @@ export function registerAppCommands(
     .option("--return-url <url>", "Where approval returns the person")
     .option(
       "--timeout <seconds>",
-      "How long to wait for approval (default 600)",
+      "Seconds to wait per setup stage (defaults: credit 120, approval 600)",
     )
     .option("--app-id <id>", "App id shown during approval")
     .option("--app-name <name>", "App name shown during approval")
     .option("--app-url <url>", "App homepage shown during approval")
     .action(
-      async (commandOptions: Record<string, string | boolean | undefined>) => {
+      async (
+        commandOptions: Record<string, string | boolean | undefined>,
+        command: Command,
+      ) => {
         process.exitCode = await runAppRequest({
           ...getOptions(),
           ...commandOptions,
+          mergeGrant:
+            command.getOptionValueSource("mergeGrant") === "cli"
+              ? (commandOptions.mergeGrant as boolean)
+              : undefined,
         });
       },
     );
