@@ -108,6 +108,7 @@ import {
 } from "../core/network.js";
 import { CliExitCode } from "../core/exit-codes.js";
 import { registerAppCommands } from "./app/index.js";
+import { registerConnectorDesktopCommands } from "./connector-desktop.js";
 import { registerConnectorBuildCommands } from "./connector-build.js";
 import {
   checkRegisteredServers,
@@ -634,6 +635,7 @@ Examples:
   });
 
   registerConnectorBuildCommands(connectors, () => parsedOptions);
+  registerConnectorDesktopCommands(connectors, () => parsedOptions);
 
   connectors
     .command("add <key>")
