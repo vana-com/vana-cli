@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { GatewayClient } from "@opendatalabs/vana-sdk";
 import { verifyTypedData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -15,7 +18,7 @@ import {
   type ResolvedAppKey,
 } from "../../src/core/app-key.js";
 import { resolveNetwork } from "../../src/core/network.js";
-import { readAppProfile } from "../../src/core/app-profile.js";
+import { readAppProfile, saveAppProfile } from "../../src/core/app-profile.js";
 
 const KEY =
   "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
@@ -38,8 +41,31 @@ function clientWith(registered: boolean | Error): () => GatewayClient {
 }
 
 let stdout: string;
+let claimHome: string;
+const accountDeps = {
+  loadCredentials: () => ({
+    account: {
+      address: "env",
+      session_token: "fixture-account-token",
+      expires_at: "2099-01-01T00:00:00Z",
+    },
+    personal_server: null,
+  }),
+  fetch: async () =>
+    new Response(
+      JSON.stringify({
+        object: "app_ownership",
+        appAddress: account.address.toLowerCase(),
+        network: "mainnet",
+        subject: `vana_user_${"a".repeat(32)}`,
+        ownership: "not_owned",
+      }),
+    ),
+};
 
 beforeEach(() => {
+  claimHome = fs.mkdtempSync(path.join(os.tmpdir(), "vana-claim-link-"));
+  vi.stubEnv("VANA_HOME", claimHome);
   stdout = "";
   vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
     stdout += String(chunk);
@@ -51,6 +77,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
+  fs.rmSync(claimHome, { recursive: true, force: true });
 });
 
 describe("buildClaimLink", () => {
@@ -131,18 +158,29 @@ describe("buildClaimLink", () => {
 
 describe("vana app claim", () => {
   it("prints the claim link and the fund page", async () => {
+    vi.stubEnv("VANA_NETWORK", "moksha");
     const openUrl = vi.fn();
+    saveAppProfile(
+      account.address,
+      { name: "Hermes Agent" },
+      resolveNetwork("mainnet"),
+    );
+    saveAppProfile(
+      account.address,
+      { name: "Test Agent" },
+      resolveNetwork("moksha"),
+    );
     const exitCode = await runAppClaim(
       { json: true, network: "mainnet" },
       {
+        ...accountDeps,
         resolveKey: () => resolvedKey,
         createClient: clientWith(true),
-        readProfile: () => ({ name: "Hermes Agent" }),
         openUrl,
       },
     );
 
-    expect(exitCode).toBe(0);
+    expect(exitCode).toBe(7);
     const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
     expect(String(outcome.data?.claimUrl)).toMatch(
       /^https:\/\/account\.vana\.org\/developers\/apps\/claim\?network=mainnet&address=0x/,
@@ -160,6 +198,7 @@ describe("vana app claim", () => {
     await runAppClaim(
       { json: true, network: "mainnet", appName: "My Agent" },
       {
+        ...accountDeps,
         resolveKey: () => resolvedKey,
         createClient: clientWith(true),
         readProfile: () => ({ name: "Hermes Agent" }),
@@ -179,8 +218,9 @@ describe("vana app claim", () => {
   it("opens the link for a person at a terminal", async () => {
     const openUrl = vi.fn();
     await runAppClaim(
-      { network: "mainnet" },
+      { network: "mainnet", timeout: "0" },
       {
+        ...accountDeps,
         resolveKey: () => resolvedKey,
         createClient: clientWith(true),
         openUrl,
@@ -191,20 +231,20 @@ describe("vana app claim", () => {
     expect(openUrl).toHaveBeenCalledWith(
       expect.stringContaining("/developers/apps/claim?"),
     );
-    expect(stdout).toContain("claimUrl: https://account.vana.org/");
   });
 
-  it("still prints a link when the gateway can't be reached", async () => {
+  it("cannot confirm registration when the gateway cannot be reached", async () => {
     const exitCode = await runAppClaim(
       { json: true, network: "mainnet" },
       {
+        ...accountDeps,
         resolveKey: () => resolvedKey,
         createClient: clientWith(new Error("offline")),
         openUrl: vi.fn(),
       },
     );
 
-    expect(exitCode).toBe(0);
+    expect(exitCode).toBe(6);
   });
 
   it("points an unregistered app at register", async () => {
