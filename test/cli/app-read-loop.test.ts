@@ -100,6 +100,46 @@ function store() {
 }
 
 describe("receipts store", () => {
+  it("refuses a competing write rather than overwriting a newly saved receipt", () => {
+    const receipts = store();
+    const k = receiptKey("moksha", GRANT, "github.repos");
+    receipts.nextNonce(appKey.address);
+    const receipt = {
+      header: "retained",
+      amount: "1",
+      asset: "0x0",
+      capturedAt: "fixture",
+    };
+    let competingError: unknown;
+    const readFile = fs.readFileSync;
+    let interleave = true;
+    const spy = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+      const bytes = Reflect.apply(readFile, fs, args);
+      if (
+        interleave &&
+        String(args[0]) === path.join(tempDir, "receipts.json")
+      ) {
+        interleave = false;
+        try {
+          store().saveReceipt(k, receipt);
+        } catch (error) {
+          competingError = error;
+        }
+      }
+      return bytes;
+    });
+    try {
+      expect(receipts.nextNonce(appKey.address)).toBe(2n);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(competingError).toBeInstanceOf(Error);
+    expect((competingError as Error).message).toContain("payment state");
+    store().saveReceipt(k, receipt);
+    expect(store().getReceipt(k)?.header).toBe("retained");
+    expect(store().nextNonce(appKey.address)).toBe(3n);
+  });
+
   it("keeps nonces monotonic across instances", () => {
     const file = path.join(tempDir, "receipts.json");
     expect(createReceiptsStore(file).nextNonce("0xAb")).toBe(1n);
@@ -154,6 +194,59 @@ describe("receipts store", () => {
 });
 
 describe("vana app read", () => {
+  it("refuses an overlapping read and later replays the first payment", async () => {
+    let firstSent!: () => void;
+    let resumeFirst!: () => void;
+    const sent = new Promise<void>((resolve) => {
+      firstSent = resolve;
+    });
+    const resume = new Promise<void>((resolve) => {
+      resumeFirst = resolve;
+    });
+    const headers: string[] = [];
+    let loseResponse = true;
+    vi.stubGlobal("fetch", async (_: unknown, init?: RequestInit) => {
+      const header = new Headers(init?.headers).get("X-PAYMENT");
+      if (!header)
+        return Response.json({ grantId: GRANT, amount: "1" }, { status: 402 });
+      headers.push(header);
+      if (headers.length === 1) {
+        firstSent();
+        await resume;
+      }
+      if (loseResponse) throw new Error("fixture: settled response lost");
+      return Response.json({ rows: 1 });
+    });
+    const deps = () => ({
+      resolveKey: () => appKey,
+      createClient: () => grantClient(),
+      receipts: store(),
+      read: (params: Parameters<typeof readPersonalServerData>[0]) =>
+        readPersonalServerData({ ...params, transportRetry: { attempts: 1 } }),
+    });
+    const options = { json: true, grant: GRANT, network: "moksha", pay: true };
+    const first = runAppRead("github.repos", options, deps());
+    await sent;
+    let second: number;
+    try {
+      second = await runAppRead("github.repos", options, deps());
+    } finally {
+      resumeFirst();
+      await first;
+    }
+    expect(second!).toBe(6);
+    expect(headers).toHaveLength(1);
+    loseResponse = false;
+    stdout = "";
+    expect(
+      await runAppRead("github.repos", { ...options, pay: false }, deps()),
+    ).toBe(0);
+    expect(new Set(headers).size).toBe(1);
+    expect(
+      appOutcomeSchema.parse(JSON.parse(stdout)).data?.replayedReceipt,
+    ).toBe(true);
+  });
+
   it("refuses to read or reset payment state when the receipt file is corrupt", async () => {
     const file = path.join(tempDir, "receipts.json");
     fs.writeFileSync(file, '{"version":1,"nonces":');
