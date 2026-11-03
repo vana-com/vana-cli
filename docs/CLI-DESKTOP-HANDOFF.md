@@ -65,13 +65,13 @@ consumer delivery require their own checks.
 
 ## Use the connector in your app
 
-After the CLI returns the snapshot link:
+After the CLI prepares the snapshot, Desktop Sources discovers it for the same Account and network even if no link was opened. The CLI link is a shortcut to the same review:
 
-1. Open the link in the matching Vana Desktop build and review its source, streams, network and artifact digest.
-2. Choose **Enable snapshot**, then **Import data**. Finish the source's normal setup. The connector appears with a Development label in Sources; only this Account and network can run it.
+1. In the matching Desktop build, open **Sources → Ready to review → Review**, or use the CLI link. Review the connector's version and imported data; network, scopes and its code fingerprint are in Technical details. **Later** leaves it available in Sources without enabling it.
+2. Choose **Enable and import** and finish the source's normal setup. Import progress appears in Sources; only this Account and network can run the connector. If enable succeeds but import cannot start, **Retry import** retries collection without repeating activation.
 3. Start the Vana request from your consuming app for the exact scope, such as `my_source.items`. Keep Desktop and its registered Personal Server running. Approve the request in Vana, confirm the Account owner-read prompt, and return to the same app/browser session.
 4. Read and save the response in the app before acknowledging the request. The approval page returns to the app after acknowledgement. An enabled snapshot alone does not prove that data was imported or delivered.
-5. After editing the connector, repeat packaging, explicitly enable the new snapshot and import again. Refresh the app through its existing still-valid grant. A public connector release is not required between edits.
+5. After editing the connector, repeat packaging. Sources shows **Review update** on the existing source row with the active and proposed versions. Choose **Update and import**, then refresh the app through its existing still-valid grant. A public connector release is not required between edits.
 
 For this release candidate the verified service path is Account dev and Moksha on the same Mac. Use `VANA_ENV=dev` consistently for login, handoff and resume, and select Moksha in Desktop. The CLI release must include `vana connectors desktop --help`; released 0.48.2 alone does not contain this new command. The first public CLI/Desktop version pair must be recorded in the release notes when those artifacts are published. Mainnet release acceptance remains gated on the production Account schema rollout and the fee-eligible server runtime.
 
