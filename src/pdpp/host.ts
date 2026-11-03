@@ -10,7 +10,10 @@ import { promisify } from "node:util";
 import * as tar from "tar";
 
 import { getVanaHome } from "../core/paths.js";
-import { getSystemChromePath } from "../runtime/playwright/index.js";
+import {
+  getSystemChromePath,
+  resolveBrowserPath,
+} from "../runtime/playwright/index.js";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -320,11 +323,11 @@ function patchrightBrowsersDir(): string {
  * Environment that decides which browser a connector launches.
  *
  * System Chrome is preferred for the same reason the legacy runtime prefers
- * it: sites treat it as a normal browser. Without it the connector's own
- * patchright Chromium is used, installed once under ~/.vana/pdpp/browsers.
+ * it: sites treat it as a normal browser. macOS requires system Chrome.
+ * Other platforms can use patchright Chromium under ~/.vana/pdpp/browsers.
  */
 export function browserEnvironment(): Record<string, string> {
-  if (getSystemChromePath()) {
+  if (process.platform === "darwin" || getSystemChromePath()) {
     return { PDPP_BROWSER_CHANNEL: "chrome" };
   }
   return { PLAYWRIGHT_BROWSERS_PATH: patchrightBrowsersDir() };
@@ -334,6 +337,10 @@ export async function ensureConnectorBrowser(
   node: ResolvedNode,
   logPath: string,
 ): Promise<void> {
+  if (process.platform === "darwin") {
+    resolveBrowserPath();
+    return;
+  }
   if (getSystemChromePath()) return;
   const cliPath = path.join(
     path.dirname(require.resolve("patchright/package.json")),

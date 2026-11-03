@@ -2,12 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, dev]
     paths-ignore:
       - "connect/**"
       - "examples/**"
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, dev]
     paths-ignore:
       - "connect/**"
       - "examples/**"
@@ -104,3 +104,30 @@ jobs:
           path: |
             docs/transcripts
             docs/vhs
+
+  browser-macos:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.22.1
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Install current stable system Chrome
+        run: pnpm exec playwright install --force chrome
+      - name: Verify macOS browser admission and diagnostics
+        run: |
+          test "$(node -p process.platform)" = darwin
+          test "$(node -p process.versions.node.split('.')[0])" = 24
+          pnpm test test/runtime/browser-policy.test.ts test/pdpp/runtime.test.ts
+      - name: Launch system Chrome with its sandbox and a local fixture
+        run: node scripts/test-browser-macos.mjs
