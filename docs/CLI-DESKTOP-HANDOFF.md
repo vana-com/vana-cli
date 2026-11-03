@@ -18,7 +18,8 @@ installed, a real Node 24 executable, and GNU tar. On macOS the CLI discovers
 entry. BSD tar is rejected. The command never installs tools or changes the
 upstream checkout.
 
-Sign in to the intended Vana account with `vana login`. Package a new source name
+The locally verified candidate uses dev Account and Moksha on the same Mac in both CLI
+and the matching Desktop build. Sign in with `VANA_ENV=dev vana login`. Package a new source name
 and the intended streams explicitly. The profile's `connector_key` stays in
 kebab case, while the final path segment of `source.id` and selected stream names
 must form SDK scopes using lowercase letters, digits and underscores (for example
@@ -45,10 +46,10 @@ context-preserving status/resume argv.
 Pending approval returns exit 7. JSON, IPC and `--no-input` never open Desktop or
 approve anything. For an interactive review add `--open` without those flags, or
 open the returned `vana-dev://development-connector?id=...` link (`vana://` for
-production). The person reviews and enables the Development connector in Desktop.
-An explicit interactive `desktop-resume <handoff-id> --open` also reopens an
-already enabled snapshot for management, including disable/remove. Reopening does
-not activate it again.
+production). The person reviews the named connector in Sources and chooses Enable and import.
+An explicit interactive `desktop-resume <handoff-id> --open` returns an already
+enabled snapshot to Sources. Its row menu contains details, enable/disable and
+remove. Reopening does not activate or import it again.
 
 ```sh
 VANA_ENV=dev vana connectors desktop-status <handoff-id> --network moksha --json
@@ -65,9 +66,21 @@ consumer delivery require their own checks.
 
 ## Use the connector in your app
 
+Keep the app and owner in the same environment/network. Register a local app
+with its explicit URL, then complete the returned Account ownership/claim step:
+
+```sh
+VANA_ENV=dev vana app register --network moksha \
+  --app-url http://localhost:3090 --app-name "My connector app" --json --no-input
+```
+
+Use that same app key for its permission request and later reads. Do not create
+a replacement app to recover a pending claim. Mainnet availability is a separate
+production rollout; this guide does not imply it is ready.
+
 After the CLI prepares the snapshot, Desktop Sources discovers it for the same Account and network even if no link was opened. The CLI link is a shortcut to the same review:
 
-1. In the matching Desktop build, open **Sources → Ready to review → Review**, or use the CLI link. Review the connector's version and imported data; network, scopes and its code fingerprint are in Technical details. **Later** leaves it available in Sources without enabling it.
+1. In the matching Desktop build, open **Sources → Ready to review → Review**, or use the CLI link. Review the imported data and local origin; version, network, scopes and code fingerprint are in Technical details. **Later** leaves it available in Sources without enabling it.
 2. Choose **Enable and import** and finish the source's normal setup. Import progress appears in Sources; only this Account and network can run the connector. If enable succeeds but import cannot start, **Retry import** retries collection without repeating activation.
 3. Start the Vana request from your consuming app for the exact scope, such as `my_source.items`. Keep Desktop and its registered Personal Server running. Approve the request in Vana, confirm the Account owner-read prompt, and return to the same app/browser session.
 4. Read and save the response in the app before acknowledging the request. The approval page returns to the app after acknowledgement. An enabled snapshot alone does not prove that data was imported or delivered.
@@ -136,3 +149,12 @@ Missing status means approval is pending. Identity/digest mismatches fail closed
 
 No personal provider data, credentials, payment, consent, remote registry,
 Mobile distribution or service configuration is part of packaging.
+
+## Support for this release
+
+Report CLI/Desktop handoff problems at
+https://github.com/vana-com/vana-cli/issues, including CLI/Desktop versions,
+source ID, selected network and the visible failure. Keep credentials and raw
+provider data out of the report. The tested development route in this guide
+is dev Account + Moksha + same-Mac Desktop; Mobile, cross-device code delivery
+and public connector submission are outside this first release.
