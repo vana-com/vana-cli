@@ -418,6 +418,7 @@ export async function launchPersistentContext(
   const launchOptions: Parameters<typeof chromium.launchPersistentContext>[1] =
     {
       headless,
+      chromiumSandbox: process.platform === "darwin",
       args: [
         "--disable-blink-features=AutomationControlled",
         "--disable-features=MediaRouter,DialMediaRouteProvider",
