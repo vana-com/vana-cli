@@ -270,6 +270,12 @@ export function resolveBrowserPath(): string {
     browserPath = getSystemChromePath();
   }
 
+  if (!browserPath && process.platform === "darwin") {
+    throw new Error(
+      "Google Chrome is required for browser collection on macOS. Install or update Google Chrome in /Applications, then retry. Vana does not fall back to bundled Chromium on macOS.",
+    );
+  }
+
   if (!browserPath) {
     browserPath = getDownloadedChromiumPath();
   }
@@ -442,7 +448,24 @@ export async function launchPersistentContext(
     launchOptions.ignoreDefaultArgs = ["--use-mock-keychain"];
   }
 
-  return chromium.launchPersistentContext(userDataDir, launchOptions);
+  try {
+    return await chromium.launchPersistentContext(userDataDir, launchOptions);
+  } catch (error) {
+    if (
+      process.platform === "darwin" &&
+      error instanceof Error &&
+      /sandbox initialization failed: Operation not permitted/i.test(
+        error.message,
+      )
+    ) {
+      throw new Error(
+        "Chrome could not initialize its macOS sandbox. Check this execution environment's browser-launch permissions, then retry. Vana will not retry without the browser sandbox.\n\n" +
+          error.message,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 export function getDefaultUserDataDir(slug: string): string {
