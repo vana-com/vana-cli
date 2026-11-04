@@ -57,6 +57,12 @@ export class ManagedPlaywrightRuntime {
   readonly kind = "playwright" as const;
 
   get installSummary(): { lines: string[]; phase: string } {
+    if (process.platform === "darwin") {
+      return {
+        lines: ["Connector runner", "Google Chrome in /Applications"],
+        phase: "Checking Google Chrome",
+      };
+    }
     return {
       lines: ["Connector runner", "Chromium browser engine"],
       phase: "Installing browser engine (one time, ~150MB)",
@@ -83,6 +89,9 @@ export class ManagedPlaywrightRuntime {
   }
 
   async ensureInstalled(_autoApprove: boolean): Promise<RuntimeInstallResult> {
+    if (process.platform === "darwin") {
+      return { runtime: "installed", runtimePath: resolveBrowserPath() };
+    }
     const runtime = this.state;
     if (runtime === "installed") {
       return { runtime, runtimePath: this.runtimePath };

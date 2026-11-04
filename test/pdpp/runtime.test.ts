@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CliEvent } from "../../src/core/cli-types.js";
 import { updateCliConfig } from "../../src/core/state-store.js";
@@ -46,7 +46,7 @@ if (process.env.FAKE_SKIP_ALL === "1") {
   await new Promise((resolve) => rl.once("close", resolve));
   process.exit();
 }
-if (requested.has("profile")) emit({ type: "RECORD", stream: "profile", key: "me", data: { id: "me", trigger: process.env.PDPP_RUN_TRIGGER_KIND, profileRoot: process.env.PDPP_BROWSER_PROFILE_ROOT, leaked: process.env.PDPP_FAKE_REMOTE_CDP_URL ?? null }, emitted_at: "t" });
+if (requested.has("profile")) emit({ type: "RECORD", stream: "profile", key: "me", data: { id: "me", trigger: process.env.PDPP_RUN_TRIGGER_KIND, profileRoot: process.env.PDPP_BROWSER_PROFILE_ROOT, browserChannel: process.env.PDPP_BROWSER_CHANNEL ?? null, leaked: process.env.PDPP_FAKE_REMOTE_CDP_URL ?? null }, emitted_at: "t" });
 emit({ type: "PROGRESS", stream: "chat_events", message: "Reading chats" });
 for (const id of requested.has("chat_events") ? chats : []) {
   emit({ type: "RECORD", stream: "chat_events", key: String(id), data: { id }, emitted_at: "t" });
@@ -147,6 +147,50 @@ describe.skipIf(!stripsTypes)("PdppRuntime from a local checkout", () => {
     }
     return events;
   }
+
+  it.each([undefined, false])(
+    "runs without Chrome when the browser binding is %s",
+    async (required) => {
+      const originalPlatform = process.platform;
+      const exists = fs.existsSync;
+      Object.defineProperty(process, "platform", {
+        configurable: true,
+        value: "darwin",
+      });
+      const missingChrome = vi
+        .spyOn(fs, "existsSync")
+        .mockImplementation((file) =>
+          String(file) ===
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            ? false
+            : exists(file),
+        );
+      const manifestPath = path.join(checkout, "connectors/fake/manifest.json");
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      if (required !== undefined)
+        manifest.runtime_requirements = { bindings: { browser: { required } } };
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+      try {
+        const events = await connect();
+        expect(
+          events.some((event) => event.type === "collection-complete"),
+        ).toBe(true);
+        const complete = events.find(
+          (event) => event.type === "collection-complete",
+        );
+        const result = JSON.parse(
+          fs.readFileSync(complete!.resultPath!, "utf8"),
+        );
+        expect(result["fake.profile"].profile[0].browserChannel).toBe("chrome");
+      } finally {
+        missingChrome.mockRestore();
+        Object.defineProperty(process, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+    },
+  );
 
   it("collects and publishes only explicitly selected streams", async () => {
     const events = await connect({ streams: ["chat_events"] });
