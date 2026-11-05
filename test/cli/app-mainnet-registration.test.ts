@@ -334,6 +334,73 @@ describe("one-command mainnet registration", () => {
     expect(await runAppRegister(options, deps)).toBe(0);
     expect(registrations).toBe(1);
   });
+  const refuseAssociation = (status: number, body: unknown) => {
+    const request = deps.fetch!;
+    deps.fetch = async (url, init) => {
+      if (new URL(String(url)).pathname === "/api/v1/me/app-registrations")
+        return typeof body === "string"
+          ? new Response(body, { status })
+          : Response.json(body, { status });
+      return request(url, init);
+    };
+    return request;
+  };
+  it.each([
+    [409, "association_conflict"],
+    [409, "registration_mismatch"],
+    [403, "source_not_owned"],
+    [400, "invalid_proof"],
+  ])(
+    "does not ask for a rerun when Account answers %i %s, and keeps the journal for a later fix",
+    async (status, accountCode) => {
+      const request = refuseAssociation(status, {
+        error: { code: accountCode },
+      });
+      expect(await runAppRegister(options, deps)).toBe(1);
+      const result = outcome();
+      expect(result.code).toBe(accountCode);
+      expect(result.message).toContain("will not change");
+      expect(result.remedy).not.toMatch(/rerun/i);
+      expect(result.remedy).toContain("registration.json");
+      expect(result.data).toMatchObject({ partial: true });
+      expect(deps.store!.getRegistration()).not.toBeNull();
+
+      // Once Account is fixed, the same command finishes without registering again.
+      deps.fetch = request;
+      output = "";
+      expect(await runAppRegister(options, deps)).toBe(0);
+      expect(registrations).toBe(1);
+      expect(deps.store!.getRegistration()).toBeNull();
+    },
+  );
+  it("asks for a CLI sign-in when Account refuses the session's client", async () => {
+    refuseAssociation(403, { error: { code: "forbidden_client" } });
+    expect(await runAppRegister(options, deps)).toBe(7);
+    expect(outcome().remedy).toContain("vana login");
+  });
+  it.each([
+    [
+      503,
+      { error: { code: "ownership_unavailable" } },
+      "ownership_unavailable",
+    ],
+    [
+      409,
+      { error: { code: "builder_not_registered" } },
+      "builder_not_registered",
+    ],
+    [502, "<html>Bad gateway</html>", "HTTP 502"],
+  ])(
+    "keeps asking for a rerun on a transient %i and names it",
+    async (status, body, named) => {
+      refuseAssociation(status, body);
+      expect(await runAppRegister(options, deps)).toBe(6);
+      const result = outcome();
+      expect(result.code).toBe("not_ready");
+      expect(result.message).toContain(named);
+      expect(result.remedy).toMatch(/rerun/i);
+    },
+  );
   it("reconciles a scoped production association even when legacy ownership already projects as owned", async () => {
     owned = true;
     unavailable = true;
