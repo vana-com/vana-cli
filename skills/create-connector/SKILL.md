@@ -37,9 +37,9 @@ explicit job, private work instructions and executable checks. Do not launch
 another coding agent or service.
 
 1. Read the bundled instructions. They include the public data-connectors
-   checkout, its locked dependency installation and the exact public
-   `@vana/factory-core@0.0.2` release artifact to install locally. No private
-   Factory access or internal service is required. Use synthetic or explicitly
+   checkout, its locked dependency installation, and the pinned public Factory
+   artifact and checksum. No private Factory access or internal service is
+   required. Use synthetic or explicitly
    reviewed evidence and a real Node 24 runtime on macOS or Linux; Node 24.22.1
    is recommended for both Factory and the checkout. The instructions set
    `VANA_FACTORY_TOOLS` under `VANA_HOME` (otherwise `~/.vana`) and

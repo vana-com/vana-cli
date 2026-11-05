@@ -1,3 +1,7 @@
+## BUI-968 — Factory preflight refusal, 5 November 2026
+
+Fix only collection admission and its safe recovery message. Work separately from the preserved Readwise acceptance run and the dirty primary CLI checkout. Factory owns stable static-check inputs; this companion handles its typed stale-check refusal without parsing an error as an attempt. No live collection, account/key access, publication, funding or registration changes.
+
 # Worklog
 
 ## 2026-11-02 — PR #109 conflict resolution
@@ -237,3 +241,21 @@ The user clarified the deployment boundary: publish a normal stable CLI containi
 Finish and ship only the approved welcome, searchable 12-row source picker, missing-source name, connector decision and guide handoff. Start from v0.46.0; preserve its public Factory 0.0.2 workflow and BUI-938. Do not merge #106's funding or collection-readiness work. Interactive standalone installation opens bare `vana` via the controlling terminal; automated installs skip prompts. Skills are bundled without installing into agent harnesses; the advertised optional setup uses existing explicit skill selection. Proof must exercise a fresh installer and all five actual terminal screens, including clean exit with guide visible.
 
 Proof: fresh piped standalone install in a disposable home reached welcome, source picker, Ctrl+O source-name input, Readwise connector decision and canonical Factory guide, then exited 0 with output retained. The first test reproduced the remaining forced-help entry override before repair. Full validation passes 976 tests; CLI preflight uses browser/network-blocked fixtures and passes. Packaging checks require the bundled current Factory guide. Structured Codex closeout review is clean at P0 (0.96). Funding/app commands, Factory adapter and the current Create Connector instructions have no diff from v0.46.0. Delivery is the scoped onboarding PR and normal stable release; #106's funding work stays unmerged.
+
+## BUI-968 local repair evidence and release handoff
+
+Factory now runs static checks with the same bounded environment it fingerprints. Shell/agent metadata and provider credentials do not affect those checks; loader/runtime configuration remains bound. A cross-process regression failed on the baseline and passes after repair, including refusal of changed NODE_OPTIONS. Source edits, invalid records, unsupported schemas, cancellation and upload recovery remain protected. The saved run's hidden exception was `static evidence is stale`; the exact original environment difference was not recorded, so no particular variable is asserted as the historical trigger.
+
+Factory core build and 61 focused collection/contract/API/input tests pass. CLI TypeScript, focused ESLint/formatting, 66 distinct adapter/runtime/build tests and build pass. The versioned Factory 0.0.4 package passes the isolated real CLI → collection → verification → Personal Server HTTP/disk readback with queried Motel evidence; all owned processes stopped. The unchanged Readwise connector passes all seven checks and preflight using the installed candidate and saved synthetic preparation inputs. No real Readwise request, credential or original acceptance-tool change occurred.
+
+Factory's whole-repository typecheck still reports two pre-existing TS2353 errors in untouched `test/snapshot.test.ts:314`; the focused core build succeeds. Do not expand this repair to the dashboard tests.
+
+Candidate Factory 0.0.4 SHA256: `090c41a6585b3412f94ca84560c6a55e7bf54cc66d81ecf2997a9a67f21d2a9e`. CLI's installation instructions, checksum regression and existing publication workflow point to that candidate. The proposed new artifact belongs beside the prior Factory artifact on the public CLI v0.47.0 release; do not replace the 0.0.3 artifact. Publish the exact reviewed tarball before releasing instructions that reference it. Nothing has been pushed, published or installed in the acceptance run.
+
+The first external review attempt was blocked by automatic approval review. Callum subsequently explicitly authorized the review, publication and existing test-tool update on 5 November. Both scoped Codex reviews then passed with no actionable findings (Factory confidence 0.96; CLI 0.95). Deliver the reviewed source through main-targeted PRs and publish the exact Factory artifact; update the original test tools and prepare the same app/connector to resume without starting live collection.
+
+Resume the existing app `0x1504Ee4Cf97d71f9b53816C9e23bE03730cF7418` and original Readwise connector after the public Factory artifact is available and installed. An upgraded Factory intentionally invalidates prior preparation receipts: create a new Factory job from the existing request and connector, prepare/check it, and continue collection. Do not rebuild the app/connector, replace account keys, retry registration or change funding UI in this repair. Re-enter the human loop only when collection needs the Readwise credential.
+
+Release validation: full `pnpm validate` passes types, ESLint, formatting and all 1,129 tests after linking the examples’ existing dependencies into this isolated checkout. `pnpm preflight:cli` passes, including browser/network-blocked transcript capture. Broad regeneration of the inherited transcript document was discarded to keep this repair scoped. Both external reviews are clean. Factory source is merged as PR #33; publish the frozen 0.0.4 artifact before this CLI pin reaches main.
+
+Factory stdout follow-up: Factory-only PR #34 publishes 0.0.5 with a real chunk-boundary regression and large packaged CLI readback proof. Align this existing open companion PR’s future install pin and checksum with that immutable artifact. Do not merge or wait for a full CLI release as part of updating the existing test; its CLI remains 0.48.3.
