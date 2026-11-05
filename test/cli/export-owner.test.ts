@@ -6,6 +6,10 @@ import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import {
+  SCHEDULED_COLLECT_ARGS,
+  SCHEDULED_RUN_ENV,
+} from "../../src/cli/schedule.js";
 import { findCompatibleNodeSync } from "../../src/pdpp/host.js";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
@@ -450,17 +454,68 @@ await new Promise((resolve) => input.once("close", resolve));
     );
     expect(adHocText).not.toContain("vana schedule add");
 
-    // Following the hint makes the source collectable without --from.
+    // A symlink to the registered checkout still identifies the same source.
     const added = await run(["connectors", "add", "fake", "--from", checkout]);
     expect(added.code, added.stdout + added.stderr).toBe(0);
-    const connected = await run(["connect", "fake", "--no-input"]);
+    const alias = path.join(root, "checkout-alias");
+    await fs.symlink(checkout, alias, "junction");
+    const connected = await run([
+      "connect",
+      "fake",
+      "--from",
+      alias,
+      "--no-input",
+    ]);
     expect(connected.code, connected.stdout + connected.stderr).toBe(0);
     expect(connected.stdout + connected.stderr).toContain("vana schedule add");
     expect(connected.stdout + connected.stderr).not.toContain(
       "vana connectors add",
     );
-    const collected = await run(["collect", "fake", "--no-input"]);
+    const collected = await run([...SCHEDULED_COLLECT_ARGS], {
+      [SCHEDULED_RUN_ENV]: "1",
+    });
     expect(collected.code, collected.stdout + collected.stderr).toBe(0);
+  });
+
+  it("withholds the schedule hint when --from overrides a different registered checkout", async () => {
+    await login(A);
+    const registeredCheckout = path.join(root, "registered");
+    await fs.cp(checkout, registeredCheckout, { recursive: true });
+    const entry = path.join(registeredCheckout, "connectors/fake/index.ts");
+    await write(
+      entry,
+      (await fs.readFile(entry, "utf8")).replace(
+        "value: process.env.FAKE_RECORD_VALUE",
+        'value: "registered checkout"',
+      ),
+    );
+    const added = await run([
+      "connectors",
+      "add",
+      "fake",
+      "--from",
+      registeredCheckout,
+    ]);
+    expect(added.code, added.stdout + added.stderr).toBe(0);
+
+    const adHoc = await run(
+      ["connect", "fake", "--from", checkout, "--no-input"],
+      { FAKE_RECORD_VALUE: "explicit checkout" },
+    );
+    expect(adHoc.code, adHoc.stdout + adHoc.stderr).toBe(0);
+    expect(JSON.stringify(uploads.at(-1)?.body)).toContain("explicit checkout");
+    const adHocText = adHoc.stdout + adHoc.stderr;
+    expect(adHocText).not.toContain("vana schedule add");
+    expect(adHocText).toContain(`--from ${checkout}`);
+    expect(adHocText).toContain("can run a different connector");
+
+    const collected = await run([...SCHEDULED_COLLECT_ARGS], {
+      [SCHEDULED_RUN_ENV]: "1",
+    });
+    expect(collected.code, collected.stdout + collected.stderr).toBe(0);
+    expect(JSON.stringify(uploads.at(-1)?.body)).toContain(
+      "registered checkout",
+    );
   });
 
   it("reports B's automatic and scheduled exclusion of a partially synced A export", async () => {

@@ -188,7 +188,8 @@ export function parseLaunchdPlist(content: string): InstalledSchedule {
   };
 }
 
-function quoteForShell(value: string): string {
+/** Quote one argument for a POSIX shell. */
+export function quoteForShell(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 

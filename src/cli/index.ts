@@ -85,6 +85,7 @@ import {
   generateLaunchdPlist,
   parseCrontabEntry,
   parseLaunchdPlist,
+  quoteForShell,
   resolveScheduleTarget,
   vanaHomeForEnv,
   type CollectAllSourceResult,
@@ -2859,23 +2860,36 @@ async function runConnect(
       renderer?.next(`vana data show ${source}`);
     }
 
-    // A --from run is not remembered: unless the key also resolves without
-    // --from (registered, pinned or catalog), `vana collect` and schedules
-    // cannot find the connector again until its directory is registered.
-    const ranUnregisteredDirectory =
-      connectOptions.from !== undefined &&
-      (await resolvePdppSource(source).catch(() => null)) === null &&
-      !(await loadCatalogIds().catch(() => [] as string[])).some(
-        (id) => id.toLowerCase() === source,
-      );
-    if (ranUnregisteredDirectory) {
-      const directory = path.resolve(connectOptions.from!);
-      const shown = /\s/.test(directory)
-        ? JSON.stringify(directory)
-        : directory;
-      renderer?.detail(
-        `This run used --from only. To collect again or on a schedule, register it: \`vana connectors add ${source} --from ${shown}\`, then \`vana connect ${source}\`.`,
-      );
+    const fromDirectory = pdppSource?.kind === "from" ? pdppSource.path : null;
+    const scheduledSource = fromDirectory
+      ? await resolvePdppSource(source).catch(() => null)
+      : null;
+    const schedulesUseThisCheckout =
+      fromDirectory !== null &&
+      scheduledSource?.kind === "local" &&
+      (await Promise.all([
+        fsp.realpath(fromDirectory),
+        fsp.realpath(scheduledSource.path),
+      ])
+        .then(([from, scheduled]) => from === scheduled)
+        .catch(() => false));
+
+    if (fromDirectory && !schedulesUseThisCheckout) {
+      const shown = /^[a-zA-Z0-9_./:-]+$/.test(fromDirectory)
+        ? fromDirectory
+        : quoteForShell(fromDirectory);
+      if (
+        scheduledSource ||
+        registrySources.some((entry) => entry.id.toLowerCase() === source)
+      ) {
+        renderer?.detail(
+          `Collecting without --from can run a different connector. To repeat this checkout, rerun your connect command with \`--from ${shown}\`.`,
+        );
+      } else {
+        renderer?.detail(
+          `This run used --from only. To collect again or on a schedule, register it: \`vana connectors add ${source} --from ${shown}\`, then \`vana connect ${source}\`.`,
+        );
+      }
     } else if (!hasSchedule) {
       renderer?.detail(
         "Keep this fresh automatically — run `vana schedule add` to collect on a schedule.",
