@@ -108,11 +108,20 @@ export class FactoryCollectionFailure extends Error {
     return new FactoryCollectionFailure(attemptSchema.parse(attempt));
   }
 }
-/** A validated schema location, rather than the Factory subprocess's raw error text. */
+/** Only validated locations or fixed recovery text may leave the private Factory boundary. */
 export class FactoryPreflightFailure extends Error {
-  constructor(diagnostic: { stream: string; path: string; keyword: string }) {
+  constructor(
+    diagnostic:
+      | { stream: string; path: string; keyword: string }
+      | "checks_stale"
+      | "operation_failed",
+  ) {
     super(
-      `Factory cannot verify ${diagnostic.stream}.${diagnostic.path}: unsupported ${diagnostic.keyword}. Repair the manifest or install a compatible Factory, then check the same job again. No connector was started.`,
+      diagnostic === "checks_stale"
+        ? "Factory checks are stale. Run the check command in this job's work file, then retry collection. No connector was started; previous data and checkpoints were kept."
+        : diagnostic === "operation_failed"
+          ? "Factory could not complete collection preflight. Check the job's private work file and local Factory setup. No connector was started; previous data and checkpoints were kept."
+          : `Factory cannot verify ${diagnostic.stream}.${diagnostic.path}: unsupported ${diagnostic.keyword}. Repair the manifest or install a compatible Factory, then check the same job again. No connector was started.`,
     );
     this.name = "FactoryPreflightFailure";
   }
@@ -191,6 +200,14 @@ export class FactoryCollectionGate {
       .safeParse(result.value);
     if (result.exitCode === 1 && !result.interrupted && schemaError.success)
       throw new FactoryPreflightFailure(schemaError.data.error.diagnostic);
+    const refusal = z
+      .object({
+        version: z.literal(1),
+        error: z.object({ code: z.enum(["checks_stale", "operation_failed"]) }),
+      })
+      .safeParse(result.value);
+    if (result.exitCode === 1 && !result.interrupted && refusal.success)
+      throw new FactoryPreflightFailure(refusal.data.error.code);
     const attempt = attemptSchema.parse(result.value);
     if (
       result.exitCode !== 0 ||
