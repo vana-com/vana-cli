@@ -8,6 +8,23 @@ description: >
 
 # Create a connector
 
+Read workflows with `vana skills show <id> --json`. The response includes full
+instructions and required reference content; installation into the agent's
+harness is optional. Use `connect-data`, `create-connector` or `builder` as the
+requested goal needs them.
+
+Take the user's source and data goal through implementation, checks, one real
+CLI collection, and a check that the intended Personal Server stored it.
+Continue through those steps from one request. Ask for source/account choices,
+human authentication, or an action that needs the user's decision. The
+[walkthrough](https://github.com/vana-com/vana-cli/blob/main/skills/README.md)
+shows the commands beside the user's part of each step.
+
+Reuse completed discovery from the current task. Otherwise check both
+`vana sources --json` and upstream's current connectors before creating one.
+A catalog failure is not evidence of an unsupported provider. Use an existing
+implementation when it satisfies the requested data goal.
+
 Start with the instructions bundled in the installed Vana CLI. This command
 works offline without installing an agent skill or Factory.
 
@@ -70,6 +87,31 @@ preparation remains unsupported. Do not imply live provider proof. Missing
 prerequisites need a person; global `--yes`, `--no-input`, `--ipc` and `--network` do not grant
 new source access. `--detach` is unsupported; `--quiet` hides progress only.
 
-The older `reference/PAGE-API.md` and `reference/PATTERNS.md` describe legacy
-Playwright connectors. Read them only when the task explicitly targets that
-format. They do not replace the current Collection Profile workflow.
+## Collect once through Vana
+
+Read Connect Data with `vana skills show connect-data --json` for discovery,
+identity, server readiness, authentication and result inspection. Preserve the
+person's owner, network, `VANA_HOME` and Account deployment, and use the same
+CLI entry point throughout. For local CLI work, build the actual checkout with
+`pnpm build` and use its absolute `dist/cli/bin.js` path in place of `vana`.
+
+Writing and checking the connector does not require Vana sign-in. Before a
+real-account collection, follow Connect Data's account/server preparation:
+Vana sign-in, server readiness and CLI approval precede source-token entry or
+provider reads. Readiness failures include a recovery command; preserve the
+original source, checkout path and streams through that recovery.
+
+Have the person use the interactive CLI for secrets. Supply the exact command
+with the real key, checkout, streams and selected network, not a token
+placeholder they might paste into chat. Keep credentials out of chat, shell
+arguments, scripts and logs. Inspect `vana data show <key> --json`,
+`vana data path <key>` and `vana logs <key>` without another provider run, and
+distinguish `connected_and_ingested` from `connected_local_only`; checks alone
+establish neither.
+
+Repeated development may use `vana connectors add <key> --from <checkout>`.
+That saves a persistent override which also affects collect, schedules and
+MCP; one-off acceptance needs only `--from`. Remove an unwanted override with
+`vana connectors remove <key>`. App consent, reading and delivery belong to
+the Builder workflow. Native availability, signed release and publication are
+separate work, not a side effect of a local test.

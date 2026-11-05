@@ -48,6 +48,8 @@ export interface PersonalServerTarget {
   url: string | null;
   source: "config" | "auth" | "env" | "scan" | null;
   health: PersonalServerHealth | null;
+  /** Healthy servers passed over because they belong to another account. */
+  otherServers?: { url: string; owner: string }[];
 }
 
 export type PersonalServerAuthConfig =
@@ -101,66 +103,81 @@ async function detectTargetAt(
   };
 }
 
-export async function detectPersonalServerTarget(): Promise<PersonalServerTarget> {
-  // 1. Persisted config (highest priority)
-  const config = await readCliConfig();
-  if (config.personalServerUrl) {
-    const target = await detectTargetAt(config.personalServerUrl, "config");
-    if (target) {
-      return target;
-    }
-  }
-
-  // 2. Auth credentials (from `vana login`). The saved server can be another
-  // account's, kept across a login switch: then a server of this account
-  // found by the scan below wins over it.
+/** Resolve a destination, or inspect all reachable servers for status reporting. */
+export async function detectPersonalServerTarget(
+  options: { purpose?: "owner-inspection" } = {},
+): Promise<PersonalServerTarget> {
+  const inspecting = options.purpose === "owner-inspection";
   const account = loadAccountAddressForOwnership();
-  const savedSession = loadPersonalServerSession();
-  let savedForeign: PersonalServerTarget | null = null;
-  if (savedSession?.url) {
-    const target = await detectTargetAt(savedSession.url, "auth");
-    if (target && !personalServerOwnerMismatch(target.health?.owner, account)) {
-      return target;
-    }
-    savedForeign = target;
+  const seen = new Set<string>();
+  const probe = async (
+    url: string | undefined,
+    source: PersonalServerTarget["source"],
+  ): Promise<PersonalServerTarget | null> => {
+    if (!url) return null;
+    const key = normalizeServerUrl(url);
+    if (inspecting && seen.has(key)) return null;
+    seen.add(key);
+    return detectTargetAt(url, source);
+  };
+  const config = await readCliConfig();
+  const configured = await probe(config.personalServerUrl, "config");
+  // A configured URL is a deliberate destination, including a foreign server
+  // whose use is subject to the collection command's existing consent check.
+  if (configured && !inspecting) return configured;
+
+  const saved = await probe(loadPersonalServerSession()?.url, "auth");
+  if (
+    saved &&
+    !inspecting &&
+    !personalServerOwnerMismatch(saved.health?.owner, account)
+  ) {
+    return saved;
   }
 
-  // 3. Environment variable
-  const explicitUrl = process.env.VANA_PERSONAL_SERVER_URL;
-  if (explicitUrl) {
-    const target = await detectTargetAt(explicitUrl, "env");
-    if (target) {
-      return target;
+  const explicit = await probe(process.env.VANA_PERSONAL_SERVER_URL, "env");
+  if (explicit && !inspecting) return explicit;
+
+  const scanned = inspecting
+    ? await Promise.all(
+        DEFAULT_PORTS.map((port) => probe(`http://localhost:${port}`, "scan")),
+      )
+    : [];
+  let scannedForeign: PersonalServerTarget | null = null;
+  if (!inspecting) {
+    for (const port of DEFAULT_PORTS) {
+      const target = await probe(`http://localhost:${port}`, "scan");
+      if (!target) continue;
+      if (!personalServerOwnerMismatch(target.health?.owner, account)) {
+        return target;
+      }
+      scannedForeign ??= target;
     }
   }
+  const unavailable: PersonalServerTarget = {
+    state: "unavailable",
+    url: null,
+    source: null,
+    health: null,
+  };
+  if (!inspecting) return saved ?? scannedForeign ?? unavailable;
 
-  // 4. Localhost port scan. One machine can host servers for several
-  // identities, so the first port to answer is not necessarily ours; prefer
-  // one the saved account owns and only fall back to a stranger's.
-  let unowned: PersonalServerTarget | null = null;
-  for (const port of DEFAULT_PORTS) {
-    const url = `http://localhost:${port}`;
-    const health = await fetchHealth(url);
-    if (!health) continue;
-    const target: PersonalServerTarget = {
-      state: "available",
-      url,
-      source: "scan",
-      health,
-    };
-    if (!personalServerOwnerMismatch(health.owner, account)) {
-      return target;
-    }
-    unowned ??= target;
-  }
-  if (savedForeign) {
-    return savedForeign;
-  }
-  if (unowned) {
-    return unowned;
-  }
-
-  return { state: "unavailable", url: null, source: null, health: null };
+  const candidates = [configured, saved, explicit, ...scanned].filter(
+    (target): target is PersonalServerTarget => target !== null,
+  );
+  const selected =
+    candidates.find(
+      (target) => !personalServerOwnerMismatch(target.health?.owner, account),
+    ) ??
+    candidates[0] ??
+    unavailable;
+  const otherServers = candidates.flatMap((target) => {
+    const mismatch = personalServerOwnerMismatch(target.health?.owner, account);
+    return mismatch && target.url && target !== selected
+      ? [{ url: target.url, owner: mismatch.owner }]
+      : [];
+  });
+  return otherServers.length ? { ...selected, otherServers } : selected;
 }
 
 export async function ingestResult(

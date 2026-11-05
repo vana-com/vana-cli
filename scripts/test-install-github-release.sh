@@ -76,7 +76,14 @@ CONNECT_EXIT_CODE=$?
 set -e
 printf '%s\n' "$CONNECT_OUTPUT"
 
-if [ "$CONNECT_EXIT_CODE" -ne 0 ] && [ "$CONNECT_EXIT_CODE" -ne 1 ]; then
+# 7 = needs input: since the onboarding change, connect asks for Vana
+# sign-in before collecting, which a fresh non-interactive install cannot do.
+if [ "$CONNECT_EXIT_CODE" -eq 7 ]; then
+  if ! printf '%s\n' "$CONNECT_OUTPUT" | grep -q '"status":"needs_input"'; then
+    echo "Exit code 7 without a needs_input outcome" >&2
+    exit 1
+  fi
+elif [ "$CONNECT_EXIT_CODE" -ne 0 ] && [ "$CONNECT_EXIT_CODE" -ne 1 ]; then
   echo "Unexpected vana exit code: ${CONNECT_EXIT_CODE}" >&2
   exit 1
 fi
