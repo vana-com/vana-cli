@@ -155,10 +155,17 @@ export async function runAppClaim(
   }
 
   let registered: boolean | "unknown" = "unknown";
+  let recordedAppUrl: string | null = null;
   try {
-    registered = await (deps.createClient ?? createGatewayClient)(
+    const client = (deps.createClient ?? createGatewayClient)(
       network.gatewayUrl,
-    ).isRegisteredBuilder(key.address);
+    );
+    registered = await client.isRegisteredBuilder(key.address);
+    if (registered && typeof client.getBuilder === "function") {
+      const builder = await client.getBuilder(key.address);
+      recordedAppUrl =
+        typeof builder?.appUrl === "string" ? builder.appUrl : null;
+    }
   } catch {
     // Offline: the link still works once the gateway answers Account.
   }
@@ -169,6 +176,19 @@ export async function runAppClaim(
       message: `This app is not registered on ${network.name} yet, so there is nothing to claim.`,
       remedy: "vana app register",
       network: network.name,
+    });
+  }
+  // Account rejects a claim for a record without a URL ("no usable app URL
+  // or public key"), only after the owner opens the link. Say so here.
+  if (recordedAppUrl === "") {
+    return emitAppOutcome(options, {
+      status: "failed",
+      code: "bad_usage",
+      message: `This app was registered on ${network.name} without an app URL, so Vana Account cannot claim it. A registration cannot be changed.`,
+      remedy:
+        "Remove this machine's app key (macOS Keychain item org.vana.cli / app-key, or ~/.vana/app-key.json), then run vana app register --app-url <url> to create a new app.",
+      network: network.name,
+      data: { address: key.address },
     });
   }
 
