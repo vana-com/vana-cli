@@ -24,7 +24,7 @@ import {
 } from "../../core/network.js";
 import { saveAppProfile } from "../../core/app-profile.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
-import { runMainnetRegistration } from "./mainnet-registration.js";
+import { isHttpUrl, runMainnetRegistration } from "./mainnet-registration.js";
 import type { AppRegistrationStore } from "../../core/app-registration-store.js";
 import type { loadCredentials } from "../auth.js";
 
@@ -132,57 +132,71 @@ export async function runAppRegister(
   if (network.name === "mainnet")
     return runMainnetRegistration(options, key, network, deps);
 
-  // Remember how this app introduces itself, so `vana app request` shows it
-  // on the approval page without repeating --app-name every time.
-  // A local file that cannot be written must not cost the registration.
-  try {
-    (deps.saveProfile ?? saveAppProfile)(
-      key.address,
-      {
-        name: options.appName,
-        url: options.appUrl,
-      },
-      network,
-    );
-  } catch {
-    // The name then has to be passed as --app-name on each request.
-  }
-
   const client = (deps.createClient ?? createGatewayClient)(network.gatewayUrl);
 
   try {
-    if (await client.isRegisteredBuilder(key.address)) {
+    let recorded = await client.getBuilder(key.address);
+    // The gateway keeps the first registration, and Account cannot claim
+    // (or approve owner-only sources for) an app whose record has no URL.
+    // Refuse rather than create an identity that can never be claimed.
+    const appUrl = options.appUrl?.trim() ?? "";
+    if (recorded === null && !isHttpUrl(appUrl)) {
       return emitAppOutcome(options, {
-        status: "done",
-        code: "ok",
-        message: "Already registered.",
+        status: "failed",
+        code: "bad_usage",
+        message:
+          "Pass --app-url with an http(s) URL. Vana Account cannot claim an app registered without one, and the URL cannot be changed after registration.",
+        remedy: `vana app register --network ${network.name} --app-url http://localhost:3000 --app-name "<your app>"`,
         network: network.name,
-        data: {
-          address: key.address,
-          keySource: key.source,
-          alreadyRegistered: true,
-        },
+        data: { address: key.address },
       });
     }
 
-    const params = await signBuilderRegistration(
-      key,
-      network,
-      options.appUrl ?? "",
-    );
-    const result = await client.registerBuilder(params);
+    // Remember how this app introduces itself, so `vana app request` shows it
+    // on the approval page without repeating --app-name every time.
+    // A local file that cannot be written must not cost the registration.
+    try {
+      (deps.saveProfile ?? saveAppProfile)(
+        key.address,
+        {
+          name: options.appName,
+          url: options.appUrl,
+        },
+        network,
+      );
+    } catch {
+      // The name then has to be passed as --app-name on each request.
+    }
+
+    const result =
+      recorded === null
+        ? await client.registerBuilder(
+            await signBuilderRegistration(key, network, appUrl),
+          )
+        : null;
+    if (result?.alreadyRegistered) {
+      // A different registration can win between the lookup and the POST.
+      recorded = await client.getBuilder(key.address).catch(() => null);
+    }
+    const alreadyRegistered =
+      recorded !== null || result?.alreadyRegistered === true;
+    const claimable =
+      recorded !== null && !isHttpUrl(recorded.appUrl) ? false : undefined;
     return emitAppOutcome(options, {
       status: "done",
       code: "ok",
-      message: result.alreadyRegistered
-        ? "Already registered."
+      message: alreadyRegistered
+        ? claimable === false
+          ? "Already registered, without a usable app URL for a new Vana Account claim."
+          : "Already registered."
         : "Builder registered.",
       network: network.name,
       data: {
         address: key.address,
         keySource: key.source,
-        builderId: result.builderId ?? null,
-        alreadyRegistered: result.alreadyRegistered,
+        ...(result ? { builderId: result.builderId ?? null } : {}),
+        alreadyRegistered,
+        claimable,
       },
     });
   } catch (error) {

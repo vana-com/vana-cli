@@ -13,6 +13,7 @@
 import crypto from "node:crypto";
 import {
   createGatewayClient,
+  type Builder,
   type GatewayClient,
 } from "@opendatalabs/vana-sdk";
 import { privateKeyToAccount } from "viem/accounts";
@@ -32,8 +33,14 @@ import {
   createAppClaimStore,
   type StoredAppClaim,
 } from "../../core/app-claim-store.js";
+import { isHttpUrl } from "./mainnet-registration.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
 import { builderRegistrationDomainFor } from "./register.js";
+
+const MOKSHA_REGISTRATION_COMMAND =
+  "vana app register --network moksha --app-url http://localhost:3000";
+const MAINNET_REGISTRATION_COMMAND =
+  "vana app register --network mainnet --app-url https://your-app.example";
 
 /**
  * Must match Account's BUILDER_CLAIM_LINK_TYPES. The app name is signed so
@@ -151,7 +158,7 @@ export async function runAppClaim(
         status: "failed",
         code: "builder_unknown",
         message: "No app key on this machine yet.",
-        remedy: "vana app register",
+        remedy: MOKSHA_REGISTRATION_COMMAND,
         network: network.name,
       });
     }
@@ -166,20 +173,23 @@ export async function runAppClaim(
     throw error;
   }
 
-  let registered: boolean | "unknown" = "unknown";
+  let builder: Builder | null | undefined;
   try {
-    registered = await (deps.createClient ?? createGatewayClient)(
+    builder = await (deps.createClient ?? createGatewayClient)(
       network.gatewayUrl,
-    ).isRegisteredBuilder(key.address);
+    ).getBuilder(key.address);
   } catch {
     // Registration must be confirmed before claiming completion.
   }
-  if (registered === false) {
+  if (builder === null) {
     return emitAppOutcome(options, {
       status: "failed",
       code: "builder_unknown",
       message: `This app is not registered on ${network.name} yet, so there is nothing to claim.`,
-      remedy: "vana app register",
+      remedy:
+        network.name === "moksha"
+          ? MOKSHA_REGISTRATION_COMMAND
+          : MAINNET_REGISTRATION_COMMAND,
       network: network.name,
     });
   }
@@ -214,7 +224,7 @@ export async function runAppClaim(
       "bad_usage",
       "--timeout must be a nonnegative number of seconds.",
     );
-  if (registered === "unknown")
+  if (builder === undefined)
     return fail(
       "not_ready",
       "App registration could not be checked. No claim was started.",
@@ -348,6 +358,20 @@ export async function runAppClaim(
           ownership: "owned",
           appName: saved.appName || undefined,
         },
+      });
+    }
+    if (!isHttpUrl(builder.appUrl)) {
+      const promote =
+        network.name === "mainnet"
+          ? ` After Account confirms ownership on Moksha, run ${MAINNET_REGISTRATION_COMMAND} with the same new key.`
+          : "";
+      return emitAppOutcome(options, {
+        status: "failed",
+        code: "bad_usage",
+        message: `This app was registered on ${network.name} without a usable app URL, so Vana Account cannot claim it. The registration cannot be changed.`,
+        remedy: `Keep this app key for existing integrations. Set VANA_APP_KEY to a new project-specific key, then run ${MOKSHA_REGISTRATION_COMMAND} and vana app claim --network moksha with that key.${promote}`,
+        network: network.name,
+        data: { address },
       });
     }
     if (!saved.link || saved.link.expiry <= Math.floor(now() / 1000))
