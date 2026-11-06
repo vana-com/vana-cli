@@ -223,7 +223,7 @@ describe("vana app claim", () => {
     expect(outcome.remedy).toBe("vana app register");
   });
 
-  it("refuses before linking when the registration has no app URL", async () => {
+  it("refuses a claim without an app URL and guides a separate project key", async () => {
     const openUrl = vi.fn();
     const exitCode = await runAppClaim(
       { json: true, network: "moksha" },
@@ -243,6 +243,13 @@ describe("vana app claim", () => {
     const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
     expect(outcome.code).toBe("bad_usage");
     expect(outcome.message).toContain("without an app URL");
+    expect(outcome.remedy).toContain(
+      "Keep this app key for existing integrations",
+    );
+    expect(outcome.remedy).toContain("VANA_APP_KEY");
+    expect(outcome.remedy).toContain(
+      "vana app register --network moksha --app-url http://localhost:3000",
+    );
     expect(outcome.data).not.toHaveProperty("claimUrl");
     expect(openUrl).not.toHaveBeenCalled();
   });
