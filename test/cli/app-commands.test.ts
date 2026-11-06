@@ -49,11 +49,21 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 describe("vana app register", () => {
-  it("still registers when the profile file cannot be written", async () => {
+  const builder = {
+    id: "b-1",
+    ownerAddress: account.address,
+    granteeAddress: account.address,
+    publicKey: account.publicKey,
+    appUrl: "https://openclaw.ai",
+    addedAt: "2026-01-01T00:00:00Z",
+  };
+
+  it("still reports registration when the profile file cannot be written", async () => {
     const exitCode = await runAppRegister(
       { json: true, appName: "OpenClaw" },
       {
@@ -63,7 +73,7 @@ describe("vana app register", () => {
         },
         createClient: () =>
           clientWith({
-            isRegisteredBuilder: async () => true,
+            getBuilder: async () => builder,
             registerBuilder: vi.fn(),
           }),
       },
@@ -79,7 +89,7 @@ describe("vana app register", () => {
         resolveKey: () => resolvedKey,
         createClient: () =>
           clientWith({
-            isRegisteredBuilder: async () => true,
+            getBuilder: async () => builder,
             registerBuilder: vi.fn(),
           }),
       },
@@ -101,7 +111,7 @@ describe("vana app register", () => {
         resolveKey: () => resolvedKey,
         createClient: () =>
           clientWith({
-            isRegisteredBuilder: async () => true,
+            getBuilder: async () => builder,
             registerBuilder,
           }),
       },
@@ -119,12 +129,12 @@ describe("vana app register", () => {
   it("signs a verifiable EIP-712 registration and posts it", async () => {
     let posted: Record<string, string> | undefined;
     const exitCode = await runAppRegister(
-      { json: true, network: "moksha" },
+      { json: true, network: "moksha", appUrl: "https://openclaw.ai" },
       {
         resolveKey: () => resolvedKey,
         createClient: () =>
           clientWith({
-            isRegisteredBuilder: async () => false,
+            getBuilder: async () => null,
             registerBuilder: async (params) => {
               posted = params as unknown as Record<string, string>;
               return { builderId: "b-1", alreadyRegistered: false };
@@ -157,6 +167,83 @@ describe("vana app register", () => {
     expect(outcome.data).toMatchObject({ builderId: "b-1" });
   });
 
+  it.each([undefined, "  ", "localhost:3000"])(
+    "refuses a new registration with unusable --app-url %j",
+    async (appUrl) => {
+      const registerBuilder = vi.fn();
+      const network = resolveNetwork("moksha");
+      const profile = readAppProfile(account.address, network);
+      const exitCode = await runAppRegister(
+        { json: true, network: "moksha", appName: "Rejected app", appUrl },
+        {
+          resolveKey: () => resolvedKey,
+          createClient: () =>
+            clientWith({ getBuilder: async () => null, registerBuilder }),
+        },
+      );
+
+      expect(exitCode).toBe(2);
+      expect(registerBuilder).not.toHaveBeenCalled();
+      const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+      expect(outcome.code).toBe("bad_usage");
+      expect(outcome.message).toContain("--app-url");
+      expect(readAppProfile(account.address, network)).toEqual(profile);
+    },
+  );
+
+  it.each(["", "ftp://example.com"])(
+    "reports an existing registration with unusable app URL %j without registering again",
+    async (appUrl) => {
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValueOnce(
+            Response.json({ data: { ...builder, appUrl } }),
+          )
+          .mockImplementation(async () => new Response(null, { status: 503 })),
+      );
+      const exitCode = await runAppRegister(
+        { json: true, network: "moksha", appUrl: "http://localhost:3000" },
+        { resolveKey: () => resolvedKey },
+      );
+
+      expect(exitCode).toBe(0);
+      const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+      expect(outcome.message).toContain("without a usable app URL");
+      expect(outcome.data).toMatchObject({
+        alreadyRegistered: true,
+        claimable: false,
+      });
+    },
+  );
+
+  it("reports a legacy URL when another registration wins the race", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 404 }))
+        .mockResolvedValueOnce(
+          Response.json({ builderId: builder.id }, { status: 409 }),
+        )
+        .mockResolvedValueOnce(
+          Response.json({ data: { ...builder, appUrl: "" } }),
+        ),
+    );
+    const exitCode = await runAppRegister(
+      { json: true, network: "moksha", appUrl: "http://localhost:3000" },
+      { resolveKey: () => resolvedKey },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(appOutcomeSchema.parse(JSON.parse(stdout)).data).toMatchObject({
+      builderId: builder.id,
+      alreadyRegistered: true,
+      claimable: false,
+    });
+  });
+
   it("maps gateway failures to exit 1 with a gateway_unreachable code", async () => {
     const exitCode = await runAppRegister(
       { json: true },
@@ -164,7 +251,7 @@ describe("vana app register", () => {
         resolveKey: () => resolvedKey,
         createClient: () =>
           clientWith({
-            isRegisteredBuilder: async () => {
+            getBuilder: async () => {
               throw new Error("fetch failed");
             },
           }),
