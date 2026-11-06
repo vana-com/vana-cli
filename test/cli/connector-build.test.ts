@@ -223,10 +223,10 @@ describe("connector build subprocess policy", () => {
     expect(output.value.instructions).toContain("static_and_fixture");
     expect(output.value.instructions).toContain("VANA_FACTORY_BUILD");
     expect(output.value.instructions).toContain(
-      'npm install --prefix "$VANA_FACTORY_TOOLS" --ignore-scripts --no-audit --no-fund https://github.com/vana-com/vana-cli/releases/download/v0.47.0/vana-factory-core-0.0.3.tgz',
+      'npm install --prefix "$VANA_FACTORY_TOOLS" --ignore-scripts --no-audit --no-fund https://github.com/vana-com/vana-cli/releases/download/v0.47.0/vana-factory-core-0.0.6.tgz',
     );
     expect(output.value.instructions).toContain(
-      "4261fd7b786f6387759629b7dfdb78fe6c659918a91a2d850e82b342eb4c8e47",
+      "c580f6c0feeeee3bc5624c6fc449d72edb86f2eede989cb45c4688800a54a8a0",
     );
     expect(output.value.instructions).toContain(
       'export VANA_FACTORY_TOOLS="${VANA_HOME:-$HOME/.vana}/factory-tools"',
@@ -298,6 +298,36 @@ describe("connector build subprocess policy", () => {
     await expect(readFile(captured.path)).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("requires fixture support before creating a job with declared tests", async () => {
+    const request = JSON.parse(await readFile(requestFile, "utf8"));
+    request.fixtureTests = ["collection.test.ts"];
+    await writeFile(requestFile, JSON.stringify(request));
+
+    await configure({
+      capabilities: {
+        version: 1,
+        error: { code: "invalid_arguments", message: "Unknown flag" },
+      },
+      probeExit: 2,
+    });
+    const refused = await run(["build", "--request", requestFile]);
+    expect(refused.value.error.code).toBe("factory_fixture_tests_unsupported");
+    expect((await readFile(callsFile, "utf8")).trim()).toBe(
+      JSON.stringify(["capabilities", "--json", "--include-fixtures"]),
+    );
+
+    const capture = path.join(directory, "captured-fixtures.json");
+    await configure({
+      capabilities: { ...capabilities, fixtureTestsVersion: 1 },
+      captureRequest: capture,
+    });
+    const accepted = await run(["build", "--request", requestFile]);
+    expect(accepted.code).toBe(0);
+    expect(
+      JSON.parse(await readFile(capture, "utf8")).value.fixtureTests,
+    ).toEqual(["collection.test.ts"]);
   });
 
   it("preserves exact immutable context and separate same-job argv", async () => {

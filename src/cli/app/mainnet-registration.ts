@@ -406,9 +406,11 @@ async function waitForMainnetConfirmation(
   }
 }
 
-function isHttpUrl(value: string): boolean {
+/** Whether the URL uses HTTP or HTTPS, as required by Account. */
+export function isHttpUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
   try {
-    return ["http:", "https:"].includes(new URL(value).protocol);
+    return ["http:", "https:"].includes(new URL(value.trim()).protocol);
   } catch {
     return false;
   }

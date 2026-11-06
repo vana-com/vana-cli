@@ -37,19 +37,23 @@ explicit job, private work instructions and executable checks. Do not launch
 another coding agent or service.
 
 1. Read the bundled instructions. They include the public data-connectors
-   checkout, its locked dependency installation and the exact public
-   `@vana/factory-core@0.0.2` release artifact to install locally. No private
-   Factory access or internal service is required. Use synthetic or explicitly
+   checkout, its locked dependency installation and how to select a compatible
+   Factory executable. Use synthetic or explicitly
    reviewed evidence and a real Node 24 runtime on macOS or Linux; Node 24.22.1
-   is recommended for both Factory and the checkout. The instructions set
-   `VANA_FACTORY_TOOLS` under `VANA_HOME` (otherwise `~/.vana`) and
-   `VANA_FACTORY_BUILD` to the installed executable.
+   is recommended for both Factory and the checkout.
 2. Save a version 1 request file with absolute checkout/evidence paths, source
    identity, directory key, exact manifest key, requested streams, and export
    environment variable name or API preparation plan. The bundled instructions
    include a source-general API example. Declare names rather than credential
    values.
    Directory and manifest keys must match after underscore/hyphen normalization.
+   Run `"${VANA_FACTORY_BUILD-factory-build}" capabilities --include-fixtures --json`
+   before building. This probes the configured executable or uses PATH when the
+   override is unset.
+   When it reports `fixtureTestsVersion: 1`, declare `fixtureTests` in the initial request.
+   Name the connector-local tests that will prove collection with synthetic data.
+   The names are fixed for the job. Write the files before running check and
+   register at least one passing `node:test` case directly in each named file.
 3. Run `vana connectors build --request /absolute/path/to/request.json --json`.
    Read the returned private `workFile`. For an API, run `actions.prepare.argv`
    for the same UUID and state directory. Explicit prepare acquires only declared
