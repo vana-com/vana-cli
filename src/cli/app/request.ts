@@ -43,6 +43,7 @@ import {
   unionGrantScopes,
   type GrantUnion,
 } from "../../core/grant-union.js";
+import { resolveApprovalLink } from "./approval-link.js";
 import { emitAppOutcome, type AppCommandOptions } from "./outcome.js";
 
 export interface RequestCommandOptions extends AppCommandOptions {
@@ -555,6 +556,16 @@ export async function runAppRequest(
       : {}),
   };
   requests.save(stored);
+  const approvalUrl = await resolveApprovalLink(
+    stored.approvalUrl,
+    network,
+    key.address,
+    options.owner ?? plan.owner,
+  );
+  if (approvalUrl !== stored.approvalUrl) {
+    requests.update(stored.requestId, { approvalUrl });
+    created = { ...created, approvalUrl };
+  }
 
   if (options.noInput) {
     return emitAppOutcome(options, {
