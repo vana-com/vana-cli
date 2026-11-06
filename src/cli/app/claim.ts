@@ -186,7 +186,7 @@ export async function runAppClaim(
       code: "bad_usage",
       message: `This app was registered on ${network.name} without an app URL, so Vana Account cannot claim it. A registration cannot be changed.`,
       remedy:
-        "Remove this machine's app key (macOS Keychain item org.vana.cli / app-key, or ~/.vana/app-key.json), then run vana app register --app-url <url> to create a new app.",
+        "Keep this app key for existing integrations. Set VANA_APP_KEY to a new project-specific key, then run vana app register --network moksha --app-url http://localhost:3000 and vana app claim --network moksha with that key.",
       network: network.name,
       data: { address: key.address },
     });
