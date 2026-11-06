@@ -300,6 +300,36 @@ describe("connector build subprocess policy", () => {
     });
   });
 
+  it("requires fixture support before creating a job with declared tests", async () => {
+    const request = JSON.parse(await readFile(requestFile, "utf8"));
+    request.fixtureTests = ["collection.test.ts"];
+    await writeFile(requestFile, JSON.stringify(request));
+
+    await configure({
+      capabilities: {
+        version: 1,
+        error: { code: "invalid_arguments", message: "Unknown flag" },
+      },
+      probeExit: 2,
+    });
+    const refused = await run(["build", "--request", requestFile]);
+    expect(refused.value.error.code).toBe("factory_fixture_tests_unsupported");
+    expect((await readFile(callsFile, "utf8")).trim()).toBe(
+      JSON.stringify(["capabilities", "--json", "--include-fixtures"]),
+    );
+
+    const capture = path.join(directory, "captured-fixtures.json");
+    await configure({
+      capabilities: { ...capabilities, fixtureTestsVersion: 1 },
+      captureRequest: capture,
+    });
+    const accepted = await run(["build", "--request", requestFile]);
+    expect(accepted.code).toBe(0);
+    expect(
+      JSON.parse(await readFile(capture, "utf8")).value.fixtureTests,
+    ).toEqual(["collection.test.ts"]);
+  });
+
   it("preserves exact immutable context and separate same-job argv", async () => {
     const output = await run(["build", "--request", requestFile]);
     expect(output.code).toBe(0);
