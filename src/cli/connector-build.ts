@@ -56,6 +56,7 @@ const capabilitiesSchema = z
     protocolVersion: z.literal(1),
     contextVersion: z.literal(2),
     apiPreparationVersion: z.literal(1),
+    fixtureTestsVersion: z.literal(1).optional(),
     collectionVerificationVersion: z.literal(1).optional(),
     orderedTranscriptVersion: z.literal(1).optional(),
     cancellation: z.literal(true),
@@ -292,6 +293,7 @@ async function requestIdentity(file: string) {
         connectorDirectory: key,
         manifestConnectorKey: key,
         checkout: absolute,
+        fixtureTests: z.unknown().optional(),
         source: z.object({
           id: key,
           access: z.discriminatedUnion("kind", [
@@ -323,6 +325,7 @@ async function requestIdentity(file: string) {
       throw new Error();
     return {
       requestBytes,
+      declaresFixtureTests: identity.fixtureTests !== undefined,
       sourceId: identity.source.id,
       manifestConnectorKey: identity.manifestConnectorKey,
       collectionContext: {
@@ -428,7 +431,30 @@ async function run(
         ? await requestIdentity(options.request!)
         : undefined;
     const executable = await resolveExecutable();
-    const probe = await invoke(executable, ["capabilities", "--json"], true);
+    const fixtureProbe = identity?.declaresFixtureTests ?? false;
+    const probe = await invoke(
+      executable,
+      [
+        "capabilities",
+        "--json",
+        ...(fixtureProbe ? ["--include-fixtures"] : []),
+      ],
+      true,
+    );
+    const capabilityError = errorSchema.safeParse(probe.value);
+    const fixtureUnsupported = () =>
+      new AdapterError(
+        "factory_fixture_tests_unsupported",
+        "This request declares fixtureTests. Select a Factory that reports fixtureTestsVersion 1 with capabilities --include-fixtures before creating the job. See vana connectors build --instructions.",
+      );
+    if (
+      fixtureProbe &&
+      !probe.interrupted &&
+      probe.exitCode === 2 &&
+      capabilityError.success &&
+      capabilityError.data.error.code === "invalid_arguments"
+    )
+      throw fixtureUnsupported();
     coreError(probe.value, probe.exitCode);
     const capabilities = capabilitiesSchema.safeParse(probe.value);
     if (probe.interrupted)
@@ -450,6 +476,8 @@ async function run(
         "unsupported_runtime",
         messages.unsupported_runtime,
       );
+    if (fixtureProbe && !capabilities.data.fixtureTestsVersion)
+      throw fixtureUnsupported();
     const stateDirectory = path.resolve(
       options.stateDir ?? path.join(getVanaHome(), "factory"),
     );
