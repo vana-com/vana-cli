@@ -52,7 +52,8 @@ another coding agent or service.
    override is unset.
    When it reports `fixtureTestsVersion: 1`, declare `fixtureTests` in the initial request.
    Name the connector-local tests that will prove collection with synthetic data.
-   The names are fixed for the job. Write the files before running check.
+   The names are fixed for the job. Write the files before running check and
+   register at least one passing `node:test` case directly in each named file.
 3. Run `vana connectors build --request /absolute/path/to/request.json --json`.
    Read the returned private `workFile`. For an API, run `actions.prepare.argv`
    for the same UUID and state directory. Explicit prepare acquires only declared

@@ -6,17 +6,17 @@ export const CONNECTOR_BUILD_INSTRUCTIONS = `Build a Collection Profile connecto
   cd /absolute/path/to/data-connectors
   PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci
 Read AUTHORING.md and docs/spec/collection-profile.md in that checkout before writing the connector. Factory needs the packages/polyfill-connectors layout, Git metadata and installed TypeScript, tsx and Biome inside the checkout. Do not link dependencies from another checkout. Factory supports synthetic or explicitly reviewed export evidence and declared API preparation. Browser preparation remains unsupported.
-2. Use the configured Factory executable or an existing factory-build on PATH. If neither is available, install the public @vana/factory-core@0.0.5 release artifact for legacy test discovery. This needs no private Factory repository access, internal services or Factory account. Vana never installs or downloads Factory. The external executable supplies its own Node host, including when Vana runs on Node 22 or as a standalone binary.
+2. Use the configured Factory executable or an existing factory-build on PATH. If neither is available, install the public @vana/factory-core@0.0.6 release artifact. This needs no private Factory repository access, internal services or Factory account. Vana never installs or downloads Factory. The external executable supplies its own Node host, including when Vana runs on Node 22 or as a standalone binary.
   export VANA_FACTORY_TOOLS="\${VANA_HOME:-$HOME/.vana}/factory-tools"
-  npm install --prefix "$VANA_FACTORY_TOOLS" --ignore-scripts --no-audit --no-fund https://github.com/vana-com/vana-cli/releases/download/v0.47.0/vana-factory-core-0.0.5.tgz
-Artifact SHA256: 257a2af2e01471d9e9c5ea40017ad7eb24e3761377ff475d34e52004ba92efec.
+  npm install --prefix "$VANA_FACTORY_TOOLS" --ignore-scripts --no-audit --no-fund https://github.com/vana-com/vana-cli/releases/download/v0.47.0/vana-factory-core-0.0.6.tgz
+Artifact SHA256: c580f6c0feeeee3bc5624c6fc449d72edb86f2eede989cb45c4688800a54a8a0.
   export VANA_FACTORY_BUILD="$VANA_FACTORY_TOOLS/node_modules/.bin/factory-build"
   "\${VANA_FACTORY_BUILD-factory-build}" capabilities --json
 Use the installed executable's absolute path for the capability command if it is not on PATH. The PATH must select the real Node 24+ executable used by its shebang. Require protocolVersion 1, contextVersion 2, apiPreparationVersion 1 and supportedRoutes ["export", "api"]. Older context versions are incompatible.
 
 3. Plan the connector's collection fixture before creating the job. Probe the configured Factory executable, or the one on PATH if VANA_FACTORY_BUILD is unset:
   "\${VANA_FACTORY_BUILD-factory-build}" capabilities --include-fixtures --json
-If the probe reports fixtureTestsVersion 1, put a top-level "fixtureTests": ["collection.test.ts"] in the initial version 1 request. Use unique .test.ts basenames. Put each test directly in the connector directory. The files can be written after build, but their names are fixed for that job. Factory withholds connect unless every declared fixture runs a passing test and all checks pass.
+If the probe reports fixtureTestsVersion 1, put a top-level "fixtureTests": ["collection.test.ts"] in the initial version 1 request. Use unique .test.ts basenames. Put each test directly in the connector directory. The files can be written after build, but their names are fixed for that job. Register at least one passing node:test case directly in each named file. A named test file can import setup and assertion helpers. Factory withholds connect unless each named file registers a passing test and all checks pass.
 
 Use the real connector entry point and synthetic provider responses. Assert the expected records and checkpoint behavior. The examples below declare a fixture and require a Factory that reports fixtureTestsVersion 1 on that probe. Older Factory builds support only discovery of existing tests. Use a compatible Factory when a named fixture must be enforced.
 
