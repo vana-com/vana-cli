@@ -9,6 +9,11 @@ that compute on the owner's server.
 Published as the `vana-cli` npm package with a single bin named `vana`, and
 as signed standalone binaries built with Node SEA.
 
+## Branches and pull requests
+
+`main` is the CLI's only integration branch. Branch from `main`, open the PR
+against `main`, and merge it back into `main` after review and green CI.
+
 ## Architecture
 
 ```
