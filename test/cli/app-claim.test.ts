@@ -33,9 +33,9 @@ const resolvedKey: ResolvedAppKey = {
 function clientWith(registered: boolean | Error): () => GatewayClient {
   return () =>
     ({
-      isRegisteredBuilder: async () => {
+      getBuilder: async () => {
         if (registered instanceof Error) throw registered;
-        return registered;
+        return registered ? { appUrl: "http://localhost:5178" } : null;
       },
     }) as unknown as GatewayClient;
 }
@@ -247,21 +247,29 @@ describe("vana app claim", () => {
     expect(exitCode).toBe(6);
   });
 
-  it("points an unregistered app at register", async () => {
-    const exitCode = await runAppClaim(
-      { json: true, network: "mainnet" },
-      {
-        resolveKey: () => resolvedKey,
-        createClient: clientWith(false),
-        openUrl: vi.fn(),
-      },
-    );
+  it.each([
+    ["moksha", "http://localhost:3000"],
+    ["mainnet", "https://your-app.example"],
+  ])(
+    "points an unregistered app on %s at registration with a URL",
+    async (network, appUrl) => {
+      const exitCode = await runAppClaim(
+        { json: true, network },
+        {
+          resolveKey: () => resolvedKey,
+          createClient: clientWith(false),
+          openUrl: vi.fn(),
+        },
+      );
 
-    expect(exitCode).not.toBe(0);
-    const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
-    expect(outcome.code).toBe("builder_unknown");
-    expect(outcome.remedy).toBe("vana app register");
-  });
+      expect(exitCode).not.toBe(0);
+      const outcome = appOutcomeSchema.parse(JSON.parse(stdout));
+      expect(outcome.code).toBe("builder_unknown");
+      expect(outcome.remedy).toBe(
+        `vana app register --network ${network} --app-url ${appUrl}`,
+      );
+    },
+  );
 
   it("points a machine with no app key at register", async () => {
     const exitCode = await runAppClaim(
@@ -275,7 +283,7 @@ describe("vana app claim", () => {
 
     expect(exitCode).not.toBe(0);
     expect(appOutcomeSchema.parse(JSON.parse(stdout)).remedy).toBe(
-      "vana app register",
+      "vana app register --network moksha --app-url http://localhost:3000",
     );
   });
 });

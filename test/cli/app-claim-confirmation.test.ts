@@ -33,7 +33,12 @@ afterEach(() => {
 });
 
 function fixture() {
-  const state = { owned: false, subject, status: 200 };
+  const state = {
+    owned: false,
+    subject,
+    status: 200,
+    appUrl: "http://localhost:5178" as unknown,
+  };
   const request = vi.fn(
     async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toBe(
@@ -63,7 +68,9 @@ function fixture() {
       source: "file" as const,
     }),
     createClient: () =>
-      ({ isRegisteredBuilder: async () => true }) as GatewayClient,
+      ({
+        getBuilder: async () => ({ appUrl: state.appUrl }),
+      }) as GatewayClient,
     readProfile: () => ({ name: "Garden" }),
     loadCredentials: () => ({
       account: {
@@ -97,9 +104,10 @@ it("fresh claim reports success only after the Account browser step confirms own
   expect(openUrl).toHaveBeenCalledOnce();
 });
 
-it("repeat confirms the existing Account link without another browser claim", async () => {
+it("repeat confirms existing Account ownership even when the gateway URL is empty", async () => {
   const { state, deps, openUrl } = fixture();
   state.owned = true;
+  state.appUrl = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     expect(await runAppClaim({ network: "moksha", json: true }, deps)).toBe(0);
     expect(outcome().data).toMatchObject({
@@ -126,6 +134,40 @@ it("interrupted claim resumes its saved link and confirms completion without a r
   state.subject = `vana_user_${"b".repeat(32)}`;
   expect(await runAppClaim({ ...options, resume: true }, deps)).toBe(2);
   expect(outcome().message).toContain("different Account");
+  expect(openUrl).not.toHaveBeenCalled();
+});
+
+it.each([[""], ["ftp://example.com"], [["http://localhost:5178"]]])(
+  "refuses a first claim with unusable gateway URL %j and preserves the existing key",
+  async (appUrl) => {
+    const { state, deps } = fixture();
+    state.appUrl = appUrl;
+    expect(await runAppClaim({ network: "moksha", json: true }, deps)).toBe(2);
+    const result = outcome();
+    expect(result).toMatchObject({ code: "bad_usage" });
+    expect(result.data).not.toHaveProperty("claimUrl");
+    expect(result.remedy).toContain(
+      "Keep this app key for existing integrations",
+    );
+    expect(result.remedy).toContain("VANA_APP_KEY");
+    expect(result.remedy).toContain(
+      "vana app register --network moksha --app-url",
+    );
+  },
+);
+
+it("a resumed claim with a missing gateway URL does not return or reopen its saved link", async () => {
+  const { state, deps, openUrl } = fixture();
+  const options = { network: "moksha" as const, json: true };
+  expect(await runAppClaim(options, deps)).toBe(7);
+  expect(outcome().data).toHaveProperty("claimUrl");
+
+  state.appUrl = "";
+  expect(await runAppClaim({ ...options, resume: true }, deps)).toBe(2);
+  expect(outcome().data).not.toHaveProperty("claimUrl");
+  expect(
+    await runAppClaim({ network: "moksha", resume: true, timeout: "0" }, deps),
+  ).toBe(2);
   expect(openUrl).not.toHaveBeenCalled();
 });
 

@@ -36,15 +36,17 @@ its own storage and UI; no reference app or observability service is required.
 ## The loop
 
 ```bash
-vana app register --network moksha --app-name "<your name>" # create and test first
+vana app register --network moksha --app-url http://localhost:3000 --app-name "<your name>" # create and test first
 vana app request --network moksha --scopes spotify.savedTracks          # ask a person
 vana app read --network moksha spotify.savedTracks --grant <id> --pay   # read and pay
 ```
 
 Check `vana app whoami --json` first and reuse an appropriate registration.
 Register with the name the person should see on the approval page, such as
-your agent's name. The CLI remembers it for this app key; without it the
-request shows as "Vana CLI".
+your agent's name. The CLI remembers the name for this app key and falls back to
+"Vana CLI" when a request has no name. Use your app's HTTP(S) URL. A localhost
+URL works for testing. Vana Account needs the URL to claim the app, and the
+gateway registration keeps its original URL.
 
 Or ask a question instead of reading raw data, in one command:
 
