@@ -196,6 +196,7 @@ function githubFixture() {
   const bin = path.join(root, "bin");
   const fork = path.join(root, "fork.git");
   const receipt = path.join(root, "pull.json");
+  const writes = path.join(root, "write-attempts.log");
   const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
   execFileSync(realGit, ["init", "--quiet", "--bare", fork]);
   mkdirSync(bin);
@@ -204,6 +205,7 @@ function githubFixture() {
   vi.stubEnv("VANA_TEST_REAL_GIT", realGit);
   vi.stubEnv("VANA_TEST_FORK", fork);
   vi.stubEnv("VANA_TEST_RECEIPT", receipt);
+  vi.stubEnv("VANA_TEST_WRITES", writes);
   vi.stubEnv("VANA_TEST_LOGIN", "fixture-builder");
   vi.stubEnv("GH_TOKEN", "ambient-ci-token");
   vi.stubEnv("GITHUB_TOKEN", "ambient-collection-token");
@@ -214,6 +216,7 @@ const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 const remote = args.indexOf("https://github.com/fixture-builder/data-connectors.git");
 if (args.includes("push")) {
+  require("node:fs").appendFileSync(process.env.VANA_TEST_WRITES, "push\n");
   if (process.env.VANA_TEST_FORK_READ_ONLY) process.exit(1);
   if (remote === -1 || process.env.GH_TOKEN !== "fixture-only-token") process.exit(1);
   args[remote] = process.env.VANA_TEST_FORK;
@@ -236,6 +239,10 @@ const args = process.argv.slice(2);
 const root = "repos/PDP-Connect/data-connectors";
 const login = env.VANA_TEST_LOGIN;
 const receipt = env.VANA_TEST_RECEIPT;
+const createRequest = args.includes(root + "/pulls") && args.includes("POST");
+if (createRequest || (args[0] === "pr" && args[1] === "create")) {
+  fs.appendFileSync(env.VANA_TEST_WRITES, "create PR\n");
+}
 const send = (data) => process.stdout.write(JSON.stringify(data));
 if (env.GITHUB_TOKEN || (env.GH_TOKEN && env.GH_TOKEN !== "fixture-only-token")) {
   process.exit(1);
@@ -253,7 +260,7 @@ if (args[0] === "auth" && args[1] === "token" && args.includes(login)) {
   });
 } else if (args.includes(root + "/git/ref/heads/main")) {
   send({ object: { sha: env.VANA_TEST_BASE } });
-} else if (args.includes(root + "/pulls") && args.includes("POST")) {
+} else if (createRequest) {
   if (fs.existsSync(receipt)) throw new Error("Duplicate create");
   const submitted = JSON.parse(fs.readFileSync(0, "utf8"));
   const branch = submitted.head.slice(login.length + 1);
@@ -289,6 +296,7 @@ if (args[0] === "auth" && args[1] === "token" && args.includes(login)) {
   );
   return {
     receipt,
+    writeAttempts: () => readFileSync(writes, "utf8"),
     refs: () =>
       execFileSync(
         realGit,
@@ -380,6 +388,7 @@ withShellFixtures.each(["no loss", "response", "and-lookup"])(
     });
     vi.stubEnv("VANA_TEST_LOSE_RESPONSE", "");
     vi.stubEnv("VANA_TEST_FORK_READ_ONLY", "1");
+    expect(fixture.writeAttempts()).toBe("push\ncreate PR\n");
     const recovered = await preview(
       head,
       "submit-pr",
@@ -394,6 +403,7 @@ withShellFixtures.each(["no loss", "response", "and-lookup"])(
         reused: true,
       },
     });
+    expect(fixture.writeAttempts()).toBe("push\ncreate PR\n");
     expect(readFileSync(fixture.receipt, "utf8")).toBe(saved);
     expect(fixture.refs()).toBe(head);
   },
