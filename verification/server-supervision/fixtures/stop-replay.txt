@@ -1,0 +1,42 @@
+  it.each(["restart wait", "port probe"])(
+    "does not launch a replacement after Stop during the %s",
+    async (when) => {
+      const first = crashingServer();
+      const replacement = crashingServer();
+      const stop = Promise.withResolvers<void>();
+      const waiting = Promise.withResolvers<void>();
+      const probing = Promise.withResolvers<void>();
+      const port = Promise.withResolvers<number>();
+      const h = harness({
+        start: vi
+          .fn()
+          .mockResolvedValueOnce(first.handle)
+          .mockResolvedValueOnce(replacement.handle),
+        stopRequested: () => stop.promise,
+        sleep: () => {
+          waiting.resolve();
+          return when === "restart wait" ? new Promise<void>(() => {}) : Promise.resolve();
+        },
+        choosePort: vi.fn()
+          .mockResolvedValueOnce(8080)
+          .mockImplementation(() => {
+            probing.resolve();
+            return port.promise;
+          }),
+      });
+
+      const run = runServerStart({ network: "moksha", local: true }, h.io, h.deps);
+      await vi.waitFor(() => expect(h.deps.start).toHaveBeenCalledTimes(1));
+      first.crash(1);
+      await (when === "restart wait" ? waiting.promise : probing.promise);
+      stop.resolve();
+      await stop.promise;
+      port.resolve(8080);
+
+      expect(await run).toBe(0);
+      const publishedEvents = h.events.map((event) => event.type);
+      expect(publishedEvents).not.toContain("server-restarted");
+      expect(h.deps.start).toHaveBeenCalledTimes(1);
+      expect(publishedEvents.at(-1)).toBe("server-stopped");
+    },
+  );
