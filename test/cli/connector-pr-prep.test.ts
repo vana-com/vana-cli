@@ -94,21 +94,38 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+function reviewEvidence(commit: string) {
+  return {
+    kind: "synthetic",
+    commit,
+    checkedAt: "2026-11-11T00:00:00Z",
+    environment: "Node 24.22.1, synthetic fixture",
+    checks: [
+      {
+        name: "Fixture test",
+        result: "passed",
+        command: "node --test connectors/example/index.test.cjs",
+        exitCode: 0,
+        output: "tests 1\npass 1\nfail 0",
+      },
+    ],
+    sample: {
+      source: { id: "item-1", text: "Demo\\, review" },
+      before: { id: "item-1", text: "Demo\\, review" },
+      after: { id: "item-1", text: "Demo, review" },
+    },
+    storedData:
+      "IDs and types stay the same. Existing records require reimport; the cursor skips past records.",
+  };
+}
+
 async function preview(
   evidenceCommit: string,
   command = "prepare-pr",
   ...args: string[]
 ) {
   const evidence = path.join(root, "synthetic.json");
-  writeFileSync(
-    evidence,
-    JSON.stringify({
-      kind: "synthetic",
-      commit: evidenceCommit,
-      checkedAt: "2026-11-10T00:00:00Z",
-      checks: [{ name: "Fixture test", result: "passed" }],
-    }),
-  );
+  writeFileSync(evidence, JSON.stringify(reviewEvidence(evidenceCommit)));
   const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
   const code = await runCli([
     "node",
@@ -418,6 +435,335 @@ it("refuses to publish a commit range whose intermediate contents were absent fr
   const reviewed = await preview(head, "submit-pr");
   expect(reviewed).toMatchObject({
     code: 1,
-    result: { error: { code: "single_connector_update_required" } },
+    result: { error: { code: "single_connector_commit_required" } },
+  });
+});
+
+function makeNewConnector(baseHasKey = false) {
+  git("checkout", "--quiet", "--detach", base);
+  rmSync(path.join(checkout, "connectors/example"), { recursive: true });
+  const indexPath = path.join(checkout, "connector-implementation-index.json");
+  const index = JSON.parse(readFileSync(indexPath, "utf8"));
+  if (!baseHasKey) {
+    index.connectors = index.connectors.filter(
+      (entry: { manifest: { connector_key: string } }) =>
+        entry.manifest.connector_key !== "example",
+    );
+  }
+  writeFileSync(indexPath, JSON.stringify(index));
+  base = commit();
+  mkdirSync(path.join(checkout, "connectors/example"));
+  writeConnector("0.1.0");
+  writeFileSync(
+    path.join(checkout, "connectors/example/index.ts"),
+    String.raw`import { readFileSync } from "node:fs";
+const item = JSON.parse(readFileSync(0, "utf8"));
+process.stdout.write(JSON.stringify({ id: item.id, text: item.text.replaceAll("\\,", ",") }));
+`,
+  );
+  const source = { id: "item-1", text: "Demo\\, review" };
+  writeFileSync(
+    path.join(checkout, "connectors/example/source.json"),
+    JSON.stringify(source),
+  );
+  writeFileSync(
+    path.join(checkout, "connectors/example/index.test.cjs"),
+    String.raw`const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const { readFileSync } = require("node:fs");
+const { join } = require("node:path");
+const { execFileSync } = require("node:child_process");
+test("emits the synthetic record with its stable ID and decoded text", () => {
+  const input = readFileSync(join(__dirname, "source.json"), "utf8");
+  const output = execFileSync(process.execPath, ["--experimental-strip-types", join(__dirname, "index.ts")], { input, encoding: "utf8" });
+  assert.deepEqual(JSON.parse(output), { id: "item-1", text: "Demo, review" });
+});
+`,
+  );
+  head = commit();
+  const output = execFileSync(
+    process.execPath,
+    ["--test", "connectors/example/index.test.cjs"],
+    {
+      cwd: checkout,
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+  const record = JSON.parse(
+    execFileSync(
+      process.execPath,
+      ["--experimental-strip-types", "connectors/example/index.ts"],
+      {
+        cwd: checkout,
+        input: JSON.stringify(source),
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    ),
+  );
+  const evidence = path.join(root, "new-connector-evidence.json");
+  writeFileSync(
+    evidence,
+    JSON.stringify({
+      ...reviewEvidence(head),
+      environment: "Node " + process.version + ", synthetic fixture",
+      checks: [
+        {
+          name: "Synthetic record test",
+          result: "passed",
+          command: "node --test connectors/example/index.test.cjs",
+          exitCode: 0,
+          output,
+        },
+      ],
+      sample: { source, after: record },
+      storedData:
+        "Initial upstream connector. Existing local test records are unchanged. IDs use the source item ID.",
+    }),
+  );
+  return evidence;
+}
+
+withShellFixtures(
+  "submits a new connector with review evidence and recovers it without writes",
+  async () => {
+    const evidence = makeNewConnector();
+    const fixture = githubFixture();
+    const reviewed = await preview(head, "submit-pr", "--evidence", evidence);
+    expect(reviewed.code).toBe(7);
+    expect(reviewed.result).toMatchObject({
+      kind: "confirmation_required",
+      change: "new",
+      previousVersion: null,
+      version: "0.1.0",
+    });
+    expect(reviewed.result.prBody).toContain("New connector");
+    expect(reviewed.result.prBody).toContain(
+      "node --test connectors/example/index.test.cjs",
+    );
+    expect(reviewed.result.prBody).toContain("Exit status: 0");
+    expect(reviewed.result.prBody).toContain("Demo, review");
+    expect(fixture.refs()).toBe("");
+    const confirmed = await preview(
+      head,
+      "submit-pr",
+      "--evidence",
+      evidence,
+      "--confirm",
+      reviewed.result.confirmation,
+    );
+    expect(confirmed).toMatchObject({
+      code: 0,
+      result: { number: 42, draft: true, reused: false },
+    });
+    const submitted = JSON.parse(
+      readFileSync(fixture.receipt, "utf8"),
+    ).submitted;
+    expect(submitted.body).toContain(head);
+    expect(submitted.body).toContain("tests 1");
+    expect(submitted.body).toContain("Demo, review");
+    vi.stubEnv("VANA_TEST_FORK_READ_ONLY", "1");
+    expect(
+      await preview(
+        head,
+        "submit-pr",
+        "--evidence",
+        evidence,
+        "--confirm",
+        reviewed.result.confirmation,
+      ),
+    ).toMatchObject({
+      code: 0,
+      result: { number: 42, reused: true },
+    });
+    expect(fixture.writeAttempts()).toBe("push\ncreate PR\n");
+    expect(fixture.refs()).toBe(head);
+  },
+);
+
+withShellFixtures.each([
+  [
+    "missing environment",
+    { environment: undefined },
+    "review_evidence_required",
+  ],
+  ["missing sample", { sample: undefined }, "review_evidence_required"],
+  [
+    "missing stored-data effect",
+    { storedData: undefined },
+    "review_evidence_required",
+  ],
+  [
+    "missing command and output",
+    { checks: [{ name: "Fixture test", result: "passed" }] },
+    "review_evidence_required",
+  ],
+  [
+    "missing previous output",
+    { sample: { source: {}, after: {} } },
+    "review_evidence_required",
+  ],
+  [
+    "contradictory exit status",
+    {
+      checks: [
+        {
+          name: "Fixture test",
+          result: "passed",
+          command: "node --test",
+          exitCode: 1,
+          output: "failed",
+        },
+      ],
+    },
+    "invalid_evidence",
+  ],
+])("blocks submission with %s before any write", async (_name, patch, code) => {
+  const fixture = githubFixture();
+  const evidence = path.join(root, "incomplete.json");
+  writeFileSync(
+    evidence,
+    JSON.stringify({ ...reviewEvidence(head), ...(patch as object) }),
+  );
+  expect(
+    await preview(head, "submit-pr", "--evidence", evidence),
+  ).toMatchObject({
+    code: 1,
+    result: { error: { code } },
+  });
+  expect(fixture.refs()).toBe("");
+  expect(existsSync(fixture.receipt)).toBe(false);
+});
+
+it("keeps legacy evidence previewable and makes its review gaps explicit", async () => {
+  const evidence = path.join(root, "legacy.json");
+  writeFileSync(
+    evidence,
+    JSON.stringify({
+      kind: "synthetic",
+      commit: head,
+      checkedAt: "2026-11-11T00:00:00Z",
+      checks: [{ name: "Old summary", result: "passed" }],
+    }),
+  );
+  const { code, result } = await preview(
+    head,
+    "prepare-pr",
+    "--evidence",
+    evidence,
+  );
+  expect(code).toBe(0);
+  expect(result.prBody).toContain("Old summary");
+  expect(result.reviewGaps).toContain(
+    "Missing a reviewed synthetic source item and output record.",
+  );
+});
+
+withShellFixtures(
+  "requires fresh confirmation if evidence changes after review",
+  async () => {
+    const fixture = githubFixture();
+    const reviewed = await preview(head, "submit-pr");
+    const evidence = path.join(root, "edited.json");
+    writeFileSync(
+      evidence,
+      JSON.stringify({
+        ...reviewEvidence(head),
+        storedData: "Updated migration explanation after review.",
+      }),
+    );
+    expect(
+      await preview(
+        head,
+        "submit-pr",
+        "--evidence",
+        evidence,
+        "--confirm",
+        reviewed.result.confirmation,
+      ),
+    ).toMatchObject({
+      code: 7,
+      result: { error: { code: "confirmation_mismatch" } },
+    });
+    expect(fixture.refs()).toBe("");
+    expect(existsSync(fixture.receipt)).toBe(false);
+  },
+);
+
+it("rejects a new connector whose key is already declared upstream", async () => {
+  makeNewConnector(true);
+  const { code, result } = await preview(head);
+  expect(code).toBe(1);
+  expect(result.error.code).toBe("connector_key_conflict");
+});
+
+it("rejects a connector with no committed entry point", async () => {
+  rmSync(path.join(checkout, "connectors/example/index.ts"));
+  head = commit();
+  const { code, result } = await preview(head);
+  expect(code).toBe(1);
+  expect(result.error.code).toBe("connector_entry_missing");
+});
+
+it("keeps failed and skipped checks visible and safely quotes review output", async () => {
+  const evidence = path.join(root, "reported-results.json");
+  const passed = reviewEvidence(head).checks[0];
+  writeFileSync(
+    evidence,
+    JSON.stringify({
+      ...reviewEvidence(head),
+      checks: [
+        passed,
+        {
+          ...passed,
+          name: "Known upstream failure",
+          result: "failed",
+          exitCode: 1,
+          output: "````\nfailed on the documented baseline\n````",
+        },
+        {
+          ...passed,
+          name: "Live provider",
+          result: "not run",
+          exitCode: null,
+          output: "No live provider access was used.",
+        },
+      ],
+    }),
+  );
+  const { code, result } = await preview(
+    head,
+    "prepare-pr",
+    "--evidence",
+    evidence,
+  );
+  expect(code).toBe(0);
+  expect(result.prBody).toContain("Fixture test — passed");
+  expect(result.prBody).toContain("Known upstream failure — failed");
+  expect(result.prBody).toContain("Live provider — not run");
+  expect(result.prBody).toContain("Exit status: not run");
+  expect(result.prBody).toContain(
+    "`````text\n````\nfailed on the documented baseline\n````\n`````",
+  );
+  expect(result.evidenceGaps).toContain(
+    "Live provider behavior and Vana app availability remain unverified.",
+  );
+});
+
+it("rejects evidence that cannot fit into the public PR description", async () => {
+  const evidence = path.join(root, "oversized.json");
+  writeFileSync(
+    evidence,
+    JSON.stringify({
+      ...reviewEvidence(head),
+      sample: { source: {}, before: {}, after: { text: "x".repeat(60_000) } },
+    }),
+  );
+  expect(
+    await preview(head, "prepare-pr", "--evidence", evidence),
+  ).toMatchObject({
+    code: 1,
+    result: { error: { code: "review_evidence_too_large" } },
   });
 });

@@ -32,7 +32,7 @@
       "id": "create-connector",
       "name": "Create Connector",
       "description": "Build or repair a Collection Profile connector with the current agent and shared Factory checks",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "files": {
         "skill": "create-connector/SKILL.md"
       }

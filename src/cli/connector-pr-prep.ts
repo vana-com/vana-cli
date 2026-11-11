@@ -22,19 +22,48 @@ const line = z
   .max(300)
   .regex(/^[^\p{Cc}\p{Zl}\p{Zp}]+$/u);
 
+const evidenceText = z
+  .string()
+  .min(1)
+  .max(12_000)
+  .regex(/^[^\u0000-\u0008\u000b-\u001f\u007f-\u009f]*$/);
+const recordSchema = z.record(z.string(), z.json());
+const checkFields = {
+  name: line,
+  command: line.optional(),
+  output: evidenceText.optional(),
+};
+const checkSchema = z.discriminatedUnion("result", [
+  z.strictObject({
+    ...checkFields,
+    result: z.literal("passed"),
+    exitCode: z.literal(0).optional(),
+  }),
+  z.strictObject({
+    ...checkFields,
+    result: z.literal("failed"),
+    exitCode: z.number().int().min(1).max(255).optional(),
+  }),
+  z.strictObject({
+    ...checkFields,
+    result: z.literal("not run"),
+    exitCode: z.null().optional(),
+  }),
+]);
 const evidenceSchema = z.strictObject({
   kind: z.literal("synthetic"),
   commit: z.string().regex(commitId),
   checkedAt: z.iso.datetime(),
-  checks: z
-    .array(
-      z.strictObject({
-        name: line,
-        result: z.enum(["passed", "failed", "not run"]),
-      }),
-    )
-    .min(1)
-    .max(25),
+  environment: line.optional(),
+  checks: z.array(checkSchema).min(1).max(25),
+  sample: z
+    .strictObject({
+      source: z.json(),
+      before: recordSchema.nullable().optional(),
+      after: recordSchema,
+    })
+    .optional(),
+  storedData: evidenceText.optional(),
 });
 
 const manifestSchema = z.looseObject({
@@ -102,6 +131,13 @@ function localGit(checkout: string) {
       result.stdout,
     );
   };
+}
+
+function codeBlock(value: string, language: string) {
+  const fence = "`".repeat(
+    Math.max(3, ...(value.match(/`+/g) ?? []).map((run) => run.length + 1)),
+  );
+  return [fence + language, value, fence].join("\n");
 }
 
 function prepare(key: string, options: PrepOptions) {
@@ -216,6 +252,18 @@ function prepare(key: string, options: PrepOptions) {
   const isSelected = (
     entry: z.infer<typeof indexSchema>["connectors"][number],
   ) => entry.manifest.connector_key === current.connector_key;
+  if (!previous && beforeIndex.connectors.some(isSelected)) {
+    throw new PrepError(
+      "connector_key_conflict",
+      "The upstream index already declares this connector key. Resolve the identity before submitting a new connector.",
+    );
+  }
+  if (!git("ls-tree", head, "--", prefix + "index.ts")) {
+    throw new PrepError(
+      "connector_entry_missing",
+      "Commit the connector index.ts entry before preparing its PR.",
+    );
+  }
   const selected = afterIndex.connectors.filter(isSelected);
   if (
     selected.length !== 1 ||
@@ -247,7 +295,7 @@ function prepare(key: string, options: PrepOptions) {
   if (evidence && !evidence.success) {
     throw new PrepError(
       "invalid_evidence",
-      "Supply a reviewed synthetic summary with kind, commit, checkedAt and checks containing name and result.",
+      "Supply reviewed synthetic evidence. Check the schema in vana skills show create-connector --json.",
     );
   }
   const verification = evidence?.data ?? null;
@@ -257,8 +305,26 @@ function prepare(key: string, options: PrepOptions) {
       "The evidence names a different commit. Check the selected revision and prepare a fresh summary.",
     );
   }
+  const reviewGaps = [
+    ...(verification?.environment ? [] : ["Missing the test environment."]),
+    ...(verification?.checks.flatMap((check) =>
+      check.command && check.output && check.exitCode !== undefined
+        ? []
+        : ["Missing command, exit status or output for " + check.name + "."],
+    ) ?? []),
+    ...(verification?.sample
+      ? []
+      : ["Missing a reviewed synthetic source item and output record."]),
+    ...(previous && verification?.sample?.before === undefined
+      ? ["Missing the previous output record, or null if none was emitted."]
+      : []),
+    ...(verification?.storedData
+      ? []
+      : ["Missing the effect on existing records, IDs and cursors."]),
+  ];
   const evidenceGaps = [
     ...(verification ? [] : ["No verification summary supplied."]),
+    ...reviewGaps,
     ...(verification?.checks
       .filter((check) => check.result !== "passed")
       .map((check) => check.name + ": " + check.result) ?? []),
@@ -274,6 +340,7 @@ function prepare(key: string, options: PrepOptions) {
       " " +
       (previous ? previous.version + " → " : "") +
       current.version,
+    "Change: " + (previous ? "Connector update" : "New connector"),
     "Streams: " + current.streams.map((stream) => stream.name).join(", "),
     "",
     "## How it was verified",
@@ -286,19 +353,71 @@ function prepare(key: string, options: PrepOptions) {
             head +
             ".",
           "",
-          ...verification.checks.map(
-            (check) => "- " + check.name + " — " + check.result,
-          ),
+          ...(verification.environment
+            ? ["Environment: " + verification.environment, ""]
+            : []),
+          ...verification.checks.flatMap((check) => [
+            "- " + check.name + " — " + check.result,
+            ...(check.command ? ["", codeBlock(check.command, "sh")] : []),
+            ...(check.exitCode !== undefined
+              ? [
+                  "",
+                  "Exit status: " +
+                    (check.exitCode === null ? "not run" : check.exitCode),
+                ]
+              : []),
+            ...(check.output ? ["", codeBlock(check.output, "text")] : []),
+            "",
+          ]),
           "",
         ]
       : []),
     ...evidenceGaps.map((gap) => "- " + gap),
     "",
+    ...(verification?.sample
+      ? [
+          "## Synthetic source item and output",
+          "",
+          "Source item",
+          "",
+          codeBlock(
+            JSON.stringify(verification.sample.source, null, 2),
+            "json",
+          ),
+          "",
+          ...(previous && verification.sample.before !== undefined
+            ? [
+                "Previous output, with null meaning no record was emitted",
+                "",
+                codeBlock(
+                  JSON.stringify(verification.sample.before, null, 2),
+                  "json",
+                ),
+                "",
+              ]
+            : []),
+          "Output at the submitted commit",
+          "",
+          codeBlock(JSON.stringify(verification.sample.after, null, 2), "json"),
+          "",
+        ]
+      : []),
+    ...(verification?.storedData
+      ? ["## Existing data", "", verification.storedData, ""]
+      : []),
     "Assisted-by: AI",
     "",
   ].join("\n");
 
+  if (Buffer.byteLength(prBody, "utf8") > 60_000) {
+    throw new PrepError(
+      "review_evidence_too_large",
+      "Keep the reviewed PR description and evidence within 60,000 UTF-8 bytes.",
+    );
+  }
+
   return {
+    change: previous ? ("update" as const) : ("new" as const),
     target: connectorPrTarget,
     baseBranch: "main",
     base,
@@ -310,6 +429,7 @@ function prepare(key: string, options: PrepOptions) {
     files: changed,
     verification,
     evidenceGaps,
+    reviewGaps,
     prBody,
     diff: git(
       "diff",
@@ -333,14 +453,13 @@ function prepareSubmission(
     .split("\n")
     .filter((entry) => entry.startsWith("parent "));
   if (
-    !preview.previousVersion ||
     preview.head.length !== 40 ||
     parents.length !== 1 ||
     parents[0] !== "parent " + preview.base
   ) {
     throw new PrepError(
-      "single_connector_update_required",
-      "Submit one commit updating an existing connector, directly on the reviewed PDP-Connect main revision.",
+      "single_connector_commit_required",
+      "Submit one commit adding or updating a connector, directly on the reviewed PDP-Connect main revision.",
     );
   }
   if (
@@ -360,6 +479,13 @@ function prepareSubmission(
     throw new PrepError(
       "evidence_required",
       "Supply a reviewed synthetic verification summary before submitting.",
+    );
+  }
+  if (preview.reviewGaps.length) {
+    throw new PrepError(
+      "review_evidence_required",
+      preview.reviewGaps.join(" ") +
+        " Read vana skills show create-connector --json.",
     );
   }
   const submission = submitConnectorPr(
@@ -465,7 +591,7 @@ function registerCommand(
     .command(submit ? "submit-pr <directory>" : "prepare-pr <directory>")
     .description(
       submit
-        ? "Review and explicitly submit a committed connector update as a GitHub draft PR"
+        ? "Review and explicitly submit a new connector or update as a GitHub draft PR"
         : "Preview a committed PDP-Connect connector diff and draft PR body locally",
     )
     .requiredOption(
@@ -480,13 +606,17 @@ function registerCommand(
     .requiredOption("--summary <text>", "One-line description for the draft PR")
     .option(
       "--evidence <file>",
-      "Reviewed JSON with kind: synthetic, commit, checkedAt and checks [{name, result}]",
+      "Reviewed synthetic checks, commands, output, sample records and stored-data effects",
     )
     .addHelpText(
       "after",
       submit
         ? "\nUses GitHub CLI sign-in and an existing public fork. Run without --confirm to review.\n"
         : "\nUses committed files only. Review the diff and evidence before sharing them.\n",
+    )
+    .addHelpText(
+      "after",
+      "\nEvidence schema and submission steps: vana skills show create-connector --json\n",
     );
   if (submit)
     command.option(
