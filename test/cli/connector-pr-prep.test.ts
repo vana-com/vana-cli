@@ -45,7 +45,7 @@ function writeConnector(version: string, otherVersion = "1.0.0") {
   const manifest = {
     connector_key: "example",
     version,
-    streams: [{ name: "items" }],
+    streams: [{ name: "items", required: true }],
   };
   writeFileSync(
     path.join(checkout, "connectors/example/manifest.json"),
@@ -439,6 +439,72 @@ it("refuses to publish a commit range whose intermediate contents were absent fr
   });
 });
 
+const rosterFile =
+  "packages/polyfill-connectors/src/connector-conformance-roster.ts";
+const awaitListFile =
+  "packages/polyfill-connectors/scripts/no-await-in-loops-allowlist.ts";
+const publishFile = "scripts/connector-publish-allowlist.mjs";
+const publishHeader =
+  "export const CONNECTOR_PUBLISH_INVENTORY = Object.freeze(\n  [\n";
+const coverageFile = "connectors/_conformance/coverage-conformance-drivers.ts";
+const coverageHeader =
+  "export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set([\n";
+const rosterHeader =
+  "export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {\n";
+const awaitListHeader =
+  "export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[] =\n\t[\n";
+const newRosterRow =
+  '\texample: { testFile: "connectors/example/index.test.cjs" },\n';
+const awaitRow = (connector: string) =>
+  [
+    "\t\t{",
+    '\t\t\tpath: "connectors/' + connector + '/index.ts",',
+    "\t\t\tline: 2,",
+    "\t\t\tcolumn: 3,",
+    '\t\t\tcategory: "dependent_pagination",',
+    '\t\t\tnote: "Read the next page after the cursor arrives.",',
+    "\t\t},",
+    "",
+  ].join("\n");
+
+function writeRegistrationFixture(added: boolean) {
+  const roster = path.join(checkout, rosterFile);
+  const awaitList = path.join(checkout, awaitListFile);
+  mkdirSync(path.dirname(roster), { recursive: true });
+  mkdirSync(path.dirname(awaitList), { recursive: true });
+  writeFileSync(
+    roster,
+    rosterHeader +
+      (added ? newRosterRow : "") +
+      '\tother: { testFile: "connectors/other/index.test.ts" },\n};\n',
+  );
+  writeFileSync(
+    awaitList,
+    awaitListHeader +
+      (added ? awaitRow("example") : "") +
+      awaitRow("other") +
+      "\t];\n",
+  );
+  const coverage = path.join(checkout, coverageFile);
+  mkdirSync(path.dirname(coverage), { recursive: true });
+  writeFileSync(
+    coverage,
+    coverageHeader +
+      (added
+        ? '\t// Development collector fixture. Shared driver is pending.\n\t"example.items",\n'
+        : "") +
+      '\t"other.items",\n]);\n',
+  );
+  const publish = path.join(checkout, publishFile);
+  mkdirSync(path.dirname(publish), { recursive: true });
+  writeFileSync(
+    publish,
+    publishHeader +
+      (added ? '    ["example", "example"],\n' : "") +
+      '    ["other", "other"],\n  ],\n);\n',
+  );
+}
+
 function makeNewConnector(baseHasKey = false) {
   git("checkout", "--quiet", "--detach", base);
   rmSync(path.join(checkout, "connectors/example"), { recursive: true });
@@ -451,6 +517,7 @@ function makeNewConnector(baseHasKey = false) {
     );
   }
   writeFileSync(indexPath, JSON.stringify(index));
+  writeRegistrationFixture(false);
   base = commit();
   mkdirSync(path.join(checkout, "connectors/example"));
   writeConnector("0.1.0");
@@ -480,7 +547,14 @@ test("emits the synthetic record with its stable ID and decoded text", () => {
 });
 `,
   );
+  writeRegistrationFixture(true);
   head = commit();
+}
+
+function captureNewConnectorEvidence() {
+  const source = JSON.parse(
+    readFileSync(path.join(checkout, "connectors/example/source.json"), "utf8"),
+  );
   const output = execFileSync(
     process.execPath,
     ["--test", "connectors/example/index.test.cjs"],
@@ -528,7 +602,8 @@ test("emits the synthetic record with its stable ID and decoded text", () => {
 withShellFixtures(
   "submits a new connector with review evidence and recovers it without writes",
   async () => {
-    const evidence = makeNewConnector();
+    makeNewConnector();
+    const evidence = captureNewConnectorEvidence();
     const fixture = githubFixture();
     const reviewed = await preview(head, "submit-pr", "--evidence", evidence);
     expect(reviewed.code).toBe(7);
@@ -539,6 +614,14 @@ withShellFixtures(
       version: "0.1.0",
     });
     expect(reviewed.result.prBody).toContain("New connector");
+    expect(reviewed.result.files).toEqual(
+      expect.arrayContaining([
+        rosterFile,
+        awaitListFile,
+        coverageFile,
+        publishFile,
+      ]),
+    );
     expect(reviewed.result.prBody).toContain(
       "node --test connectors/example/index.test.cjs",
     );
@@ -580,6 +663,7 @@ withShellFixtures(
     expect(fixture.writeAttempts()).toBe("push\ncreate PR\n");
     expect(fixture.refs()).toBe(head);
   },
+  15_000,
 );
 
 withShellFixtures.each([
@@ -767,3 +851,69 @@ it("rejects evidence that cannot fit into the public PR description", async () =
     result: { error: { code: "review_evidence_too_large" } },
   });
 });
+
+it.each([
+  [
+    "a mismatched publication identity",
+    publishFile,
+    '["example", "example"]',
+    '["example", "other"]',
+  ],
+  [
+    "a different connector's coverage entry",
+    coverageFile,
+    '"example.items"',
+    '"other.items"',
+  ],
+  [
+    "an undeclared coverage stream",
+    coverageFile,
+    '"example.items"',
+    '"example.missing"',
+  ],
+  [
+    "another roster entry",
+    rosterFile,
+    'other: { testFile: "connectors/other/index.test.ts" }',
+    'other: { testFile: "connectors/other/replaced.test.ts" }',
+  ],
+  [
+    "a roster target outside the connector",
+    rosterFile,
+    "connectors/example/index.test.cjs",
+    "connectors/other/index.test.ts",
+  ],
+  [
+    "an uncommitted roster test",
+    rosterFile,
+    "connectors/example/index.test.cjs",
+    "connectors/example/missing.test.ts",
+  ],
+  ["another allowlist entry", awaitListFile, awaitRow("other"), ""],
+  [
+    "an allowlist path outside the connector",
+    awaitListFile,
+    "connectors/example/index.ts",
+    "connectors/example/../other/index.ts",
+  ],
+  [
+    "a registration with additional code",
+    awaitListFile,
+    "line: 2,",
+    "line: readProcessEnv(),",
+  ],
+])(
+  "rejects %s in a new-connector registration",
+  async (_name, file, before, after) => {
+    makeNewConnector();
+    const target = path.join(checkout, file);
+    const text = readFileSync(target, "utf8");
+    expect(text).toContain(before);
+    writeFileSync(target, text.replace(before, after));
+    head = commit();
+    const { code, result } = await preview(head);
+    expect(code).toBe(1);
+    expect(result.error.code).toBe("invalid_connector_registration");
+    expect(result).not.toHaveProperty("diff");
+  },
+);

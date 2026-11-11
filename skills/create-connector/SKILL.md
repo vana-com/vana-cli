@@ -127,9 +127,11 @@ run the upstream checks, then prepare its public handoff. These commands read
 reported evidence. They do not execute the test commands in the evidence file.
 
 1. Keep one signed-off commit directly on the reviewed upstream main revision.
-   Change only the selected connector and its generated implementation-index
-   entry. New connectors need a unique key, manifest and `index.ts`. Updates
-   need a higher manifest version.
+   Change the selected connector and its generated implementation-index entry.
+   For a new connector, put its required conformance roster, sequential-await
+   coverage-gap and publication inventory entries first in their upstream\n declarations.
+   Keep the other rows intact. New connectors need a unique key, manifest and
+   `index.ts`. Updates need a higher manifest version.
 2. Save reviewed synthetic evidence outside the connector commit using the
    example below. Replace the commit, date, commands, results, source and
    record with observed values. This content becomes public with the PR.

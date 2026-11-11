@@ -13,6 +13,44 @@ import {
 import { isNewerVersion } from "./update-check.js";
 
 const INDEX_PATH = "connector-implementation-index.json";
+const registrations = new Map([
+  [
+    "packages/polyfill-connectors/src/connector-conformance-roster.ts",
+    {
+      header:
+        /^export const REAL_UNLISTED_CONNECTORS: Record<string, \{ testFile: string \}> = \{\n/m,
+      row: /^[\t ]+(?<key>[a-z0-9_]+): \{ testFile: "(?<path>[^"\\\r\n]+)" \},\n/gm,
+      single: true,
+    },
+  ],
+  [
+    "packages/polyfill-connectors/scripts/no-await-in-loops-allowlist.ts",
+    {
+      header:
+        /^export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry\[\] =\n\t\[\n/m,
+      row: /^\t\t\{\n\t\t\tpath: "(?<path>[^"\\\r\n]+)",\n\t\t\tline: [1-9]\d*,\n\t\t\tcolumn: [1-9]\d*,\n\t\t\tcategory: "[a-z_]+",\n\t\t\tnote: "[^"\\\r\n]+",\n\t\t\},\n/gm,
+      single: false,
+    },
+  ],
+  [
+    "connectors/_conformance/coverage-conformance-drivers.ts",
+    {
+      header:
+        /^export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set\(\[\n/m,
+      row: /^\t\/\/ [^\r\n\u2028\u2029]+\n\t"(?<stream>[a-z0-9_-]+\.[a-z0-9_]+)",\n/gm,
+      single: false,
+    },
+  ],
+  [
+    "scripts/connector-publish-allowlist.mjs",
+    {
+      header:
+        /^export const CONNECTOR_PUBLISH_INVENTORY = Object\.freeze\(\n  \[\n/m,
+      row: /^    \["(?<manifest>[a-z0-9_]+)", "(?<connector>[a-z0-9-]+)"\],\n/gm,
+      single: true,
+    },
+  ],
+]);
 const commitId = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 const directoryKey = /^[a-z0-9]+(?:_[a-z0-9]+)*$/;
 const version = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
@@ -133,6 +171,75 @@ function localGit(checkout: string) {
   };
 }
 
+function validNewConnectorRegistration(
+  git: ReturnType<typeof localGit>,
+  file: string,
+  key: string,
+  requiredStreams: string[],
+  base: string,
+  head: string,
+): boolean {
+  const rule = registrations.get(file);
+  if (!rule) return false;
+  const baseMode = git("ls-tree", base, "--", file).slice(0, 6);
+  if (!baseMode || baseMode !== git("ls-tree", head, "--", file).slice(0, 6)) {
+    return false;
+  }
+
+  const before = git("show", base + ":" + file);
+  const after = git("show", head + ":" + file);
+  const declaration = rule.header.exec(before);
+  if (!declaration) return false;
+
+  // Both files are executable TypeScript. Permit only data rows inserted
+  // directly after the named declaration, and preserve every other byte.
+  const start = declaration.index + declaration[0].length;
+  const suffix = before.slice(start);
+  if (
+    after.length <= before.length ||
+    after.slice(0, start) !== before.slice(0, start) ||
+    !after.endsWith(suffix)
+  ) {
+    return false;
+  }
+  const inserted = after.slice(start, after.length - suffix.length);
+  const rows = [...inserted.matchAll(rule.row)];
+  if (
+    rows.map((row) => row[0]).join("") !== inserted ||
+    (rule.single && rows.length !== 1)
+  ) {
+    return false;
+  }
+  const unregisteredStreams = new Set(
+    requiredStreams.map((stream) => key + "." + stream),
+  );
+  return rows.every(({ groups }) => {
+    if (groups?.manifest) {
+      return (
+        groups.manifest === key && groups.connector === key.replaceAll("_", "-")
+      );
+    }
+    if (groups?.stream) return unregisteredStreams.delete(groups.stream);
+    const path = groups?.path;
+    if (!path?.startsWith("connectors/" + key + "/")) return false;
+    if (
+      !/^[a-zA-Z0-9_./-]+$/.test(path) ||
+      path.split("/").some((part) => !part || part === "." || part === "..")
+    ) {
+      return false;
+    }
+    if (
+      rule.single &&
+      (groups?.key !== key || !/\.test\.[cm]?[jt]s$/.test(path))
+    ) {
+      return false;
+    }
+    return /^100(?:644|755) blob [a-f0-9]+\t/.test(
+      git("ls-tree", head, "--", path),
+    );
+  });
+}
+
 function codeBlock(value: string, language: string) {
   const fence = "`".repeat(
     Math.max(3, ...(value.match(/`+/g) ?? []).map((run) => run.length + 1)),
@@ -185,13 +292,15 @@ function prepare(key: string, options: PrepOptions) {
     !changed.some((file) => file.startsWith(prefix)) ||
     changed.some(
       (file) =>
-        (file !== INDEX_PATH && !file.startsWith(prefix)) ||
+        (file !== INDEX_PATH &&
+          !file.startsWith(prefix) &&
+          !registrations.has(file)) ||
         /\p{Cc}/u.test(file),
     )
   ) {
     throw new PrepError(
       "connector_diff_required",
-      "Select a commit range changing only the chosen connector and its generated index entry.",
+      "Select a commit range changing only the chosen connector, generated index entry and allowed registration rows.",
     );
   }
   // Raw modes expose symlinks and Git links, including deletions. Neither
@@ -241,6 +350,30 @@ function prepare(key: string, options: PrepOptions) {
       "version_bump_required",
       "Increase the connector manifest version before preparing this update.",
     );
+  }
+
+  const requiredStreams = current.streams
+    .filter((stream) => stream.required === true)
+    .map((stream) => stream.name);
+  for (const file of changed.filter((path) => registrations.has(path))) {
+    if (
+      previous ||
+      !validNewConnectorRegistration(
+        git,
+        file,
+        key,
+        requiredStreams,
+        base,
+        head,
+      )
+    ) {
+      throw new PrepError(
+        "invalid_connector_registration",
+        "Only add registration rows for the selected new connector in " +
+          file +
+          ".",
+      );
+    }
   }
 
   const beforeIndex = indexSchema.parse(
