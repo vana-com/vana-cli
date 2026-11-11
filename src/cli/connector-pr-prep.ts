@@ -13,7 +13,23 @@ import {
 import { isNewerVersion } from "./update-check.js";
 
 const INDEX_PATH = "connector-implementation-index.json";
-const registrations = new Map([
+const GENERATED_ROOT = "packages/polyfill-connectors/src/generated/";
+const CONSENT_AGGREGATE = GENERATED_ROOT + "consent-time-fields.generated.ts";
+const MANIFEST_COUNT_TEST =
+  "packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts";
+const consentHeader =
+  /^export const CONSENT_TIME_FIELDS: Readonly<\n\tRecord<string, Readonly<Record<string, ConsentTimeField \| null>>>\n> = \{\n/m;
+const consentRow =
+  /^\t(?<generatedKey>[a-z0-9_]+): \{\n(?<fields>(?:\t\t(?:[a-zA-Z0-9_]+|"[a-zA-Z0-9_-]+"): (?:null|\{ field: "[a-zA-Z0-9_.-]+", format: "date(?:-time)?" \}),\n)+)\t\},\n/gm;
+
+interface RegistrationRule {
+  header: RegExp;
+  row: RegExp;
+  single: boolean;
+  generated?: "consent" | "secret";
+}
+
+const registrations = new Map<string, RegistrationRule>([
   [
     "packages/polyfill-connectors/src/connector-conformance-roster.ts",
     {
@@ -48,6 +64,25 @@ const registrations = new Map([
         /^export const CONNECTOR_PUBLISH_INVENTORY = Object\.freeze\(\n  \[\n/m,
       row: /^    \["(?<manifest>[a-z0-9_]+)", "(?<connector>[a-z0-9-]+)"\],\n/gm,
       single: true,
+    },
+  ],
+  [
+    CONSENT_AGGREGATE,
+    {
+      header: consentHeader,
+      row: consentRow,
+      single: true,
+      generated: "consent",
+    },
+  ],
+  [
+    GENERATED_ROOT + "static-secret-registry.generated.ts",
+    {
+      header:
+        /^export const GENERATED_STATIC_SECRET_REGISTRY: Readonly<\n\tRecord<string, GeneratedStaticSecretDescriptor>\n> = Object\.freeze\(\{\n/m,
+      row: /^\t(?<generatedKey>[a-z0-9_]+|"[a-z0-9-]+"): \{\n\t\tcredentialKind: "(?<kind>[a-z_]+)",\n\t\tsecretEnvVars: \[(?<env>"[A-Z][A-Z0-9_]*"(?:, "[A-Z][A-Z0-9_]*")*)\],\n\t\},\n/gm,
+      single: true,
+      generated: "secret",
     },
   ],
 ]);
@@ -171,16 +206,126 @@ function localGit(checkout: string) {
   };
 }
 
+function consentSlicePath(key: string): string {
+  return GENERATED_ROOT + "consent-time-fields/" + key + ".generated.ts";
+}
+
+function registrationFile(file: string, key: string): boolean {
+  return (
+    registrations.has(file) ||
+    file === MANIFEST_COUNT_TEST ||
+    file === consentSlicePath(key)
+  );
+}
+
+function validGeneratedRow(
+  groups: Record<string, string>,
+  kind: "consent" | "secret",
+  key: string,
+  manifest: z.infer<typeof manifestSchema>,
+): boolean {
+  if (kind === "consent") {
+    if (groups.generatedKey !== key) return false;
+    const fields = groups.fields.trim().split("\n");
+    return (
+      isDeepStrictEqual(
+        fields
+          .map((line) => line.trim().split(": ")[0].replace(/^"|"$/g, ""))
+          .sort(),
+        manifest.streams.map((stream) => stream.name).sort(),
+      ) &&
+      fields.every((line) => {
+        const [name, value] = line.trim().split(": ");
+        if (value === "null,") return true;
+        const field = line.match(/field: "([^"]+)"/)?.[1];
+        return (
+          field ===
+          manifest.streams.find(
+            (stream) => stream.name === name.replace(/^"|"$/g, ""),
+          )?.consent_time_field
+        );
+      })
+    );
+  }
+  const connectorKey = groups.generatedKey.replace(/^"|"$/g, "");
+  if (connectorKey !== manifest.connector_key) return false;
+  const capture = z
+    .looseObject({
+      setup: z.looseObject({
+        credential_capture: z.looseObject({
+          kind: z.string(),
+          fields: z.array(
+            z.looseObject({
+              secret: z.boolean().optional(),
+              env: z.array(z.string()).optional(),
+            }),
+          ),
+        }),
+      }),
+    })
+    .safeParse(manifest);
+  if (!capture.success) return false;
+  const credential = capture.data.setup.credential_capture;
+  return (
+    groups.kind === credential.kind &&
+    isDeepStrictEqual(
+      (JSON.parse("[" + groups.env + "]") as string[]).sort(),
+      [
+        ...new Set(
+          credential.fields
+            .filter((field) => field.secret)
+            .flatMap((field) => field.env ?? []),
+        ),
+      ].sort(),
+    )
+  );
+}
+
+function validConsentSlice(
+  git: ReturnType<typeof localGit>,
+  key: string,
+  manifest: z.infer<typeof manifestSchema>,
+  base: string,
+  head: string,
+): boolean {
+  const file = consentSlicePath(key);
+  if (git("ls-tree", base, "--", file)) return false;
+  const aggregate = git("show", head + ":" + CONSENT_AGGREGATE);
+  const rows = [...aggregate.matchAll(consentRow)].filter(
+    ({ groups }) =>
+      groups && validGeneratedRow(groups, "consent", key, manifest),
+  );
+  if (rows.length !== 1) return false;
+  const table = consentHeader.exec(aggregate)?.[0];
+  if (!table) return false;
+  const module = git("show", head + ":" + file);
+  const expected =
+    'import type { ConsentTimeField } from "../../time-range.ts";\n\n' +
+    'export const CONSENT_BOUND_CONNECTOR: string | null = "' +
+    key +
+    '";\n\n' +
+    table +
+    rows[0][0] +
+    "};\n";
+  return (
+    module.endsWith(expected) &&
+    /^(?:(?:\/\/[^\r\n\u2028\u2029]*)?\n)*$/.test(
+      module.slice(0, -expected.length),
+    )
+  );
+}
+
 function validNewConnectorRegistration(
   git: ReturnType<typeof localGit>,
   file: string,
   key: string,
-  requiredStreams: string[],
+  manifest: z.infer<typeof manifestSchema>,
   base: string,
   head: string,
 ): boolean {
-  const rule = registrations.get(file);
-  if (!rule) return false;
+  if (file === consentSlicePath(key)) {
+    return validConsentSlice(git, key, manifest, base, head);
+  }
   const baseMode = git("ls-tree", base, "--", file).slice(0, 6);
   if (!baseMode || baseMode !== git("ls-tree", head, "--", file).slice(0, 6)) {
     return false;
@@ -188,12 +333,36 @@ function validNewConnectorRegistration(
 
   const before = git("show", base + ":" + file);
   const after = git("show", head + ":" + file);
+  if (file === MANIFEST_COUNT_TEST) {
+    const countLine = /^\tassert\.equal\(names\.length, (\d+)\);$/m;
+    const match = before.match(countLine);
+    return (
+      !!match &&
+      before.replace(
+        countLine,
+        "\tassert.equal(names.length, " + (Number(match[1]) + 1) + ");",
+      ) === after
+    );
+  }
+  const rule = registrations.get(file);
+  if (!rule) return false;
   const declaration = rule.header.exec(before);
   if (!declaration) return false;
 
   // Both files are executable TypeScript. Permit only data rows inserted
   // directly after the named declaration, and preserve every other byte.
   const start = declaration.index + declaration[0].length;
+  const generated = rule.generated;
+  if (generated) {
+    return [...after.matchAll(rule.row)].some(
+      (row) =>
+        row.index >= start &&
+        row.groups &&
+        validGeneratedRow(row.groups, generated, key, manifest) &&
+        after.slice(0, row.index) + after.slice(row.index + row[0].length) ===
+          before,
+    );
+  }
   const suffix = before.slice(start);
   if (
     after.length <= before.length ||
@@ -211,7 +380,9 @@ function validNewConnectorRegistration(
     return false;
   }
   const unregisteredStreams = new Set(
-    requiredStreams.map((stream) => key + "." + stream),
+    manifest.streams
+      .filter((stream) => stream.required === true)
+      .map((stream) => key + "." + stream.name),
   );
   return rows.every(({ groups }) => {
     if (groups?.manifest) {
@@ -294,7 +465,7 @@ function prepare(key: string, options: PrepOptions) {
       (file) =>
         (file !== INDEX_PATH &&
           !file.startsWith(prefix) &&
-          !registrations.has(file)) ||
+          !registrationFile(file, key)) ||
         /\p{Cc}/u.test(file),
     )
   ) {
@@ -352,20 +523,10 @@ function prepare(key: string, options: PrepOptions) {
     );
   }
 
-  const requiredStreams = current.streams
-    .filter((stream) => stream.required === true)
-    .map((stream) => stream.name);
-  for (const file of changed.filter((path) => registrations.has(path))) {
+  for (const file of changed.filter((path) => registrationFile(path, key))) {
     if (
       previous ||
-      !validNewConnectorRegistration(
-        git,
-        file,
-        key,
-        requiredStreams,
-        base,
-        head,
-      )
+      !validNewConnectorRegistration(git, file, key, current, base, head)
     ) {
       throw new PrepError(
         "invalid_connector_registration",

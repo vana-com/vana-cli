@@ -46,6 +46,12 @@ function writeConnector(version: string, otherVersion = "1.0.0") {
     connector_key: "example",
     version,
     streams: [{ name: "items", required: true }],
+    setup: {
+      credential_capture: {
+        kind: "personal_access_token",
+        fields: [{ secret: true, env: ["SYNTHETIC_TOKEN"] }],
+      },
+    },
   };
   writeFileSync(
     path.join(checkout, "connectors/example/manifest.json"),
@@ -443,6 +449,15 @@ const rosterFile =
   "packages/polyfill-connectors/src/connector-conformance-roster.ts";
 const awaitListFile =
   "packages/polyfill-connectors/scripts/no-await-in-loops-allowlist.ts";
+const generatedRoot = "packages/polyfill-connectors/src/generated/";
+const consentAggregate = generatedRoot + "consent-time-fields.generated.ts";
+const consentSlice = generatedRoot + "consent-time-fields/example.generated.ts";
+const staticSecret = generatedRoot + "static-secret-registry.generated.ts";
+const manifestCount =
+  "packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts";
+const consentHeader =
+  "export const CONSENT_TIME_FIELDS: Readonly<\n\tRecord<string, Readonly<Record<string, ConsentTimeField | null>>>\n> = {\n";
+const consentRow = "\texample: {\n\t\titems: null,\n\t},\n";
 const publishFile = "scripts/connector-publish-allowlist.mjs";
 const publishHeader =
   "export const CONNECTOR_PUBLISH_INVENTORY = Object.freeze(\n  [\n";
@@ -503,6 +518,37 @@ function writeRegistrationFixture(added: boolean) {
       (added ? '    ["example", "example"],\n' : "") +
       '    ["other", "other"],\n  ],\n);\n',
   );
+  const consent = path.join(checkout, consentAggregate);
+  const secret = path.join(checkout, staticSecret);
+  mkdirSync(path.dirname(consent), { recursive: true });
+  const otherConsent = "\tother: {\n\t\titems: null,\n\t},\n";
+  writeFileSync(
+    consent,
+    consentHeader + otherConsent + (added ? consentRow : "") + "};\n",
+  );
+  const secretHeader =
+    "export const GENERATED_STATIC_SECRET_REGISTRY: Readonly<\n\tRecord<string, GeneratedStaticSecretDescriptor>\n> = Object.freeze({\n";
+  const secretRow =
+    '\texample: {\n\t\tcredentialKind: "personal_access_token",\n\t\tsecretEnvVars: ["SYNTHETIC_TOKEN"],\n\t},\n';
+  writeFileSync(secret, secretHeader + (added ? secretRow : "") + "});\n");
+  const count = path.join(checkout, manifestCount);
+  writeFileSync(
+    count,
+    "test('manifest inventory', () => {\n\tassert.equal(names.length, " +
+      (added ? 2 : 1) +
+      ");\n});\n",
+  );
+  if (added) {
+    const slice = path.join(checkout, consentSlice);
+    mkdirSync(path.dirname(slice), { recursive: true });
+    writeFileSync(
+      slice,
+      '// Generated for example.\n\nimport type { ConsentTimeField } from "../../time-range.ts";\n\nexport const CONSENT_BOUND_CONNECTOR: string | null = "example";\n\n' +
+        consentHeader +
+        consentRow +
+        "};\n",
+    );
+  }
 }
 
 function makeNewConnector(baseHasKey = false) {
@@ -853,6 +899,30 @@ it("rejects evidence that cannot fit into the public PR description", async () =
 });
 
 it.each([
+  [
+    "a generated credential not declared by the connector",
+    staticSecret,
+    '["SYNTHETIC_TOKEN"]',
+    '["OTHER_TOKEN"]',
+  ],
+  [
+    "an unrelated stream in the generated consent row",
+    consentAggregate,
+    "items: null",
+    "unexpected: null",
+  ],
+  [
+    "executable code in the consent slice",
+    consentSlice,
+    "// Generated for example.",
+    "console.log(process.env);",
+  ],
+  [
+    "an incorrect manifest count increment",
+    manifestCount,
+    "names.length, 2",
+    "names.length, 3",
+  ],
   [
     "a mismatched publication identity",
     publishFile,

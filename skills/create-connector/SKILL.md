@@ -130,7 +130,8 @@ reported evidence. They do not execute the test commands in the evidence file.
    Change the selected connector and its generated implementation-index entry.
    For a new connector, put its required conformance roster, sequential-await
    coverage-gap and publication inventory entries first in their upstream\n declarations.
-   Keep the other rows intact. New connectors need a unique key, manifest and
+   Regenerate the consent and credential tables and update the manifest count
+   by one. Keep the other rows intact. New connectors need a unique key, manifest and
    `index.ts`. Updates need a higher manifest version.
 2. Save reviewed synthetic evidence outside the connector commit using the
    example below. Replace the commit, date, commands, results, source and
