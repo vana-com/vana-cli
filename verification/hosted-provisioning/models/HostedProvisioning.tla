@@ -1,6 +1,6 @@
 ---- MODULE HostedProvisioning ----
 
-CONSTANTS RefuseProvisioningDelete, CleanupOrphanedCreate
+CONSTANTS RefuseProvisioningDelete, CleanupOrphanedCreate, ConditionalDelete
 VARIABLES row, create, deletion, resource, listed, orphaned
 vars == <<row, create, deletion, resource, listed, orphaned>>
 
@@ -68,16 +68,28 @@ ProviderCleanup == /\ deletion = "cleaning"
                    /\ deletion' = "cleanup_done"
                    /\ UNCHANGED <<row, create, listed, orphaned>>
 
-DeleteRow == /\ deletion \in {"skip_cleanup", "cleanup_done"}
+\* A delete that skipped cleanup removes the row. With ConditionalDelete the
+\* write only matches a row that still has no handles.
+DeleteRow == /\ \/ deletion = "cleanup_done"
+                \/ /\ deletion = "skip_cleanup"
+                   /\ (~ConditionalDelete \/ row = "without_handles")
              /\ row' = "absent"
              /\ deletion' = "deleted"
              /\ UNCHANGED <<create, resource, listed, orphaned>>
+
+\* The conditional delete matched nothing because handles were saved after the
+\* read. The route reads the row once more and cleans up what it now has.
+RereadAfterLostRace == /\ ConditionalDelete
+                       /\ deletion = "skip_cleanup"
+                       /\ row \notin {"without_handles", "absent"}
+                       /\ deletion' = "cleaning"
+                       /\ UNCHANGED <<row, create, resource, listed, orphaned>>
 
 Done == /\ create \in {"created", "deleted_during_setup"}
         /\ UNCHANGED vars
 
 Next == ReserveRow \/ StartProvider \/ ListRow \/ ProviderReturns \/ SaveHandles
-        \/ ReturnCreated \/ ObserveRunning \/ ReadDeleteRow \/ ProviderCleanup \/ DeleteRow \/ Done
+        \/ ReturnCreated \/ ObserveRunning \/ ReadDeleteRow \/ RereadAfterLostRace \/ ProviderCleanup \/ DeleteRow \/ Done
 Spec == Init /\ [][Next]_vars
 
 \* The whole property: a successful create never leaves a resource with no row.

@@ -4,10 +4,11 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { PersonalServer } from "@/lib/db/neon";
 
 // Which source the runner put in the snapshot:
-//   fixed   the route under review
-//   legacy  the create route before BUI-1010 (a55d0a0)
-//   guarded the route under review plus a scratch 409 on DELETE while provisioning
-type Route = "fixed" | "legacy" | "guarded";
+//   fixed         the routes under review
+//   legacy-create the create route before the create-side fix (a55d0a0)
+//   legacy-delete the delete route before the conditional delete (a55d0a0)
+//   guarded       the routes under review plus a scratch 409 on DELETE while provisioning
+type Route = "fixed" | "legacy-create" | "legacy-delete" | "guarded";
 // Where the schedule holds things before it lets the create finish:
 //   reservation  the create's row insert has returned, the provider is not yet called
 //   provider     provision() is pending
@@ -65,6 +66,13 @@ vi.mock("@/lib/db/neon", () => ({
   deleteServer: async (id: string) => {
     if (ports.row?.id === id) ports.row = null;
   },
+  deleteServerIfNoProviderHandles: async (id: string) => {
+    const row = ports.row;
+    if (row?.id !== id) return false;
+    if (row.provider_id || row.tunnel_id || row.dns_record_id) return false;
+    ports.row = null;
+    return true;
+  },
   updateServer: async (id: string, fields: Partial<PersonalServer>) => {
     if (ports.row?.id !== id) return null;
     ports.row = { ...ports.row, ...fields };
@@ -101,7 +109,7 @@ afterEach(() => vi.unstubAllGlobals());
 const cleanedUp = {
   delete: 200,
   create: 409,
-  deprovision: [["fixture-vm", handles]],
+  deprovision: [["fixture-vm", { ...handles, deadline: expect.any(Number) }]],
   resources: [],
   tokens: 0,
   listed: [],
@@ -114,6 +122,16 @@ const orphaned = {
   tokens: 1,
   listed: [],
 };
+// DELETE read the row before the handles were saved, found them on the
+// re-read and deprovisioned them.
+const lateHandles = {
+  delete: 200,
+  create: 201,
+  deprovision: [["fixture-vm", { ...handles, deadline: expect.any(Number) }]],
+  resources: [],
+  tokens: 1,
+  listed: [],
+};
 const guarded = {
   delete: 409,
   create: 201,
@@ -123,19 +141,24 @@ const guarded = {
   listed: ["fixture-vm"],
 };
 
-// What the replay must observe for each source and schedule. The fixed route
-// removes what a create made after its row was deleted. The stale delete-read
-// schedule is the open window: DELETE read the row before the handles were
-// saved and removes it after, which the create route cannot see.
+// What the replay must observe for each source and schedule. The fixed create
+// route removes what it made after its row was deleted. The fixed delete route
+// deprovisions handles saved after it read the row. Each legacy source leaves
+// its own window open and the other closed.
 const expected: Record<Route, Record<Schedule, typeof cleanedUp>> = {
   fixed: {
     reservation: cleanedUp,
     provider: cleanedUp,
-    "delete-read": orphaned,
+    "delete-read": lateHandles,
   },
-  legacy: {
+  "legacy-create": {
     reservation: orphaned,
     provider: orphaned,
+    "delete-read": lateHandles,
+  },
+  "legacy-delete": {
+    reservation: cleanedUp,
+    provider: cleanedUp,
     "delete-read": orphaned,
   },
   guarded: {
