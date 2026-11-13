@@ -32,7 +32,7 @@ OWNERS = {
     "connect/src/lib/api-auth.ts": "e2c1a60fda0a05a313a8c63cf509a41318016a54",
     "connect/src/lib/api-server.ts": "b196dafa9e0b89f59c1c7cbf7d55ee7e86e755cb",
     "connect/src/lib/api-error.ts": "5b0c1f5de52af344afd5addffa37377e7a26ee67",
-    "connect/src/lib/server-provider/gcp.ts": "1e26cfc1764e078fc4d0a25b5275cbf5b05a38d8",
+    "connect/src/lib/server-provider/gcp.ts": "fecd4b0a9bef01d67d9e277adcb42db85a00f116",
     "connect/vitest.config.ts": "b7689c0dc27e999c37e7da456d26b9ab87298e9a",
 }
 JAR_SHA256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
