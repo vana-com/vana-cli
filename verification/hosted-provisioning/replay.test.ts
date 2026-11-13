@@ -109,7 +109,7 @@ afterEach(() => vi.unstubAllGlobals());
 const cleanedUp = {
   delete: 200,
   create: 409,
-  deprovision: [["fixture-vm", handles]],
+  deprovision: [["fixture-vm", { ...handles, deadline: expect.any(Number) }]],
   resources: [],
   tokens: 0,
   listed: [],
@@ -127,7 +127,7 @@ const orphaned = {
 const lateHandles = {
   delete: 200,
   create: 201,
-  deprovision: [["fixture-vm", handles]],
+  deprovision: [["fixture-vm", { ...handles, deadline: expect.any(Number) }]],
   resources: [],
   tokens: 1,
   listed: [],

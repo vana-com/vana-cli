@@ -26,13 +26,13 @@ LEGACY_BLOBS = {
     DELETE_ROUTE: "0260ec6d1b468546fcd64b102bda992149209785",
 }
 OWNERS = {
-    CREATE_ROUTE: "3b15ca287645d99187ba92192ec2f8fa7b58440d",
-    DELETE_ROUTE: "467765ed17d7f3fdab28ec4397c8fbb4e3704f9e",
+    CREATE_ROUTE: "b3ec180ea04ad927d1041834004a7841949fe9b3",
+    DELETE_ROUTE: "c11b835ab258b9d52905322d8e8d499b8b719277",
     "connect/src/lib/db/neon.ts": "14a410383b3fe9072dbc30ba2d334a9ecb1af9c4",
     "connect/src/lib/api-auth.ts": "e2c1a60fda0a05a313a8c63cf509a41318016a54",
     "connect/src/lib/api-server.ts": "b196dafa9e0b89f59c1c7cbf7d55ee7e86e755cb",
     "connect/src/lib/api-error.ts": "5b0c1f5de52af344afd5addffa37377e7a26ee67",
-    "connect/src/lib/server-provider/gcp.ts": "985af1d609a559f5ad5751dee29a8774f8514ea6",
+    "connect/src/lib/server-provider/gcp.ts": "1e26cfc1764e078fc4d0a25b5275cbf5b05a38d8",
     "connect/vitest.config.ts": "b7689c0dc27e999c37e7da456d26b9ab87298e9a",
 }
 JAR_SHA256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"

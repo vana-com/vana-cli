@@ -300,7 +300,7 @@ stateDiagram-v2
 
 ## Delete a hosted server during provisioning
 
-Current behavior. A delete that arrives before the provider returns removes the untracked row, and the create then removes what it made and answers 409. A delete that read the row before the handles were saved finds them on a second read and deprovisions them. A create killed at its time limit is not modelled.
+Current behavior. A delete that arrives before the provider returns removes the untracked row, and the create then removes what it made and answers 409. A delete that read the row before the handles were saved finds them on a second read and deprovisions them. The diagram shows both replayed write orders with successful cleanup. The model leaves out provider failures and creates killed at their time limit.
 
 ```mermaid
 ---
@@ -328,13 +328,12 @@ stateDiagram-v2
   s2 --> s4: try to store provider handles
   s4 --> s6: provider reports running
   s4 --> s7: owner requests deletion
-  s3 --> s8: delete the server record
   s5 --> s8: provider creates the server
   s6 --> s7: owner requests deletion
   s7 --> s9: provider finishes cleanup
   s3 --> s7: delete finds handles saved after its read
-  s8 --> s10: creation finds no record and removes its resources
-  s9 --> s5: delete the server record
+  s8 --> s10: create cleans up and returns 409
   s9 --> s11: delete the server record
-  s5 --> s11: create returns success
+  s10 --> [*]
+  s11 --> [*]
 ```
