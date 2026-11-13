@@ -3,6 +3,8 @@ export const title = "Delete a hosted server while provisioning is pending";
 export function state(value) {
   if (value.row === "absent" && value.resource && value.create === "created")
     return "Creation reports success but the server has no record";
+  if (value.create === "deleted_during_setup")
+    return "Creation removed its resources after deletion";
   if (value.deletion === "deleted") {
     if (value.create === "created") return "Server removed";
     if (value.resource) return "Provider returned after deletion";
@@ -25,6 +27,8 @@ export function state(value) {
 }
 
 export function step(action, _from, to) {
+  if (action === "SaveHandles" && to.create === "deleted_during_setup")
+    return "creation finds no record and removes its resources";
   if (action === "ReadDeleteRow") {
     if (to.deletion === "refused") return "owner attempts deletion too early";
     if (to.deletion === "skip_cleanup")
