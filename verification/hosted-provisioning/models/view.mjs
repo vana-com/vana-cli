@@ -37,6 +37,7 @@ export function step(action, _from, to) {
   }
   return {
     ReserveRow: "start server creation",
+    RereadAfterLostRace: "delete finds handles saved after its read",
     StartProvider: "start provider provisioning",
     ListRow: "owner lists servers",
     ProviderReturns: "provider creates the server",

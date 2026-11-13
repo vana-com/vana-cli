@@ -16,21 +16,23 @@ throws, it logs the server, provider, tunnel and DNS ids and answers 500 naming
 them, because there is no row left to mark. Before the fix it fell back to its
 stale copy of the row and answered 201.
 
-**Still open.**
+**Fixed: the delete path.** A delete that read a row with no handles used to
+call `deleteServer` unconditionally. If the create saved its handles between
+that read and the delete, the create answered 201 and the row was removed with
+the resources untracked. The delete now removes such a row only if it still has
+no provider handles (`deleteServerIfNoProviderHandles`). If it removed nothing
+it reads the row once more. A row that is gone answers as a normal delete. A
+row that now has handles goes through the existing cleanup: deprovision, mark
+`deprovision_failed` on failure, then delete. The two windows end consistently.
+Either the delete removed an untracked row and the create cleaned up and
+answered 409, or the create saved its handles and answered 201 and the delete
+deprovisioned them.
 
-- **A create killed at its 60-second limit.** The row stays `provisioning`
-  with no provider handles, and whatever the provider had already created is
-  recorded nowhere. Deleting that row removes the row and leaves the
-  resources. The replay does not cover this.
-- **A delete that reads the row before the handles are saved and removes it
-  after.** The delete route reads the row, sees no handles and skips cleanup.
-  If the create saves its handles in between, `updateServer` succeeds, so the
-  create route sees nothing wrong, and the delete then removes the row
-  anyway. `deleteServer` is unconditional. The model's `stale-delete`
-  configuration and the replay's `delete-read` schedule reproduce it: DELETE
-  200, POST 201, the resource not listed and no cleanup sent. Closing it
-  needs a change to the delete route (a conditional delete, or a refusal while
-  provisioning), which this fix did not make.
+**Still open.** A create killed at its 60-second limit. The row stays
+`provisioning` with no provider handles, and whatever the provider had already
+created is recorded nowhere. Deleting that row removes the row and leaves the
+resources. Neither the model nor the replay covers this. The row must stay
+deletable, so the delete does not refuse while provisioning.
 
 The normal [server page](../../connect/src/app/server/page.tsx) hides Remove
 Server while provisioning. The authenticated API still allows it. A signed
@@ -42,15 +44,15 @@ cloud resources were outside the replay.
 
 The runner pins the blob hashes of the checked source and replays the working
 tree. `--ref` checks a named revision instead if its blobs match. The create
-route as it was before the fix, at main
-`a55d0a0006da6a743b6452796435afa6ed177dd8`, is kept as the legacy witness.
+and delete routes as they were at main
+`a55d0a0006da6a743b6452796435afa6ed177dd8` are kept as the legacy witnesses.
 
-| Action                   | Source boundary                                                                                                                                                                                                                                                                               |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Reserve and list         | [Server collection route](../../connect/src/app/api/servers/route.ts) inserts a provisioning row without handles before it awaits the provider. The owner can list this row while the POST waits.                                                                                             |
-| Read for deletion        | [Server item route](../../connect/src/app/api/servers/%5Bid%5D/route.ts) checks the owner and starts provider cleanup only if the row snapshot has a VM, tunnel or DNS handle.                                                                                                                |
-| Delete the row           | The item route awaits cleanup when it found handles, otherwise it immediately calls `deleteServer` and returns success. It does not check that the row is unchanged since it read it.                                                                                                         |
-| Publish provider handles | The collection route writes provider handles. [The store](../../connect/src/lib/db/neon.ts) returns null when the row is missing. On null the route deprovisions the handles it was given and answers 409, or 500 if that fails. Otherwise it stores the control-plane token and returns 201. |
+| Action                   | Source boundary                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reserve and list         | [Server collection route](../../connect/src/app/api/servers/route.ts) inserts a provisioning row without handles before it awaits the provider. The owner can list this row while the POST waits.                                                                                                                                                               |
+| Read for deletion        | [Server item route](../../connect/src/app/api/servers/%5Bid%5D/route.ts) checks the owner and starts provider cleanup only if the row snapshot has a VM, tunnel or DNS handle.                                                                                                                                                                                  |
+| Delete the row           | The item route awaits cleanup when it found handles. Otherwise it calls [`deleteServerIfNoProviderHandles`](../../connect/src/lib/db/neon.ts), which removes the row only if it still has no handles, and returns success. If that removed nothing it reads the row once more and either returns success for a missing row or cleans up the handles it now has. |
+| Publish provider handles | The collection route writes provider handles. [The store](../../connect/src/lib/db/neon.ts) returns null when the row is missing. On null the route deprovisions the handles it was given and answers 409, or 500 if that fails. Otherwise it stores the control-plane token and returns 201.                                                                   |
 
 TLC checks one owner, one hosted server, one creation, and one deletion.
 Reservation, provider reply, handle publication and response are separate steps.
@@ -69,12 +71,12 @@ the one the delete route owns. Two invariants name them:
 `CreateNeverSucceedsWithoutRow` for the first and
 `CreatedResourceHasTrackingRow`, the whole property, for both.
 
-| Model configuration          | Create path               | Invariant                       | Expected                                      |
-| ---------------------------- | ------------------------- | ------------------------------- | --------------------------------------------- |
-| `current`                    | cleans up an orphan       | `CreateNeverSucceedsWithoutRow` | passes                                        |
-| `legacy-create`              | answers 201 on a null row | `CreateNeverSucceedsWithoutRow` | violated                                      |
-| `stale-delete`               | cleans up an orphan       | `CreatedResourceHasTrackingRow` | violated, the open delete window              |
-| `refuse-provisioning-delete` | cleans up an orphan       | `CreatedResourceHasTrackingRow` | passes with DELETE refused while provisioning |
+| Model configuration          | Create path               | Delete path                             | Invariant                       | Expected |
+| ---------------------------- | ------------------------- | --------------------------------------- | ------------------------------- | -------- |
+| `current`                    | cleans up an orphan       | conditional                             | both                            | passes   |
+| `legacy-create`              | answers 201 on a null row | conditional                             | `CreateNeverSucceedsWithoutRow` | violated |
+| `stale-delete`               | cleans up an orphan       | unconditional                           | `CreatedResourceHasTrackingRow` | violated |
+| `refuse-provisioning-delete` | cleans up an orphan       | conditional, refused while provisioning | `CreatedResourceHasTrackingRow` | passes   |
 
 ## Run
 
@@ -85,21 +87,23 @@ Use Python 3.12+, Node and Connect's installed Vitest. The checker uses TLC
 python3 verification/hosted-provisioning/check.py
 ```
 
-The replay runs three schedules against each of four sources. The three
-schedules hold the reservation response, the provider response, and the delete
-route's row read.
+The replay runs three schedules against each of five sources. The schedules
+hold the reservation response, the provider response, and the delete route's
+row read.
 
-| Source                               | Reservation and provider holds                                                                            | Delete-read hold                                      |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| Fixed route                          | DELETE 200, POST 409, one deprovision with the ids the provider returned, no token stored, nothing listed | DELETE 200, POST 201, no cleanup sent, nothing listed |
-| Legacy create route (`a55d0a0`)      | DELETE 200, POST 201, no cleanup sent, the resource remains and nothing is listed                         | the same                                              |
-| Fixed route and scratch delete guard | DELETE 409, POST 201, provider handles listed                                                             | the same                                              |
-| Fixed route, restored                | the fixed outcomes again                                                                                  | the fixed outcomes again                              |
+| Source                                | Reservation and provider holds                                                                            | Delete-read hold                                                                  |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Fixed routes                          | DELETE 200, POST 409, one deprovision with the ids the provider returned, no token stored, nothing listed | DELETE 200, POST 201, one deprovision with the late handles, nothing listed       |
+| Legacy create route (`a55d0a0`)       | DELETE 200, POST 201, no cleanup sent, the resource remains and nothing is listed                         | the same as the fixed routes                                                      |
+| Legacy delete route (`a55d0a0`)       | the same as the fixed routes                                                                              | DELETE 200, POST 201, no cleanup sent, the resource remains and nothing is listed |
+| Fixed routes and scratch delete guard | DELETE 409, POST 201, provider handles listed                                                             | the same                                                                          |
+| Fixed routes, restored                | the fixed outcomes again                                                                                  | the fixed outcomes again                                                          |
 
-The legacy source reproduces the original finding and shows the replay tells
-the two create paths apart. The scratch guard adds a 409 refusal on DELETE
-while the row is provisioning. It blocks both windows and remains in the
-scratch replay only. The runner restores the route after each scratch change and
+Each legacy source reproduces the window its fix closed and shows the replay
+tells the old route from the new one. The scratch guard adds a 409 refusal on
+DELETE while the row is provisioning. It blocks both windows but would also
+block deleting a create killed at its time limit, so it remains in the scratch
+replay only. The runner restores each route after every scratch change and
 prints the evidence directory. Exit 0 means every model and replay outcome in
 the tables was observed.
 

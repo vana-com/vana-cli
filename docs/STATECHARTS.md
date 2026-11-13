@@ -300,58 +300,41 @@ stateDiagram-v2
 
 ## Delete a hosted server during provisioning
 
-Current behavior. The signed API can delete the row before the provider has returned the resource handles.
+Current behavior. A delete that arrives before the provider returns removes the untracked row, and the create then removes what it made and answers 409. A delete that read the row before the handles were saved finds them on a second read and deprovisions them. A create killed at its time limit is not modelled.
 
 ```mermaid
 ---
 title: "Delete a hosted server while provisioning is pending"
 ---
 stateDiagram-v2
-  state "Legend" as legend {
-    lg0: Breaks CreatedResourceHasTrackingRow
-    lg1: Path to the CreatedResourceHasTrackingRow bug
-  }
-  class lg0 breaks
-  class lg1 bugPath
   s0: No hosted server
   s1: Server provisioning
   s2: Owner can see the provisioning record
   s3: Deletion sees no provider handles
-  s4: Record removed before provider finished
-  s5: Provisioned server is tracked
+  s4: Provisioned server is tracked
+  s5: Record removed before provider finished
   s6: Server running
-  s7: Provider returned after deletion
-  s8: Cleaning up provider resources
+  s7: Cleaning up provider resources
+  s8: Provider returned after deletion
   s9: Provider resources removed
-  s10: Creation reports success but the server has no record
+  s10: Creation removed its resources after deletion
   s11: Server removed
   [*] --> s0
   s0 --> s1: start server creation
   s1 --> s2: owner lists servers
   s2 --> s3: owner deletes before handles exist
-  s1 --> s5: try to store provider handles
-  s3 --> s4: delete the server record
-  s4 --> s4: start provider provisioning
-  s5 --> s6: provider reports running
-  s2 --> s5: try to store provider handles
-  s4 --> s7: provider creates the server
-  s5 --> s8: owner requests deletion
-  s3 --> s7: delete the server record
-  s7 --> s7: try to store provider handles
-  s6 --> s8: owner requests deletion
-  s8 --> s9: provider finishes cleanup
-  s7 --> s10: create returns success
-  s9 --> s4: delete the server record
-  s3 --> s10: delete the server record
-  s4 --> s11: create returns success
+  s1 --> s4: try to store provider handles
+  s3 --> s5: delete the server record
+  s2 --> s4: try to store provider handles
+  s4 --> s6: provider reports running
+  s4 --> s7: owner requests deletion
+  s3 --> s8: delete the server record
+  s5 --> s8: provider creates the server
+  s6 --> s7: owner requests deletion
+  s7 --> s9: provider finishes cleanup
+  s3 --> s7: delete finds handles saved after its read
+  s8 --> s10: creation finds no record and removes its resources
+  s9 --> s5: delete the server record
   s9 --> s11: delete the server record
-  classDef breaks fill:#ffecee,stroke:#e72e3b,stroke-width:2.5px,color:#cd2834
-  class s0 bugPath
-  class s1 bugPath
-  class s2 bugPath
-  class s3 bugPath
-  class s4 bugPath
-  class s7 bugPath
-  class s10 breaks
-  class s10 bugPath
+  s5 --> s11: create returns success
 ```

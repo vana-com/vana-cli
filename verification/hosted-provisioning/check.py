@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the hosted provisioning create path, the legacy race and the open delete window."""
+"""Check hosted provisioning create and delete against the model and a replay of the legacy routes."""
 
 import argparse
 import hashlib
@@ -16,16 +16,19 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-# The create route before BUI-1010, kept as the witness that the replay
-# distinguishes the fixed create path from the one it replaced.
+# The create and delete routes before BUI-1010, kept as witnesses that the
+# replay tells each fixed route from the one it replaced.
 LEGACY_REVISION = "a55d0a0006da6a743b6452796435afa6ed177dd8"
-LEGACY_ROUTE_BLOB = "118c75f3f1fd3f130cb831b5a04d6391a5a3b956"
 CREATE_ROUTE = "connect/src/app/api/servers/route.ts"
 DELETE_ROUTE = "connect/src/app/api/servers/[id]/route.ts"
+LEGACY_BLOBS = {
+    CREATE_ROUTE: "118c75f3f1fd3f130cb831b5a04d6391a5a3b956",
+    DELETE_ROUTE: "0260ec6d1b468546fcd64b102bda992149209785",
+}
 OWNERS = {
     CREATE_ROUTE: "3b15ca287645d99187ba92192ec2f8fa7b58440d",
-    DELETE_ROUTE: "0260ec6d1b468546fcd64b102bda992149209785",
-    "connect/src/lib/db/neon.ts": "13dc895dd0783f863d9ec258a5999994ac48b9f6",
+    DELETE_ROUTE: "467765ed17d7f3fdab28ec4397c8fbb4e3704f9e",
+    "connect/src/lib/db/neon.ts": "14a410383b3fe9072dbc30ba2d334a9ecb1af9c4",
     "connect/src/lib/api-auth.ts": "e2c1a60fda0a05a313a8c63cf509a41318016a54",
     "connect/src/lib/api-server.ts": "b196dafa9e0b89f59c1c7cbf7d55ee7e86e755cb",
     "connect/src/lib/api-error.ts": "5b0c1f5de52af344afd5addffa37377e7a26ee67",
@@ -34,15 +37,15 @@ OWNERS = {
 }
 JAR_SHA256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
 # The part the create route owns, and the whole property that DELETE also owns.
-FIXED = "CreateNeverSucceedsWithoutRow"
-OPEN = "CreatedResourceHasTrackingRow"
+CREATE_PROPERTY = "CreateNeverSucceedsWithoutRow"
+WHOLE_PROPERTY = "CreatedResourceHasTrackingRow"
 MODELS = (
     ("current", None),
-    ("legacy-create", FIXED),
-    ("stale-delete", OPEN),
+    ("legacy-create", CREATE_PROPERTY),
+    ("stale-delete", WHOLE_PROPERTY),
     ("refuse-provisioning-delete", None),
 )
-GUARD_ANCHOR = '  if (server.provider_id || server.tunnel_id || server.dns_record_id) {'
+GUARD_ANCHOR = "  const hasProviderState = (row: typeof server) =>"
 GUARD = '''  if (server.state === "provisioning") {
     return apiError("conflict_error", "Wait for provisioning to finish.", 409);
   }
@@ -93,11 +96,13 @@ def replay(ref, out):
     vitest = deps / "vitest/vitest.mjs"
     if not node or not vitest.is_file():
         raise RuntimeError("Use Node and Connect's installed Vitest")
-    if git("rev-parse", f"{LEGACY_REVISION}:{CREATE_ROUTE}") != LEGACY_ROUTE_BLOB:
-        raise RuntimeError("Legacy create route blob drift")
-    legacy_route = subprocess.check_output(
-        ["git", "show", f"{LEGACY_REVISION}:{CREATE_ROUTE}"], cwd=REPO,
-    )
+    legacy = {}
+    for route, blob in LEGACY_BLOBS.items():
+        if git("rev-parse", f"{LEGACY_REVISION}:{route}") != blob:
+            raise RuntimeError(f"Legacy route blob drift in {route}")
+        legacy[route] = subprocess.check_output(
+            ["git", "show", f"{LEGACY_REVISION}:{route}"], cwd=REPO,
+        )
     with tempfile.TemporaryDirectory(prefix="vana-hosted-provisioning-") as tmp:
         snapshot = Path(tmp)
         connect = snapshot / "connect"
@@ -138,11 +143,15 @@ def replay(ref, out):
                 raise RuntimeError(f"Unexpected replay outcome for {name}. See {log}")
 
         require_outcome("fixed", "fixed")
-        try:
-            create.write_bytes(legacy_route)
-            require_outcome("legacy", "legacy")
-        finally:
-            create.write_bytes(originals[create])
+        for name, path, route in (
+            ("legacy-create", create, CREATE_ROUTE),
+            ("legacy-delete", delete, DELETE_ROUTE),
+        ):
+            try:
+                path.write_bytes(legacy[route])
+                require_outcome(name, name)
+            finally:
+                path.write_bytes(originals[path])
         try:
             delete.write_text(delete_source.replace(GUARD_ANCHOR, GUARD + GUARD_ANCHOR))
             require_outcome("guarded", "guarded")
@@ -183,16 +192,17 @@ def main():
         "legacy_revision": LEGACY_REVISION,
         "models": models,
         "replays": {
-            "fixed": "held at reservation and provider: DELETE 200, POST 409, resource deprovisioned once, no token stored. "
-                     "Held at delete-read: DELETE 200, POST 201, resource not listed (open)",
-            "legacy": "pre-fix create route: DELETE 200, POST 201, resource not listed, no cleanup, in all three schedules",
+            "fixed": "reservation and provider holds: DELETE 200, POST 409, resource deprovisioned once, no token stored. "
+                     "delete-read hold: DELETE 200, POST 201, the late handles deprovisioned once",
+            "legacy-create": "old create route: reservation and provider holds leave the resource listed nowhere with no cleanup",
+            "legacy-delete": "old delete route: the delete-read hold leaves the resource listed nowhere with no cleanup",
             "guarded": "scratch DELETE guard: DELETE 409, POST 201, provider handles listed, in all three schedules",
             "restored": "the fixed outcomes reproduced again",
         },
         "scratch_source_restored": True,
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(f"Checked the fixed create path, the legacy race, the open delete window and the scratch guard. Evidence in {out}")
+    print(f"Checked the fixed create and delete paths, both legacy witnesses and the scratch guard. Evidence in {out}")
 
 
 if __name__ == "__main__":

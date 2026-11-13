@@ -10,8 +10,10 @@ The [checker](../../../verification/hosted-provisioning/check.py) pins the revie
 route source and requires the model and offline API replay to agree.
 
 An accepted provider resource needs a durable row with the handles required
-for cleanup. A delete during provisioning can race the provider result
-before either handle exists.
+for cleanup. A delete during provisioning races the provider result. The
+create removes what it made if its row is gone when the provider returns, and
+the delete removes a row with no handles only if none were saved since it read
+it, otherwise it deprovisions them.
 
 Use Python 3.12 or newer, installed Node and CLI and Connect dependencies,
 and pinned TLC 1.7.4 with Java. Set `TLA2TOOLS` and `JAVA` to installed
@@ -21,8 +23,9 @@ paths. Run from the CLI root.
 python3 verification/hosted-provisioning/check.py
 ```
 
-Read the current counterexample and the scratch-guard outcome with Pstack
-`/statechart`. Require the signed route replay to reproduce the current
-finding and the scratch guard to block it. Restore the source and rerun.
+Read the model's counterexamples and the scratch-guard outcome with Pstack
+`/statechart`. Require the signed route replay to pass on the fixed routes,
+the replaced create and delete routes to reproduce the orphan, and the scratch
+guard to block it. Restore the source and rerun.
 Reconcile the provider boundary, database state, and observed HTTP outcomes
 before moving the source pins.
