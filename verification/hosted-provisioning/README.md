@@ -1,5 +1,14 @@
 # Hosted server provisioning and deletion
 
+**Bug and tracking issue.** The bug is in the Connect web app (the `connect/`
+directory), not in the CLI command code. If a signed API request deletes a
+hosted server while it is still being set up, the record is removed but the
+virtual machine, disk, tunnel and DNS record are still created. The owner was
+told the server was deleted, and those resources now exist untracked.
+Tracked in [BUI-1010](https://linear.app/vana-team/issue/BUI-1010). The replay
+used a fake provider and an in-memory store. Nothing was checked against the
+live deployment.
+
 The current Connect API can acknowledge deletion of a provisioning row, then
 acknowledge the original creation after the provider finishes. The successful
 create has no row or provider handles left for the owner to find or remove.

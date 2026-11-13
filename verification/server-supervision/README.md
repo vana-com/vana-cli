@@ -1,5 +1,12 @@
 # Local Personal Server supervision
 
+**Bug and tracking issue.** If `vana server stop` arrives while the CLI is
+looking for a free port during a restart, it still launches a replacement
+server. The user sees "Restarted…" and then "Stopped.", and no process is left
+running. `vana server stop` can report that the server did not stop in time.
+The code is the supervisor in the CLI (`src/cli/server-start.ts`). Tracked in
+[BUI-1011](https://linear.app/vana-team/issue/BUI-1011).
+
 When Stop arrives before a replacement process starts, the supervisor must
 keep it from launching. Otherwise `vana server stop` can be followed by
 `server-restarted` before the supervisor stops the replacement.
