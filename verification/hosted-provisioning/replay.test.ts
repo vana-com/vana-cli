@@ -3,14 +3,30 @@ import { NextRequest } from "next/server";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { PersonalServer } from "@/lib/db/neon";
 
-type HoldAt = "reservation" | "provider";
+// Which source the runner put in the snapshot:
+//   fixed   the route under review
+//   legacy  the create route before BUI-1010 (a55d0a0)
+//   guarded the route under review plus a scratch 409 on DELETE while provisioning
+type Route = "fixed" | "legacy" | "guarded";
+// Where the schedule holds things before it lets the create finish:
+//   reservation  the create's row insert has returned, the provider is not yet called
+//   provider     provision() is pending
+//   delete-read  provision() is pending and DELETE has read the row but not yet
+//                removed it, so DELETE holds a snapshot with no provider handles
+type Schedule = "reservation" | "provider" | "delete-read";
+
+const route = (process.env.VANA_HOSTED_REPLAY ?? "fixed") as Route;
+const handles = { tunnelId: "fixture-tunnel", dnsRecordId: "fixture-dns" };
 
 const ports = vi.hoisted(() => ({
-  holdAt: "provider" as HoldAt,
+  holdAt: "provider" as Schedule,
   row: null as PersonalServer | null,
   resources: new Set<string>(),
+  tokens: [] as string[],
   started: Promise.withResolvers<void>(),
   release: Promise.withResolvers<void>(),
+  deleteRead: Promise.withResolvers<void>(),
+  deleteReadRelease: Promise.withResolvers<void>(),
   deprovision: vi.fn(),
 }));
 
@@ -38,8 +54,14 @@ vi.mock("@/lib/db/neon", () => ({
     }
     return inserted;
   },
-  findServerById: async (id: string) =>
-    ports.row?.id === id ? ports.row : null,
+  findServerById: async (id: string) => {
+    const found = ports.row?.id === id ? ports.row : null;
+    if (found && ports.holdAt === "delete-read") {
+      ports.deleteRead.resolve();
+      await ports.deleteReadRelease.promise;
+    }
+    return found;
+  },
   deleteServer: async (id: string) => {
     if (ports.row?.id === id) ports.row = null;
   },
@@ -48,18 +70,24 @@ vi.mock("@/lib/db/neon", () => ({
     ports.row = { ...ports.row, ...fields };
     return ports.row;
   },
-  updateServerControlPlaneToken: async () => {},
+  updateServerControlPlaneToken: async (_id: string, token: string) => {
+    ports.tokens.push(token);
+  },
 }));
 
 vi.mock("@/lib/server-provider", () => ({
   getServerProvider: () => ({
     provision: async () => {
-      if (ports.holdAt === "provider") {
+      if (ports.holdAt !== "reservation") {
         ports.started.resolve();
         await ports.release.promise;
       }
       ports.resources.add("fixture-vm");
-      return { serverId: "fixture-vm", url: "https://fixture.example" };
+      return {
+        serverId: "fixture-vm",
+        url: "https://fixture.example",
+        ...handles,
+      };
     },
     deprovision: ports.deprovision,
   }),
@@ -70,15 +98,67 @@ import { DELETE } from "./[id]/route";
 
 afterEach(() => vi.unstubAllGlobals());
 
-it.each<HoldAt>(["reservation", "provider"])(
-  "replays authenticated DELETE during a held %s response",
+const cleanedUp = {
+  delete: 200,
+  create: 409,
+  deprovision: [["fixture-vm", handles]],
+  resources: [],
+  tokens: 0,
+  listed: [],
+};
+const orphaned = {
+  delete: 200,
+  create: 201,
+  deprovision: [],
+  resources: ["fixture-vm"],
+  tokens: 1,
+  listed: [],
+};
+const guarded = {
+  delete: 409,
+  create: 201,
+  deprovision: [],
+  resources: ["fixture-vm"],
+  tokens: 1,
+  listed: ["fixture-vm"],
+};
+
+// What the replay must observe for each source and schedule. The fixed route
+// removes what a create made after its row was deleted. The stale delete-read
+// schedule is the open window: DELETE read the row before the handles were
+// saved and removes it after, which the create route cannot see.
+const expected: Record<Route, Record<Schedule, typeof cleanedUp>> = {
+  fixed: {
+    reservation: cleanedUp,
+    provider: cleanedUp,
+    "delete-read": orphaned,
+  },
+  legacy: {
+    reservation: orphaned,
+    provider: orphaned,
+    "delete-read": orphaned,
+  },
+  guarded: {
+    reservation: guarded,
+    provider: guarded,
+    "delete-read": guarded,
+  },
+};
+
+it.each<Schedule>(["reservation", "provider", "delete-read"])(
+  `replays authenticated DELETE against the ${route} route, held at %s`,
   async (holdAt) => {
     ports.row = null;
     ports.holdAt = holdAt;
     ports.started = Promise.withResolvers<void>();
     ports.release = Promise.withResolvers<void>();
+    ports.deleteRead = Promise.withResolvers<void>();
+    ports.deleteReadRelease = Promise.withResolvers<void>();
     ports.resources.clear();
-    ports.deprovision.mockClear();
+    ports.tokens = [];
+    ports.deprovision.mockReset().mockImplementation(async (id: string) => {
+      ports.resources.delete(id);
+    });
     vi.stubGlobal("fetch", () => {
       throw new Error("External I/O disabled");
     });
@@ -97,6 +177,7 @@ it.each<HoldAt>(["reservation", "provider"])(
     );
 
     let deleted: Response;
+    let created: Response;
     try {
       await ports.started.promise;
       const listed = await GET(new NextRequest(collection, { headers }));
@@ -105,33 +186,41 @@ it.each<HoldAt>(["reservation", "provider"])(
       } = await listed.json();
       expect(entry).toMatchObject({ state: "provisioning", provider_id: null });
 
-      deleted = await DELETE(
+      const deleting = DELETE(
         new NextRequest(`${collection}/${entry.id}`, {
           method: "DELETE",
           headers,
         }),
         { params: Promise.resolve({ id: entry.id }) },
       );
+      if (holdAt === "delete-read") {
+        // DELETE now holds a row snapshot with no provider handles. Let the
+        // create finish and save its handles, then let DELETE continue.
+        await ports.deleteRead.promise;
+        ports.release.resolve();
+        created = await creating;
+        ports.deleteReadRelease.resolve();
+        deleted = await deleting;
+      } else {
+        deleted = await deleting;
+        ports.release.resolve();
+        created = await creating;
+      }
     } finally {
       ports.release.resolve();
+      ports.deleteReadRelease.resolve();
     }
 
-    const created = await creating;
     const inventory = await (
       await GET(new NextRequest(collection, { headers }))
     ).json();
-    expect(created.status).toBe(201);
-    expect(ports.deprovision).not.toHaveBeenCalled();
-    expect([...ports.resources]).toEqual(["fixture-vm"]);
-
-    if (process.env.VANA_HOSTED_REPLAY_GUARD === "1") {
-      expect(deleted.status).toBe(409);
-      expect(inventory.data).toMatchObject([{ provider_id: "fixture-vm" }]);
-      return;
-    }
-
-    expect(deleted.status).toBe(200);
-    expect(await deleted.json()).toMatchObject({ deleted: true });
-    expect(inventory).toMatchObject({ data: [] });
+    expect({
+      delete: deleted.status,
+      create: created.status,
+      deprovision: ports.deprovision.mock.calls,
+      resources: [...ports.resources],
+      tokens: ports.tokens.length,
+      listed: inventory.data.map((e: PersonalServer) => e.provider_id),
+    }).toEqual(expected[route][holdAt]);
   },
 );
