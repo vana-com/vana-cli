@@ -1,0 +1,971 @@
+import { spawnSync } from "node:child_process";
+import { readFileSync, realpathSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
+import type { Command } from "commander";
+import { z } from "zod";
+
+import { CliExitCode } from "../core/exit-codes.js";
+import {
+  connectorPrTarget,
+  SubmitError,
+  submitConnectorPr,
+} from "./connector-pr-submit.js";
+import { isNewerVersion } from "./update-check.js";
+
+const INDEX_PATH = "connector-implementation-index.json";
+const GENERATED_ROOT = "packages/polyfill-connectors/src/generated/";
+const CONSENT_AGGREGATE = GENERATED_ROOT + "consent-time-fields.generated.ts";
+const MANIFEST_COUNT_TEST =
+  "packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts";
+const consentHeader =
+  /^export const CONSENT_TIME_FIELDS: Readonly<\n\tRecord<string, Readonly<Record<string, ConsentTimeField \| null>>>\n> = \{\n/m;
+const consentRow =
+  /^\t(?<generatedKey>[a-z0-9_]+): \{\n(?<fields>(?:\t\t(?:[a-zA-Z0-9_]+|"[a-zA-Z0-9_-]+"): (?:null|\{ field: "[a-zA-Z0-9_.-]+", format: "date(?:-time)?" \}),\n)+)\t\},\n/gm;
+
+interface RegistrationRule {
+  header: RegExp;
+  row: RegExp;
+  single: boolean;
+  generated?: "consent" | "secret";
+}
+
+const registrations = new Map<string, RegistrationRule>([
+  [
+    "packages/polyfill-connectors/src/connector-conformance-roster.ts",
+    {
+      header:
+        /^export const REAL_UNLISTED_CONNECTORS: Record<string, \{ testFile: string \}> = \{\n/m,
+      row: /^[\t ]+(?<key>[a-z0-9_]+): \{ testFile: "(?<path>[^"\\\r\n]+)" \},\n/gm,
+      single: true,
+    },
+  ],
+  [
+    "packages/polyfill-connectors/scripts/no-await-in-loops-allowlist.ts",
+    {
+      header:
+        /^export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry\[\] =\n\t\[\n/m,
+      row: /^\t\t\{\n\t\t\tpath: "(?<path>[^"\\\r\n]+)",\n\t\t\tline: [1-9]\d*,\n\t\t\tcolumn: [1-9]\d*,\n\t\t\tcategory: "[a-z_]+",\n\t\t\tnote: "[^"\\\r\n]+",\n\t\t\},\n/gm,
+      single: false,
+    },
+  ],
+  [
+    "connectors/_conformance/coverage-conformance-drivers.ts",
+    {
+      header:
+        /^export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set\(\[\n/m,
+      row: /^\t\/\/ [^\r\n\u2028\u2029]+\n\t"(?<stream>[a-z0-9_-]+\.[a-z0-9_]+)",\n/gm,
+      single: false,
+    },
+  ],
+  [
+    "scripts/connector-publish-allowlist.mjs",
+    {
+      header:
+        /^export const CONNECTOR_PUBLISH_INVENTORY = Object\.freeze\(\n  \[\n/m,
+      row: /^    \["(?<manifest>[a-z0-9_]+)", "(?<connector>[a-z0-9-]+)"\],\n/gm,
+      single: true,
+    },
+  ],
+  [
+    CONSENT_AGGREGATE,
+    {
+      header: consentHeader,
+      row: consentRow,
+      single: true,
+      generated: "consent",
+    },
+  ],
+  [
+    GENERATED_ROOT + "static-secret-registry.generated.ts",
+    {
+      header:
+        /^export const GENERATED_STATIC_SECRET_REGISTRY: Readonly<\n\tRecord<string, GeneratedStaticSecretDescriptor>\n> = Object\.freeze\(\{\n/m,
+      row: /^\t(?<generatedKey>[a-z0-9_]+|"[a-z0-9-]+"): \{\n\t\tcredentialKind: "(?<kind>[a-z_]+)",\n\t\tsecretEnvVars: \[(?<env>"[A-Z][A-Z0-9_]*"(?:, "[A-Z][A-Z0-9_]*")*)\],\n\t\},\n/gm,
+      single: true,
+      generated: "secret",
+    },
+  ],
+]);
+const commitId = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
+const directoryKey = /^[a-z0-9]+(?:_[a-z0-9]+)*$/;
+const version = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+const line = z
+  .string()
+  .min(1)
+  .max(300)
+  .regex(/^[^\p{Cc}\p{Zl}\p{Zp}]+$/u);
+
+const evidenceText = z
+  .string()
+  .min(1)
+  .max(12_000)
+  .regex(/^[^\u0000-\u0008\u000b-\u001f\u007f-\u009f]*$/);
+const recordSchema = z.record(z.string(), z.json());
+const checkFields = {
+  name: line,
+  command: line.optional(),
+  output: evidenceText.optional(),
+};
+const checkSchema = z.discriminatedUnion("result", [
+  z.strictObject({
+    ...checkFields,
+    result: z.literal("passed"),
+    exitCode: z.literal(0).optional(),
+  }),
+  z.strictObject({
+    ...checkFields,
+    result: z.literal("failed"),
+    exitCode: z.number().int().min(1).max(255).optional(),
+  }),
+  z.strictObject({
+    ...checkFields,
+    result: z.literal("not run"),
+    exitCode: z.null().optional(),
+  }),
+]);
+const evidenceSchema = z.strictObject({
+  kind: z.literal("synthetic"),
+  commit: z.string().regex(commitId),
+  checkedAt: z.iso.datetime(),
+  environment: line.optional(),
+  checks: z.array(checkSchema).min(1).max(25),
+  sample: z
+    .strictObject({
+      source: z.json(),
+      before: recordSchema.nullable().optional(),
+      after: recordSchema,
+    })
+    .optional(),
+  storedData: evidenceText.optional(),
+});
+
+const manifestSchema = z.looseObject({
+  connector_key: z.string(),
+  version: z.string().regex(version),
+  streams: z.array(z.looseObject({ name: line })).min(1),
+});
+
+const indexSchema = z.strictObject({
+  version: z.literal(1),
+  connectors: z.array(
+    z.looseObject({
+      manifest: z.looseObject({ connector_key: z.string() }),
+    }),
+  ),
+});
+
+interface PrepOptions {
+  checkout: string;
+  base: string;
+  head: string;
+  summary: string;
+  evidence?: string;
+  confirm?: string;
+}
+
+class PrepError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function localGit(checkout: string) {
+  // A caller's Git environment must not redirect the explicit checkout.
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+  );
+  return (...args: string[]): string => {
+    const result = spawnSync(
+      "git",
+      [
+        "--no-pager",
+        "--no-optional-locks",
+        "--no-replace-objects",
+        "-C",
+        checkout,
+        ...args,
+      ],
+      {
+        env: { ...env, GIT_NO_LAZY_FETCH: "1" },
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 10_000,
+      },
+    );
+    if (result.status !== 0) {
+      throw new PrepError(
+        "local_git_failed",
+        "Git could not read the local checkout or requested revisions. Check the checkout, refs and diff size.",
+      );
+    }
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      result.stdout,
+    );
+  };
+}
+
+function consentSlicePath(key: string): string {
+  return GENERATED_ROOT + "consent-time-fields/" + key + ".generated.ts";
+}
+
+function registrationFile(file: string, key: string): boolean {
+  return (
+    registrations.has(file) ||
+    file === MANIFEST_COUNT_TEST ||
+    file === consentSlicePath(key)
+  );
+}
+
+function validGeneratedRow(
+  groups: Record<string, string>,
+  kind: "consent" | "secret",
+  key: string,
+  manifest: z.infer<typeof manifestSchema>,
+): boolean {
+  if (kind === "consent") {
+    if (groups.generatedKey !== key) return false;
+    const fields = groups.fields.trim().split("\n");
+    return (
+      isDeepStrictEqual(
+        fields
+          .map((line) => line.trim().split(": ")[0].replace(/^"|"$/g, ""))
+          .sort(),
+        manifest.streams.map((stream) => stream.name).sort(),
+      ) &&
+      fields.every((line) => {
+        const [name, value] = line.trim().split(": ");
+        if (value === "null,") return true;
+        const field = line.match(/field: "([^"]+)"/)?.[1];
+        return (
+          field ===
+          manifest.streams.find(
+            (stream) => stream.name === name.replace(/^"|"$/g, ""),
+          )?.consent_time_field
+        );
+      })
+    );
+  }
+  const connectorKey = groups.generatedKey.replace(/^"|"$/g, "");
+  if (connectorKey !== manifest.connector_key) return false;
+  const capture = z
+    .looseObject({
+      setup: z.looseObject({
+        credential_capture: z.looseObject({
+          kind: z.string(),
+          fields: z.array(
+            z.looseObject({
+              secret: z.boolean().optional(),
+              env: z.array(z.string()).optional(),
+            }),
+          ),
+        }),
+      }),
+    })
+    .safeParse(manifest);
+  if (!capture.success) return false;
+  const credential = capture.data.setup.credential_capture;
+  return (
+    groups.kind === credential.kind &&
+    isDeepStrictEqual(
+      (JSON.parse("[" + groups.env + "]") as string[]).sort(),
+      [
+        ...new Set(
+          credential.fields
+            .filter((field) => field.secret)
+            .flatMap((field) => field.env ?? []),
+        ),
+      ].sort(),
+    )
+  );
+}
+
+function validConsentSlice(
+  git: ReturnType<typeof localGit>,
+  key: string,
+  manifest: z.infer<typeof manifestSchema>,
+  base: string,
+  head: string,
+): boolean {
+  const file = consentSlicePath(key);
+  if (git("ls-tree", base, "--", file)) return false;
+  const aggregate = git("show", head + ":" + CONSENT_AGGREGATE);
+  const rows = [...aggregate.matchAll(consentRow)].filter(
+    ({ groups }) =>
+      groups && validGeneratedRow(groups, "consent", key, manifest),
+  );
+  if (rows.length !== 1) return false;
+  const table = consentHeader.exec(aggregate)?.[0];
+  if (!table) return false;
+  const module = git("show", head + ":" + file);
+  const expected =
+    'import type { ConsentTimeField } from "../../time-range.ts";\n\n' +
+    'export const CONSENT_BOUND_CONNECTOR: string | null = "' +
+    key +
+    '";\n\n' +
+    table +
+    rows[0][0] +
+    "};\n";
+  return (
+    module.endsWith(expected) &&
+    /^(?:(?:\/\/[^\r\n\u2028\u2029]*)?\n)*$/.test(
+      module.slice(0, -expected.length),
+    )
+  );
+}
+
+function validNewConnectorRegistration(
+  git: ReturnType<typeof localGit>,
+  file: string,
+  key: string,
+  manifest: z.infer<typeof manifestSchema>,
+  base: string,
+  head: string,
+): boolean {
+  if (file === consentSlicePath(key)) {
+    return validConsentSlice(git, key, manifest, base, head);
+  }
+  const baseMode = git("ls-tree", base, "--", file).slice(0, 6);
+  if (!baseMode || baseMode !== git("ls-tree", head, "--", file).slice(0, 6)) {
+    return false;
+  }
+
+  const before = git("show", base + ":" + file);
+  const after = git("show", head + ":" + file);
+  if (file === MANIFEST_COUNT_TEST) {
+    const countLine = /^\tassert\.equal\(names\.length, (\d+)\);$/m;
+    const match = before.match(countLine);
+    return (
+      !!match &&
+      before.replace(
+        countLine,
+        "\tassert.equal(names.length, " + (Number(match[1]) + 1) + ");",
+      ) === after
+    );
+  }
+  const rule = registrations.get(file);
+  if (!rule) return false;
+  const declaration = rule.header.exec(before);
+  if (!declaration) return false;
+
+  // Both files are executable TypeScript. Permit only data rows inserted
+  // directly after the named declaration, and preserve every other byte.
+  const start = declaration.index + declaration[0].length;
+  const generated = rule.generated;
+  if (generated) {
+    return [...after.matchAll(rule.row)].some(
+      (row) =>
+        row.index >= start &&
+        row.groups &&
+        validGeneratedRow(row.groups, generated, key, manifest) &&
+        after.slice(0, row.index) + after.slice(row.index + row[0].length) ===
+          before,
+    );
+  }
+  const suffix = before.slice(start);
+  if (
+    after.length <= before.length ||
+    after.slice(0, start) !== before.slice(0, start) ||
+    !after.endsWith(suffix)
+  ) {
+    return false;
+  }
+  const inserted = after.slice(start, after.length - suffix.length);
+  const rows = [...inserted.matchAll(rule.row)];
+  if (
+    rows.map((row) => row[0]).join("") !== inserted ||
+    (rule.single && rows.length !== 1)
+  ) {
+    return false;
+  }
+  const unregisteredStreams = new Set(
+    manifest.streams
+      .filter((stream) => stream.required === true)
+      .map((stream) => key + "." + stream.name),
+  );
+  return rows.every(({ groups }) => {
+    if (groups?.manifest) {
+      return (
+        groups.manifest === key && groups.connector === key.replaceAll("_", "-")
+      );
+    }
+    if (groups?.stream) return unregisteredStreams.delete(groups.stream);
+    const path = groups?.path;
+    if (!path?.startsWith("connectors/" + key + "/")) return false;
+    if (
+      !/^[a-zA-Z0-9_./-]+$/.test(path) ||
+      path.split("/").some((part) => !part || part === "." || part === "..")
+    ) {
+      return false;
+    }
+    if (
+      rule.single &&
+      (groups?.key !== key || !/\.test\.[cm]?[jt]s$/.test(path))
+    ) {
+      return false;
+    }
+    return /^100(?:644|755) blob [a-f0-9]+\t/.test(
+      git("ls-tree", head, "--", path),
+    );
+  });
+}
+
+function codeBlock(value: string, language: string) {
+  const fence = "`".repeat(
+    Math.max(3, ...(value.match(/`+/g) ?? []).map((run) => run.length + 1)),
+  );
+  return [fence + language, value, fence].join("\n");
+}
+
+function prepare(key: string, options: PrepOptions) {
+  if (!directoryKey.test(key) || !line.safeParse(options.summary).success) {
+    throw new PrepError(
+      "invalid_input",
+      "Use the connector's snake_case directory name and a one-line change summary.",
+    );
+  }
+  const checkout = realpathSync(options.checkout);
+  const git = localGit(checkout);
+  if (
+    realpathSync(git("rev-parse", "--show-toplevel").trimEnd()) !== checkout
+  ) {
+    throw new PrepError(
+      "invalid_checkout",
+      "Pass the root of the PDP-Connect checkout.",
+    );
+  }
+  const resolveCommit = (ref: string) =>
+    git("rev-parse", "--verify", "--end-of-options", ref + "^{commit}").trim();
+  const base = resolveCommit(options.base);
+  const head = resolveCommit(options.head);
+  if (git("merge-base", base, head).trim() !== base) {
+    throw new PrepError(
+      "base_not_ancestor",
+      "Rebase the selected commit onto the intended PDP-Connect base before preparing the diff.",
+    );
+  }
+
+  const prefix = "connectors/" + key + "/";
+  const comparison = [
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-renames",
+    "--no-relative",
+    base,
+    head,
+    "--",
+  ];
+  const changed = git("diff", "--name-only", "-z", ...comparison)
+    .split("\0")
+    .filter(Boolean);
+  if (
+    !changed.some((file) => file.startsWith(prefix)) ||
+    changed.some(
+      (file) =>
+        (file !== INDEX_PATH &&
+          !file.startsWith(prefix) &&
+          !registrationFile(file, key)) ||
+        /\p{Cc}/u.test(file),
+    )
+  ) {
+    throw new PrepError(
+      "connector_diff_required",
+      "Select a commit range changing only the chosen connector, generated index entry and allowed registration rows.",
+    );
+  }
+  // Raw modes expose symlinks and Git links, including deletions. Neither
+  // belongs in this review format.
+  const raw = git("diff", "--raw", "-z", ...comparison).split("\0");
+  if (
+    raw.some(
+      (entry, index) =>
+        index % 2 === 0 &&
+        entry &&
+        !/^:(?:000000|100644|100755) (?:000000|100644|100755) /.test(entry),
+    )
+  ) {
+    throw new PrepError(
+      "non_regular_file",
+      "The connector diff must contain only regular files.",
+    );
+  }
+  if (
+    git("diff", "--numstat", "-z", ...comparison)
+      .split("\0")
+      .some((entry) => entry.startsWith("-\t"))
+  ) {
+    throw new PrepError(
+      "binary_diff",
+      "The connector diff must contain only text files.",
+    );
+  }
+  const manifestPath = prefix + "manifest.json";
+  const current = manifestSchema.parse(
+    JSON.parse(git("show", head + ":" + manifestPath)),
+  );
+  const previous = git("ls-tree", base, "--", manifestPath)
+    ? manifestSchema.parse(JSON.parse(git("show", base + ":" + manifestPath)))
+    : null;
+  if (
+    current.connector_key !== key.replaceAll("_", "-") ||
+    (previous && previous.connector_key !== current.connector_key)
+  ) {
+    throw new PrepError(
+      "connector_key_mismatch",
+      "Keep the manifest connector key consistent with the directory and the base manifest.",
+    );
+  }
+  if (previous && !isNewerVersion(previous.version, current.version)) {
+    throw new PrepError(
+      "version_bump_required",
+      "Increase the connector manifest version before preparing this update.",
+    );
+  }
+
+  for (const file of changed.filter((path) => registrationFile(path, key))) {
+    if (
+      previous ||
+      !validNewConnectorRegistration(git, file, key, current, base, head)
+    ) {
+      throw new PrepError(
+        "invalid_connector_registration",
+        "Only add registration rows for the selected new connector in " +
+          file +
+          ".",
+      );
+    }
+  }
+
+  const beforeIndex = indexSchema.parse(
+    JSON.parse(git("show", base + ":" + INDEX_PATH)),
+  );
+  const afterIndex = indexSchema.parse(
+    JSON.parse(git("show", head + ":" + INDEX_PATH)),
+  );
+  const isSelected = (
+    entry: z.infer<typeof indexSchema>["connectors"][number],
+  ) => entry.manifest.connector_key === current.connector_key;
+  if (!previous && beforeIndex.connectors.some(isSelected)) {
+    throw new PrepError(
+      "connector_key_conflict",
+      "The upstream index already declares this connector key. Resolve the identity before submitting a new connector.",
+    );
+  }
+  if (!git("ls-tree", head, "--", prefix + "index.ts")) {
+    throw new PrepError(
+      "connector_entry_missing",
+      "Commit the connector index.ts entry before preparing its PR.",
+    );
+  }
+  const selected = afterIndex.connectors.filter(isSelected);
+  if (
+    selected.length !== 1 ||
+    selected[0].entry !== "./" + prefix + "index.ts" ||
+    !isDeepStrictEqual(selected[0].manifest, current)
+  ) {
+    throw new PrepError(
+      "stale_connector_index",
+      "Regenerate the PDP-Connect implementation index so its entry matches the selected manifest.",
+    );
+  }
+  if (
+    !isDeepStrictEqual(
+      beforeIndex.connectors.filter((entry) => !isSelected(entry)),
+      afterIndex.connectors.filter((entry) => !isSelected(entry)),
+    )
+  ) {
+    throw new PrepError(
+      "unrelated_index_change",
+      "Keep other connectors' implementation index entries unchanged.",
+    );
+  }
+
+  const evidence = options.evidence
+    ? evidenceSchema.safeParse(
+        JSON.parse(readFileSync(options.evidence, "utf8")),
+      )
+    : undefined;
+  if (evidence && !evidence.success) {
+    throw new PrepError(
+      "invalid_evidence",
+      "Supply reviewed synthetic evidence. Check the schema in vana skills show create-connector --json.",
+    );
+  }
+  const verification = evidence?.data ?? null;
+  if (verification && verification.commit !== head) {
+    throw new PrepError(
+      "stale_evidence",
+      "The evidence names a different commit. Check the selected revision and prepare a fresh summary.",
+    );
+  }
+  const reviewGaps = [
+    ...(verification?.environment ? [] : ["Missing the test environment."]),
+    ...(verification?.checks.flatMap((check) =>
+      check.command && check.output && check.exitCode !== undefined
+        ? []
+        : ["Missing command, exit status or output for " + check.name + "."],
+    ) ?? []),
+    ...(verification?.sample
+      ? []
+      : ["Missing a reviewed synthetic source item and output record."]),
+    ...(previous && verification?.sample?.before === undefined
+      ? ["Missing the previous output record, or null if none was emitted."]
+      : []),
+    ...(verification?.storedData
+      ? []
+      : ["Missing the effect on existing records, IDs and cursors."]),
+  ];
+  const evidenceGaps = [
+    ...(verification ? [] : ["No verification summary supplied."]),
+    ...reviewGaps,
+    ...(verification?.checks
+      .filter((check) => check.result !== "passed")
+      .map((check) => check.name + ": " + check.result) ?? []),
+    "Live provider behavior and Vana app availability remain unverified.",
+  ];
+  const prBody = [
+    "## What this does",
+    "",
+    options.summary,
+    "",
+    "Connector: " +
+      current.connector_key +
+      " " +
+      (previous ? previous.version + " → " : "") +
+      current.version,
+    "Change: " + (previous ? "Connector update" : "New connector"),
+    "Streams: " + current.streams.map((stream) => stream.name).join(", "),
+    "",
+    "## How it was verified",
+    "",
+    ...(verification
+      ? [
+          "Reported synthetic checks at " +
+            verification.checkedAt +
+            " on " +
+            head +
+            ".",
+          "",
+          ...(verification.environment
+            ? ["Environment: " + verification.environment, ""]
+            : []),
+          ...verification.checks.flatMap((check) => [
+            "- " + check.name + " — " + check.result,
+            ...(check.command ? ["", codeBlock(check.command, "sh")] : []),
+            ...(check.exitCode !== undefined
+              ? [
+                  "",
+                  "Exit status: " +
+                    (check.exitCode === null ? "not run" : check.exitCode),
+                ]
+              : []),
+            ...(check.output ? ["", codeBlock(check.output, "text")] : []),
+            "",
+          ]),
+          "",
+        ]
+      : []),
+    ...evidenceGaps.map((gap) => "- " + gap),
+    "",
+    ...(verification?.sample
+      ? [
+          "## Synthetic source item and output",
+          "",
+          "Source item",
+          "",
+          codeBlock(
+            JSON.stringify(verification.sample.source, null, 2),
+            "json",
+          ),
+          "",
+          ...(previous && verification.sample.before !== undefined
+            ? [
+                "Previous output, with null meaning no record was emitted",
+                "",
+                codeBlock(
+                  JSON.stringify(verification.sample.before, null, 2),
+                  "json",
+                ),
+                "",
+              ]
+            : []),
+          "Output at the submitted commit",
+          "",
+          codeBlock(JSON.stringify(verification.sample.after, null, 2), "json"),
+          "",
+        ]
+      : []),
+    ...(verification?.storedData
+      ? ["## Existing data", "", verification.storedData, ""]
+      : []),
+    "Assisted-by: AI",
+    "",
+  ].join("\n");
+
+  if (Buffer.byteLength(prBody, "utf8") > 60_000) {
+    throw new PrepError(
+      "review_evidence_too_large",
+      "Keep the reviewed PR description and evidence within 60,000 UTF-8 bytes.",
+    );
+  }
+
+  return {
+    change: previous ? ("update" as const) : ("new" as const),
+    target: connectorPrTarget,
+    baseBranch: "main",
+    base,
+    head,
+    connector: current.connector_key,
+    version: current.version,
+    previousVersion: previous?.version ?? null,
+    streams: current.streams.map((stream) => stream.name),
+    files: changed,
+    verification,
+    evidenceGaps,
+    reviewGaps,
+    prBody,
+    diff: git(
+      "diff",
+      "--no-color",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
+      "--unified=3",
+      ...comparison,
+    ),
+  };
+}
+
+function prepareSubmission(
+  options: PrepOptions,
+  preview: ReturnType<typeof prepare>,
+) {
+  const git = localGit(options.checkout);
+  const commit = git("cat-file", "commit", preview.head);
+  const headers = commit.slice(0, commit.indexOf("\n\n"));
+  const parents = headers
+    .split("\n")
+    .filter((entry) => entry.startsWith("parent "));
+  if (
+    preview.head.length !== 40 ||
+    parents.length !== 1 ||
+    parents[0] !== "parent " + preview.base
+  ) {
+    throw new PrepError(
+      "single_connector_commit_required",
+      "Submit one commit adding or updating a connector, directly on the reviewed PDP-Connect main revision.",
+    );
+  }
+  if (
+    !git(
+      "show",
+      "-s",
+      "--format=%(trailers:key=Signed-off-by,valueonly)",
+      preview.head,
+    ).trim()
+  ) {
+    throw new PrepError(
+      "signoff_required",
+      "PDP-Connect requires a Signed-off-by trailer. Sign off the commit and refresh its evidence.",
+    );
+  }
+  if (!preview.verification) {
+    throw new PrepError(
+      "evidence_required",
+      "Supply a reviewed synthetic verification summary before submitting.",
+    );
+  }
+  if (preview.reviewGaps.length) {
+    throw new PrepError(
+      "review_evidence_required",
+      preview.reviewGaps.join(" ") +
+        " Read vana skills show create-connector --json.",
+    );
+  }
+  const submission = submitConnectorPr(
+    {
+      ...preview,
+      title: options.summary,
+      objects: git(
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "objects",
+      ).trimEnd(),
+    },
+    options.confirm,
+  );
+  return submission.kind === "confirmation_required"
+    ? { ...submission, ...preview, title: options.summary, commit }
+    : submission;
+}
+
+function terminalText(value: string): string {
+  return value.replace(
+    /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g,
+    (char) => "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0"),
+  );
+}
+
+function printPreview(preview: ReturnType<typeof prepare>) {
+  process.stdout.write(
+    terminalText(
+      "Target: " +
+        preview.target +
+        " (" +
+        preview.baseBranch +
+        ")\n" +
+        "Base: " +
+        preview.base +
+        "\n" +
+        "Head: " +
+        preview.head +
+        "\n" +
+        "Files:\n" +
+        preview.files.map((file) => "  " + file).join("\n") +
+        "\n\nDraft PR body\n\n" +
+        preview.prBody +
+        "\nReview this diff and evidence before sharing.\n\n" +
+        preview.diff,
+    ),
+  );
+}
+
+function printSubmission(submission: ReturnType<typeof prepareSubmission>) {
+  if (submission.kind === "pull_request") {
+    const state =
+      submission.draft && submission.state === "open"
+        ? "draft"
+        : submission.state;
+    process.stdout.write(
+      (submission.reused ? "Existing GitHub PR (" : "GitHub PR (") +
+        state +
+        "): " +
+        submission.url +
+        "\n" +
+        (submission.draft && submission.state === "open"
+          ? "When ready, mark the draft ready for review on GitHub.\n"
+          : "Follow the review and respond to requests on GitHub.\n"),
+    );
+    return;
+  }
+  process.stdout.write(
+    terminalText(
+      "Public GitHub submission preview\n" +
+        "GitHub account: @" +
+        submission.login +
+        "\n" +
+        "Fork: " +
+        submission.fork +
+        " (" +
+        submission.branch +
+        ")\n" +
+        "Draft PR title: " +
+        submission.title +
+        "\n\n" +
+        "Commit metadata and message\n\n" +
+        submission.commit +
+        "\n",
+    ),
+  );
+  printPreview(submission);
+  process.stdout.write(
+    "\nTo publish this commit to your fork and open a draft PR, rerun with --confirm " +
+      submission.confirmation +
+      "\n",
+  );
+}
+
+function registerCommand(
+  parent: Command,
+  getOptions: () => { json?: boolean },
+  submit: boolean,
+) {
+  const command = parent
+    .command(submit ? "submit-pr <directory>" : "prepare-pr <directory>")
+    .description(
+      submit
+        ? "Review and explicitly submit a new connector or update as a GitHub draft PR"
+        : "Preview a committed PDP-Connect connector diff and draft PR body locally",
+    )
+    .requiredOption(
+      "--checkout <directory>",
+      "Local data-connectors checkout root",
+    )
+    .requiredOption(
+      "--base <commit>",
+      "Local revision of the intended upstream main base",
+    )
+    .option("--head <commit>", "Connector revision to review", "HEAD")
+    .requiredOption("--summary <text>", "One-line description for the draft PR")
+    .option(
+      "--evidence <file>",
+      "Reviewed synthetic checks, commands, output, sample records and stored-data effects",
+    )
+    .addHelpText(
+      "after",
+      submit
+        ? "\nUses GitHub CLI sign-in and an existing public fork. Run without --confirm to review.\n"
+        : "\nUses committed files only. Review the diff and evidence before sharing them.\n",
+    )
+    .addHelpText(
+      "after",
+      "\nEvidence schema and submission steps: vana skills show create-connector --json\n",
+    );
+  if (submit)
+    command.option(
+      "--confirm <digest>",
+      "Confirm the exact GitHub submission preview",
+    );
+  command.action((key: string, options: PrepOptions) => {
+    const json = getOptions().json;
+    try {
+      const preview = prepare(key, options);
+      const submission = submit
+        ? prepareSubmission(options, preview)
+        : undefined;
+      if (json) {
+        process.stdout.write(JSON.stringify(submission ?? preview) + "\n");
+      } else if (submission) {
+        printSubmission(submission);
+      } else {
+        process.stdout.write("Local connector PR preview\n");
+        printPreview(preview);
+      }
+      process.exitCode =
+        submission?.kind === "confirmation_required"
+          ? CliExitCode.CONFIRMATION_REQUIRED
+          : CliExitCode.OK;
+    } catch (error) {
+      const failure =
+        error instanceof PrepError || error instanceof SubmitError
+          ? error
+          : new PrepError(
+              submit ? "invalid_submission" : "invalid_local_input",
+              submit
+                ? "Could not read the local submission or GitHub response. Check the checkout and retry the same submission."
+                : "Check the checkout path, committed manifest, and reviewed evidence JSON.",
+            );
+      if (json) {
+        process.stdout.write(
+          JSON.stringify({
+            error: { code: failure.code, message: failure.message },
+          }) + "\n",
+        );
+      } else {
+        process.stderr.write(failure.message + "\n");
+      }
+      process.exitCode =
+        failure instanceof SubmitError ? failure.exitCode : CliExitCode.FAILURE;
+    }
+  });
+}
+
+/** Register the local preview and public submission commands. */
+export function registerConnectorPrCommands(
+  parent: Command,
+  getOptions: () => { json?: boolean },
+): void {
+  registerCommand(parent, getOptions, false);
+  registerCommand(parent, getOptions, true);
+}

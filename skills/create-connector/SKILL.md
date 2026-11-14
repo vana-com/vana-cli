@@ -119,3 +119,78 @@ MCP; one-off acceptance needs only `--from`. Remove an unwanted override with
 `vana connectors remove <key>`. App consent, reading and delivery belong to
 the Builder workflow. Native availability, signed release and publication are
 separate work, not a side effect of a local test.
+
+## Submit a connector for review
+
+When the builder explicitly asks to submit a new connector or an improvement,
+run the upstream checks, then prepare its public handoff. These commands read
+reported evidence. They do not execute the test commands in the evidence file.
+
+1. Keep one signed-off commit directly on the reviewed upstream main revision.
+   Change the selected connector and its generated implementation-index entry.
+   For a new connector, put its required conformance roster, sequential-await
+   coverage-gap and publication inventory entries first in their upstream\n declarations.
+   Regenerate the consent and credential tables and update the manifest count
+   by one. Keep the other rows intact. New connectors need a unique key, manifest and
+   `index.ts`. Updates need a higher manifest version.
+2. Save reviewed synthetic evidence outside the connector commit using the
+   example below. Replace the commit, date, commands, results, source and
+   record with observed values. This content becomes public with the PR.
+3. Run `vana connectors prepare-pr <directory> --checkout /path/to/data-connectors --base <upstream-main-commit> --head <connector-commit> --summary "<change and reason>" --evidence /path/to/reviewed-evidence.json --json`.
+   Review the full committed diff and PR description. Older evidence summaries
+   remain previewable, with missing review evidence listed.
+4. Sign in with `gh auth login --hostname github.com` if needed. The builder
+   needs a writable public fork of `PDP-Connect/data-connectors`. A GitHub data
+   connection does not select the account used to submit code.
+5. Replace `prepare-pr` with `submit-pr` using the same arguments. It shows the
+   GitHub account, public destination, exact commit, diff and evidence, then
+   exits with code 7 and a confirmation digest. Show the preview to the builder.
+   Global `--yes` does not approve publication.
+6. After explicit approval, rerun with `--confirm <digest>` to push the reviewed
+   commit and open a draft PR. Changed evidence or account needs a new review.
+   If interrupted, retry the same confirmed submission. It finds the existing
+   PR before any write and returns its URL.
+7. The builder marks the draft ready and responds to reviewers on GitHub.
+   Report submission, approval, merge, signing, publication and Vana app
+   availability only when each is actually verified.
+
+An example evidence file for a new connector follows.
+
+```json
+{
+  "kind": "synthetic",
+  "commit": "<full connector commit SHA>",
+  "checkedAt": "2026-11-11T00:00:00Z",
+  "environment": "Node 24.22.1, Linux, synthetic provider fixture",
+  "checks": [
+    {
+      "name": "Synthetic collection and schema test",
+      "result": "passed",
+      "command": "node --import tsx --test connectors/example/index.test.ts",
+      "exitCode": 0,
+      "output": "tests 1\npass 1\nfail 0"
+    }
+  ],
+  "sample": {
+    "source": { "id": "item-1", "title": "Example item" },
+    "after": { "id": "item-1", "title": "Example item" }
+  },
+  "storedData": "Initial upstream connector. Local test records are unchanged. IDs use the source item ID; the first collection starts without a cursor."
+}
+```
+
+For an update, add `sample.before` with the old output for the same input, or
+`null` if no record was emitted. Explain existing-record effects in `storedData`,
+including IDs, types, cursors and any required reimport. Keep secrets, personal
+records and raw private captures out of every field.
+
+Each check reports `passed`, `failed` or `not run`, its exact command, exit
+status and output. A passed check needs status 0. A failed check needs a nonzero
+status. A check not run uses `exitCode: null` and explains why in `output`.
+For upstream failures, include the base SHA, environment, command and result in
+the reviewed output. Keep failed and skipped checks visible. Synthetic evidence
+does not establish live provider behavior or app availability.
+
+Commands and the environment support 300 characters each. Outputs and the
+stored-data explanation support 12,000 characters each. The full description
+must fit within 60,000 UTF-8 bytes. Review output before sharing it.
