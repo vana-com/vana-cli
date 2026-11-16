@@ -41,15 +41,26 @@ function commit() {
   return git("rev-parse", "HEAD").trim();
 }
 
-function writeConnector(version: string, otherVersion = "1.0.0") {
+function writeConnector(
+  version: string,
+  otherVersion = "1.0.0",
+  metadata: {
+    stream?: Record<string, unknown>;
+    credentialEnv?: string;
+    reasonMessages?: Record<string, string>;
+  } = {},
+) {
   const manifest = {
     connector_key: "example",
     version,
-    streams: [{ name: "items", required: true }],
+    reason_display_messages: metadata.reasonMessages,
+    streams: [{ name: "items", required: true, ...metadata.stream }],
     setup: {
       credential_capture: {
         kind: "personal_access_token",
-        fields: [{ secret: true, env: ["SYNTHETIC_TOKEN"] }],
+        fields: [
+          { secret: true, env: [metadata.credentialEnv ?? "SYNTHETIC_TOKEN"] },
+        ],
       },
     },
   };
@@ -462,8 +473,12 @@ const publishFile = "scripts/connector-publish-allowlist.mjs";
 const publishHeader =
   "export const CONNECTOR_PUBLISH_INVENTORY = Object.freeze(\n  [\n";
 const coverageFile = "connectors/_conformance/coverage-conformance-drivers.ts";
+const driverHeader =
+  "export const CONNECTOR_DRIVERS: Record<string, ConnectorDriver> = {\n";
 const coverageHeader =
   "export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set([\n";
+const selectedCoverageGap =
+  '\t// Development collector fixture. Shared driver is pending.\n\t"example.items",\n';
 const rosterHeader =
   "export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {\n";
 const awaitListHeader =
@@ -504,10 +519,10 @@ function writeRegistrationFixture(added: boolean) {
   mkdirSync(path.dirname(coverage), { recursive: true });
   writeFileSync(
     coverage,
-    coverageHeader +
-      (added
-        ? '\t// Development collector fixture. Shared driver is pending.\n\t"example.items",\n'
-        : "") +
+    driverHeader +
+      '\tother: { coveredStreams: ["items"], run: driveOther },\n};\n' +
+      coverageHeader +
+      (added ? selectedCoverageGap : "") +
       '\t"other.items",\n]);\n',
   );
   const publish = path.join(checkout, publishFile);
@@ -551,7 +566,7 @@ function writeRegistrationFixture(added: boolean) {
   }
 }
 
-function makeNewConnector(baseHasKey = false) {
+function makeNewConnector(baseHasKey = false, registerDriver = false) {
   git("checkout", "--quiet", "--detach", base);
   rmSync(path.join(checkout, "connectors/example"), { recursive: true });
   const indexPath = path.join(checkout, "connector-implementation-index.json");
@@ -594,8 +609,115 @@ test("emits the synthetic record with its stable ID and decoded text", () => {
 `,
   );
   writeRegistrationFixture(true);
+  if (registerDriver) registerExampleDriver();
   head = commit();
 }
+
+function registerExampleDriver() {
+  writeFileSync(
+    path.join(checkout, "connectors/example/coverage-driver.ts"),
+    "export async function runCoverageDriver() { return { exercised: true, messages: [] }; }\n",
+  );
+  const file = path.join(checkout, coverageFile);
+  writeFileSync(
+    file,
+    readFileSync(file, "utf8")
+      .replace(
+        driverHeader,
+        driverHeader +
+          '\texample: {\n\t\tcoveredStreams: ["items"],\n\t\trun: async () =>\n\t\t\t(await import("../example/coverage-driver.ts")).runCoverageDriver(),\n\t},\n',
+      )
+      .replace(selectedCoverageGap, ""),
+  );
+}
+
+it("previews adding coverage for an existing connector and removing its exemption", async () => {
+  git("checkout", "--quiet", "--detach", base);
+  writeRegistrationFixture(true);
+  base = commit();
+  writeConnector("1.0.1");
+  registerExampleDriver();
+  head = commit();
+
+  const { code, result } = await preview(head);
+  expect(code).toBe(0);
+  expect(result.diff).toContain(
+    'await import("../example/coverage-driver.ts")',
+  );
+  expect(result.diff).toContain('-\t"example.items",');
+});
+
+it("previews regenerated metadata for an existing connector", async () => {
+  git("checkout", "--quiet", "--detach", base);
+  writeRegistrationFixture(true);
+  const libraryMetadata =
+    "packages/polyfill-connectors/src/manifest-library-metadata.json";
+  writeFileSync(path.join(checkout, libraryMetadata), "[]\n");
+  base = commit();
+  const reasonMessages = { example_auth_failed: "Reconnect your account." };
+  writeConnector("1.0.1", "1.0.0", {
+    credentialEnv: "EXAMPLE_TOKEN",
+    reasonMessages,
+    stream: {
+      consent_time_field: "created_at",
+      schema: {
+        properties: { created_at: { type: "string", format: "date-time" } },
+      },
+    },
+  });
+  writeFileSync(
+    path.join(checkout, libraryMetadata),
+    JSON.stringify([
+      {
+        file: "example.json",
+        manifest: {
+          connector_key: "example",
+          reason_display_messages: reasonMessages,
+        },
+      },
+    ]),
+  );
+  const timeRow = consentRow.replace(
+    "null",
+    '{ field: "created_at", format: "date-time" }',
+  );
+  const changes = [
+    [staticSecret, "SYNTHETIC_TOKEN", "EXAMPLE_TOKEN"],
+    [consentAggregate, consentRow, timeRow],
+    [consentSlice, consentRow, timeRow],
+  ];
+  for (const [name, before, after] of changes) {
+    const file = path.join(checkout, name);
+    writeFileSync(file, readFileSync(file, "utf8").replace(before, after));
+  }
+  head = commit();
+
+  const { code, result } = await preview(head);
+  expect(code).toBe(0);
+  expect(result.files).toEqual(
+    expect.arrayContaining([
+      staticSecret,
+      consentAggregate,
+      consentSlice,
+      libraryMetadata,
+    ]),
+  );
+});
+
+it.each([
+  ["../example/coverage-driver.ts", "../other/coverage-driver.ts"],
+  ['coveredStreams: ["items"]', 'coveredStreams: ["other_items"]'],
+  ["run: driveOther", "run: driveExample"],
+])("rejects a coverage change that alters %s", async (before, after) => {
+  makeNewConnector(false, true);
+  const file = path.join(checkout, coverageFile);
+  writeFileSync(file, readFileSync(file, "utf8").replace(before, after));
+  head = commit();
+
+  const { code, result } = await preview(head);
+  expect(code).toBe(1);
+  expect(result.error.code).toBe("invalid_connector_registration");
+});
 
 function captureNewConnectorEvidence() {
   const source = JSON.parse(
@@ -648,7 +770,7 @@ function captureNewConnectorEvidence() {
 withShellFixtures(
   "submits a new connector with review evidence and recovers it without writes",
   async () => {
-    makeNewConnector();
+    makeNewConnector(false, true);
     const evidence = captureNewConnectorEvidence();
     const fixture = githubFixture();
     const reviewed = await preview(head, "submit-pr", "--evidence", evidence);

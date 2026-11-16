@@ -13,10 +13,22 @@ import {
 import { isNewerVersion } from "./update-check.js";
 
 const INDEX_PATH = "connector-implementation-index.json";
+const LIBRARY_METADATA =
+  "packages/polyfill-connectors/src/manifest-library-metadata.json";
 const GENERATED_ROOT = "packages/polyfill-connectors/src/generated/";
 const CONSENT_AGGREGATE = GENERATED_ROOT + "consent-time-fields.generated.ts";
 const MANIFEST_COUNT_TEST =
   "packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts";
+const COVERAGE_DRIVERS =
+  "connectors/_conformance/coverage-conformance-drivers.ts";
+const coverageDriverHeader =
+  /^export const CONNECTOR_DRIVERS: Record<string, ConnectorDriver> = \{\n/m;
+const coverageDriverRow =
+  /^\t(?<key>[a-z0-9_]+): \{\s*coveredStreams: \[(?<streams>\s*"[a-zA-Z0-9_-]+"(?:\s*,\s*"[a-zA-Z0-9_-]+")*\s*,?\s*)\],\s*run: async \(\) =>\s*\(await import\(\s*"\.\.\/(?<directory>[a-z0-9_]+)\/coverage-driver\.ts"\s*,?\s*\)\)\.runCoverageDriver\(\),\s*\},\n/gm;
+const coverageGapHeader =
+  /^export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set\(\[\n/m;
+const coverageGapRow =
+  /^(?<comments>(?:\t\/\/ [^\r\n\u2028\u2029]+\n)*)\t"(?<key>[a-z0-9_-]+)\.(?<stream>[a-z0-9_]+)",\n/gm;
 const consentHeader =
   /^export const CONSENT_TIME_FIELDS: Readonly<\n\tRecord<string, Readonly<Record<string, ConsentTimeField \| null>>>\n> = \{\n/m;
 const consentRow =
@@ -45,15 +57,6 @@ const registrations = new Map<string, RegistrationRule>([
       header:
         /^export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry\[\] =\n\t\[\n/m,
       row: /^\t\t\{\n\t\t\tpath: "(?<path>[^"\\\r\n]+)",\n\t\t\tline: [1-9]\d*,\n\t\t\tcolumn: [1-9]\d*,\n\t\t\tcategory: "[a-z_]+",\n\t\t\tnote: "[^"\\\r\n]+",\n\t\t\},\n/gm,
-      single: false,
-    },
-  ],
-  [
-    "connectors/_conformance/coverage-conformance-drivers.ts",
-    {
-      header:
-        /^export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set\(\[\n/m,
-      row: /^\t\/\/ [^\r\n\u2028\u2029]+\n\t"(?<stream>[a-z0-9_-]+\.[a-z0-9_]+)",\n/gm,
       single: false,
     },
   ],
@@ -153,6 +156,7 @@ const indexSchema = z.strictObject({
     }),
   ),
 });
+const libraryMetadataSchema = z.array(z.looseObject({ file: z.string() }));
 
 interface PrepOptions {
   checkout: string;
@@ -213,6 +217,8 @@ function consentSlicePath(key: string): string {
 function registrationFile(file: string, key: string): boolean {
   return (
     registrations.has(file) ||
+    file === COVERAGE_DRIVERS ||
+    file === LIBRARY_METADATA ||
     file === MANIFEST_COUNT_TEST ||
     file === consentSlicePath(key)
   );
@@ -285,11 +291,9 @@ function validConsentSlice(
   git: ReturnType<typeof localGit>,
   key: string,
   manifest: z.infer<typeof manifestSchema>,
-  base: string,
   head: string,
 ): boolean {
   const file = consentSlicePath(key);
-  if (git("ls-tree", base, "--", file)) return false;
   const aggregate = git("show", head + ":" + CONSENT_AGGREGATE);
   const rows = [...aggregate.matchAll(consentRow)].filter(
     ({ groups }) =>
@@ -315,16 +319,106 @@ function validConsentSlice(
   );
 }
 
-function validNewConnectorRegistration(
+function extractRegistrationRows(
+  source: string,
+  header: RegExp,
+  end: RegExp,
+  row: RegExp,
+  ownsRow: (groups: Record<string, string>) => boolean,
+) {
+  const declaration = header.exec(source);
+  if (!declaration) return { rest: source, rows: [] };
+  const start = declaration.index + declaration[0].length;
+  const body = source.slice(start);
+  const close = end.exec(body);
+  if (!close) return { rest: source, rows: [] };
+  const rows: Record<string, string>[] = [];
+  let rest = source.slice(0, start);
+  let offset = 0;
+  for (const match of body.slice(0, close.index).matchAll(row)) {
+    if (!match.groups || !ownsRow(match.groups)) continue;
+    rows.push(match.groups);
+    rest += body.slice(offset, match.index);
+    offset = match.index + match[0].length;
+  }
+  return {
+    rest: rest + body.slice(offset),
+    rows,
+  };
+}
+
+function coverageRegistration(source: string, key: string) {
+  const ownsRow = (groups: Record<string, string>) => groups.key === key;
+  const drivers = extractRegistrationRows(
+    source,
+    coverageDriverHeader,
+    /^};$/m,
+    coverageDriverRow,
+    ownsRow,
+  );
+  const gaps = extractRegistrationRows(
+    drivers.rest,
+    coverageGapHeader,
+    /^\]\);$/m,
+    coverageGapRow,
+    ownsRow,
+  );
+  return { rest: gaps.rest, drivers: drivers.rows, gaps: gaps.rows };
+}
+
+function validCoverageRegistration(
+  git: ReturnType<typeof localGit>,
+  key: string,
+  manifest: z.infer<typeof manifestSchema>,
+  before: string,
+  after: string,
+  head: string,
+) {
+  const original = coverageRegistration(before, key);
+  const updated = coverageRegistration(after, key);
+  if (original.rest !== updated.rest || updated.drivers.length > 1)
+    return false;
+
+  const required = new Set(
+    manifest.streams
+      .filter((stream) => stream.required === true)
+      .map((stream) => stream.name),
+  );
+  const priorGaps = new Set(original.gaps.map(({ stream }) => stream));
+  if (
+    !updated.gaps.every(
+      ({ comments, stream }) =>
+        required.delete(stream) && (comments || priorGaps.has(stream)),
+    )
+  ) {
+    return false;
+  }
+
+  return updated.drivers.every(({ directory, streams }) => {
+    if (directory !== key) return false;
+    const names = new Set(manifest.streams.map((stream) => stream.name));
+    return (
+      [...streams.matchAll(/"([^"]+)"/g)].every(([, name]) =>
+        names.delete(name),
+      ) &&
+      /^100(?:644|755) blob [a-f0-9]+\t/.test(
+        git("ls-tree", head, "--", "connectors/" + key + "/coverage-driver.ts"),
+      )
+    );
+  });
+}
+
+function validConnectorRegistration(
   git: ReturnType<typeof localGit>,
   file: string,
   key: string,
   manifest: z.infer<typeof manifestSchema>,
   base: string,
   head: string,
+  isNew: boolean,
 ): boolean {
   if (file === consentSlicePath(key)) {
-    return validConsentSlice(git, key, manifest, base, head);
+    return validConsentSlice(git, key, manifest, head);
   }
   const baseMode = git("ls-tree", base, "--", file).slice(0, 6);
   if (!baseMode || baseMode !== git("ls-tree", head, "--", file).slice(0, 6)) {
@@ -333,10 +427,43 @@ function validNewConnectorRegistration(
 
   const before = git("show", base + ":" + file);
   const after = git("show", head + ":" + file);
+  if (file === LIBRARY_METADATA) {
+    const original = libraryMetadataSchema.parse(JSON.parse(before));
+    const updated = libraryMetadataSchema.parse(JSON.parse(after));
+    const file = key + ".json";
+    const selected = (row: { file: string }) => row.file === file;
+    const { options_schema, reason_display_messages } = manifest;
+    const expected =
+      options_schema === undefined && reason_display_messages === undefined
+        ? []
+        : [
+            {
+              file,
+              manifest: {
+                connector_key: manifest.connector_key,
+                ...(options_schema === undefined ? {} : { options_schema }),
+                ...(reason_display_messages === undefined
+                  ? {}
+                  : { reason_display_messages }),
+              },
+            },
+          ];
+    return (
+      isDeepStrictEqual(updated.filter(selected), expected) &&
+      isDeepStrictEqual(
+        original.filter((row) => !selected(row)),
+        updated.filter((row) => !selected(row)),
+      )
+    );
+  }
+  if (file === COVERAGE_DRIVERS) {
+    return validCoverageRegistration(git, key, manifest, before, after, head);
+  }
   if (file === MANIFEST_COUNT_TEST) {
     const countLine = /^\tassert\.equal\(names\.length, (\d+)\);$/m;
     const match = before.match(countLine);
     return (
+      isNew &&
       !!match &&
       before.replace(
         countLine,
@@ -346,23 +473,33 @@ function validNewConnectorRegistration(
   }
   const rule = registrations.get(file);
   if (!rule) return false;
+  const generated = rule.generated;
+  if (generated) {
+    const selectedKey = generated === "consent" ? key : manifest.connector_key;
+    const extract = (source: string) =>
+      extractRegistrationRows(
+        source,
+        rule.header,
+        /^}\)?;$/m,
+        rule.row,
+        (groups) => groups.generatedKey.replace(/^"|"$/g, "") === selectedKey,
+      );
+    const original = extract(before);
+    const updated = extract(after);
+    return (
+      original.rest === updated.rest &&
+      updated.rows.length === 1 &&
+      validGeneratedRow(updated.rows[0], generated, key, manifest)
+    );
+  }
+  if (!isNew) return false;
+
   const declaration = rule.header.exec(before);
   if (!declaration) return false;
 
   // Both files are executable TypeScript. Permit only data rows inserted
   // directly after the named declaration, and preserve every other byte.
   const start = declaration.index + declaration[0].length;
-  const generated = rule.generated;
-  if (generated) {
-    return [...after.matchAll(rule.row)].some(
-      (row) =>
-        row.index >= start &&
-        row.groups &&
-        validGeneratedRow(row.groups, generated, key, manifest) &&
-        after.slice(0, row.index) + after.slice(row.index + row[0].length) ===
-          before,
-    );
-  }
   const suffix = before.slice(start);
   if (
     after.length <= before.length ||
@@ -379,18 +516,12 @@ function validNewConnectorRegistration(
   ) {
     return false;
   }
-  const unregisteredStreams = new Set(
-    manifest.streams
-      .filter((stream) => stream.required === true)
-      .map((stream) => key + "." + stream.name),
-  );
   return rows.every(({ groups }) => {
     if (groups?.manifest) {
       return (
         groups.manifest === key && groups.connector === key.replaceAll("_", "-")
       );
     }
-    if (groups?.stream) return unregisteredStreams.delete(groups.stream);
     const path = groups?.path;
     if (!path?.startsWith("connectors/" + key + "/")) return false;
     if (
@@ -525,12 +656,19 @@ function prepare(key: string, options: PrepOptions) {
 
   for (const file of changed.filter((path) => registrationFile(path, key))) {
     if (
-      previous ||
-      !validNewConnectorRegistration(git, file, key, current, base, head)
+      !validConnectorRegistration(
+        git,
+        file,
+        key,
+        current,
+        base,
+        head,
+        !previous,
+      )
     ) {
       throw new PrepError(
         "invalid_connector_registration",
-        "Only add registration rows for the selected new connector in " +
+        "Only change allowed registration rows for the selected connector in " +
           file +
           ".",
       );

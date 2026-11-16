@@ -123,16 +123,24 @@ separate work, not a side effect of a local test.
 ## Submit a connector for review
 
 When the builder explicitly asks to submit a new connector or an improvement,
-run the upstream checks, then prepare its public handoff. These commands read
-reported evidence. They do not execute the test commands in the evidence file.
+run the relevant checks from the upstream checkout's authoring guide, including
+its conformance report. Record the results and open findings for the final
+commit. The submission commands read the evidence file without executing its
+commands.
 
 1. Keep one signed-off commit directly on the reviewed upstream main revision.
    Change the selected connector and its generated implementation-index entry.
    For a new connector, put its required conformance roster, sequential-await
-   coverage-gap and publication inventory entries first in their upstream\n declarations.
-   Regenerate the consent and credential tables and update the manifest count
-   by one. Keep the other rows intact. New connectors need a unique key, manifest and
-   `index.ts`. Updates need a higher manifest version.
+   and publication inventory entries first in their upstream declarations.
+   Update the manifest count by one. New connectors need a unique key,
+   manifest and `index.ts`. Updates need a higher manifest version.
+   Regenerate the affected consent, credential, and package manifest metadata
+   rows. Keep the other entries intact.
+   For a shared coverage test, put the fixture driver in
+   `connectors/<directory>/coverage-driver.ts` and export `runCoverageDriver`.
+   Add the connector's entry to `CONNECTOR_DRIVERS` with its tested streams
+   and `run: async () => (await import("../<directory>/coverage-driver.ts")).runCoverageDriver()`.
+   Remove any existing coverage exemption that the driver replaces.
 2. Save reviewed synthetic evidence outside the connector commit using the
    example below. Replace the commit, date, commands, results, source and
    record with observed values. This content becomes public with the PR.
@@ -150,7 +158,9 @@ reported evidence. They do not execute the test commands in the evidence file.
    commit and open a draft PR. Changed evidence or account needs a new review.
    If interrupted, retry the same confirmed submission. It finds the existing
    PR before any write and returns its URL.
-7. The builder marks the draft ready and responds to reviewers on GitHub.
+7. The builder marks the draft ready and sends review fixes to the existing
+   PR branch on GitHub. Submitting a new commit through `submit-pr` starts a
+   new PR.
    Report submission, approval, merge, signing, publication and Vana app
    availability only when each is actually verified.
 
