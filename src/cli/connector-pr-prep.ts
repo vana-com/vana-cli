@@ -583,6 +583,7 @@ function prepare(key: string, options: PrepOptions) {
     "--no-textconv",
     "--no-renames",
     "--no-relative",
+    "--ignore-submodules=none",
     base,
     head,
     "--",

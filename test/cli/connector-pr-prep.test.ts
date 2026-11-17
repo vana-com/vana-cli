@@ -226,6 +226,36 @@ it("rejects unrelated committed files rather than hiding them from the preview",
   expect(result).not.toHaveProperty("diff");
 });
 
+it.each(["unreviewed", "connectors/example/unreviewed"])(
+  "rejects a committed gitlink at %s even when Git hides submodule changes",
+  async (gitlink) => {
+    git("update-index", "--add", "--cacheinfo", "160000", base, gitlink);
+    git(
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "--quiet",
+      "--amend",
+      "--no-edit",
+      "--no-gpg-sign",
+    );
+    head = git("rev-parse", "HEAD").trim();
+    git("config", "diff.ignoreSubmodules", "all");
+
+    const { code, result } = await preview(head);
+
+    expect(code).toBe(1);
+    expect(result.error.code).toBe(
+      gitlink.startsWith("connectors/")
+        ? "non_regular_file"
+        : "connector_diff_required",
+    );
+    expect(result).not.toHaveProperty("diff");
+  },
+);
+
 function githubFixture() {
   const bin = path.join(root, "bin");
   const fork = path.join(root, "fork.git");
