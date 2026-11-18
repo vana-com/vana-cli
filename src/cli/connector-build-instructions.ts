@@ -9,7 +9,7 @@ Read AUTHORING.md and docs/spec/collection-profile.md in that checkout before wr
 2. Use the configured Factory executable or an existing factory-build on PATH. If neither is available, install the public @vana/factory-core@0.0.7 release artifact. This needs no private Factory repository access, internal services or Factory account. Vana never installs or downloads Factory. The external executable supplies its own Node host, including when Vana runs on Node 22 or as a standalone binary.
   export VANA_FACTORY_TOOLS="\${VANA_HOME:-$HOME/.vana}/factory-tools"
   npm install --prefix "$VANA_FACTORY_TOOLS" --ignore-scripts --no-audit --no-fund https://github.com/vana-com/vana-cli/releases/download/v0.47.0/vana-factory-core-0.0.7.tgz
-Artifact SHA256: 107bdd0dbad63ab71a48ad3fe3ca70e058c146aae8c956a62186dde2f1471983.
+Artifact SHA256: 56d7077958bd58c1ae8b020ff350f40fdbac52af20be7c413ac295395640049b.
   export VANA_FACTORY_BUILD="$VANA_FACTORY_TOOLS/node_modules/.bin/factory-build"
   "\${VANA_FACTORY_BUILD-factory-build}" capabilities --json
 Use the installed executable's absolute path for the capability command if it is not on PATH. The PATH must select the real Node 24+ executable used by its shebang. Require protocolVersion 1, contextVersion 2, apiPreparationVersion 1 and supportedRoutes ["export", "api"]. Older context versions are incompatible.

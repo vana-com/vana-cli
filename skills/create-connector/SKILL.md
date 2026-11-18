@@ -156,6 +156,16 @@ upstream compares captured_with, not verified_subject. Changed source or manifes
 needs a new capture for a bound claim. Commit only the public claim, never the
 account scenario or raw captures.
 
+Read `CONNECTOR-REVIEW.md` before declaring readiness. Where source counts expose
+a shortfall, report incomplete coverage and withhold the complete checkpoint;
+counting only successfully emitted rows can hide missing source records.
+
+A `full_refresh` replaces previously saved rows. Run the real entrypoint twice
+with the same fixture and the first run's actual STATE: both full-refresh runs
+must emit the complete selected inventory. Ignore prior fingerprint deduplication
+in that mode. An incremental run may suppress unchanged rows; a full provider
+scan and a full-refresh output are separate choices.
+
 Record the final checks after that commit. The submission commands read reviewed
 evidence without executing its commands.
 

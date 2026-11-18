@@ -89,7 +89,7 @@ const registrations = new Map<string, RegistrationRule>([
     {
       header:
         /^export const GENERATED_STATIC_SECRET_REGISTRY: Readonly<\n\tRecord<string, GeneratedStaticSecretDescriptor>\n> = Object\.freeze\(\{\n/m,
-      row: /^\t(?<generatedKey>[a-z0-9_]+|"[a-z0-9-]+"): \{\n\t\tcredentialKind: "(?<kind>[a-z_]+)",\n\t\tsecretEnvVars: \[(?<env>"[A-Z][A-Z0-9_]*"(?:, "[A-Z][A-Z0-9_]*")*)\],\n\t\},\n/gm,
+      row: /^\t(?<generatedKey>[a-z0-9_]+|"[a-z0-9-]+"): \{\n\t\tcredentialKind: "(?<kind>[a-z_]+)",\n\t\tsecretEnvVars: \[(?<env>"[A-Z][A-Z0-9_]*"(?:, "[A-Z][A-Z0-9_]*")*)\],\n(?<setup>\t\tsetupFieldEnvVars: \{\n(?:\t\t\t(?:[A-Za-z_][A-Za-z0-9_]*|"[^"\\\r\n]+"): \["[A-Z][A-Z0-9_]*"(?:, "[A-Z][A-Z0-9_]*")*\],\n)+\t\t\},\n)?\t\},\n/gm,
       single: true,
       generated: "secret",
     },
@@ -272,6 +272,8 @@ function validGeneratedRow(
           kind: z.string(),
           fields: z.array(
             z.looseObject({
+              name: z.string().optional(),
+              type: z.string().optional(),
               secret: z.boolean().optional(),
               env: z.array(z.string()).optional(),
             }),
@@ -282,6 +284,31 @@ function validGeneratedRow(
     .safeParse(manifest);
   if (!capture.success) return false;
   const credential = capture.data.setup.credential_capture;
+  const isSecret = (field: (typeof credential.fields)[number]) =>
+    field.secret === true || field.type?.trim().toLowerCase() === "password";
+  const setupFields = credential.fields.filter((field) => !isSecret(field));
+  if (
+    setupFields.some((field) => !field.name || !field.env?.length) ||
+    new Set(setupFields.map((field) => field.name)).size !== setupFields.length
+  )
+    return false;
+  const expectedSetup = Object.fromEntries(
+    setupFields.map((field) => [field.name, field.env]),
+  );
+  const setupRows = [
+    ...(groups.setup ?? "").matchAll(
+      /^\t\t\t(?<field>[A-Za-z_][A-Za-z0-9_]*|"[^"\\\r\n]+"): \[(?<env>"[A-Z][A-Z0-9_]*"(?:, "[A-Z][A-Z0-9_]*")*)\],\n/gm,
+    ),
+  ];
+  const actualSetup = setupRows.map(({ groups }) => [
+    groups!.field.startsWith('"') ? JSON.parse(groups!.field) : groups!.field,
+    JSON.parse("[" + groups!.env + "]"),
+  ]);
+  if (
+    new Set(actualSetup.map(([name]) => name)).size !== actualSetup.length ||
+    !isDeepStrictEqual(Object.fromEntries(actualSetup), expectedSetup)
+  )
+    return false;
   return (
     groups.kind === credential.kind &&
     isDeepStrictEqual(
@@ -289,7 +316,7 @@ function validGeneratedRow(
       [
         ...new Set(
           credential.fields
-            .filter((field) => field.secret)
+            .filter(isSecret)
             .flatMap((field) => field.env ?? []),
         ),
       ].sort(),

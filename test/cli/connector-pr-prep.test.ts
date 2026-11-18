@@ -47,7 +47,16 @@ function writeConnector(
   metadata: {
     stream?: Record<string, unknown>;
     brand?: { icon: string };
+    setupFields?: {
+      name: string;
+      label: string;
+      type: string;
+      secret: boolean;
+      env: string[];
+    }[];
     credentialEnv?: string;
+    credentialSecret?: boolean;
+    credentialType?: string;
     reasonMessages?: Record<string, string>;
   } = {},
 ) {
@@ -62,7 +71,12 @@ function writeConnector(
       credential_capture: {
         kind: "personal_access_token",
         fields: [
-          { secret: true, env: [metadata.credentialEnv ?? "SYNTHETIC_TOKEN"] },
+          {
+            secret: metadata.credentialSecret ?? true,
+            type: metadata.credentialType,
+            env: [metadata.credentialEnv ?? "SYNTHETIC_TOKEN"],
+          },
+          ...(metadata.setupFields ?? []),
         ],
       },
     },
@@ -579,6 +593,7 @@ withShellFixtures(
     expect(fixture.refs()).toBe("");
     expect(existsSync(fixture.receipt)).toBe(false);
   },
+  15_000,
 );
 
 withShellFixtures.each(["no loss", "response", "and-lookup"])(
@@ -636,6 +651,7 @@ withShellFixtures.each(["no loss", "response", "and-lookup"])(
     expect(readFileSync(fixture.receipt, "utf8")).toBe(saved);
     expect(fixture.refs()).toBe(head);
   },
+  15_000,
 );
 
 it("refuses to publish a commit range whose intermediate contents were absent from the preview", async () => {
@@ -832,6 +848,56 @@ function registerExampleDriver() {
       .replace(selectedCoverageGap, ""),
   );
 }
+
+it.each(["match", "wrong environment", "extra field"])(
+  "validates non-secret setup mappings: %s",
+  async (mode) => {
+    makeNewConnector();
+    writeConnector("0.1.0", "1.0.0", {
+      setupFields: [
+        {
+          name: "base_url",
+          label: "API origin",
+          type: "text",
+          secret: false,
+          env: ["EXAMPLE_BASE_URL"],
+        },
+      ],
+    });
+    const target = path.join(checkout, staticSecret);
+    writeFileSync(
+      target,
+      readFileSync(target, "utf8").replace(
+        '		secretEnvVars: ["SYNTHETIC_TOKEN"],\n',
+        '		secretEnvVars: ["SYNTHETIC_TOKEN"],\n		setupFieldEnvVars: {\n			base_url: ["' +
+          (mode === "wrong environment" ? "OTHER_URL" : "EXAMPLE_BASE_URL") +
+          '"],\n' +
+          (mode === "extra field"
+            ? '			unexpected: ["UNDECLARED_FIELD"],\n'
+            : "") +
+          "		},\n",
+      ),
+    );
+    head = commit();
+    const { code, result } = await preview(head);
+    expect(code).toBe(mode === "match" ? 0 : 1);
+    if (mode === "match") expect(result.readiness.ready).toBe(true);
+    else expect(result.error.code).toBe("invalid_connector_registration");
+  },
+);
+
+it("treats a password field as secret when deriving the static registry", async () => {
+  makeNewConnector();
+  writeConnector("0.1.0", "1.0.0", {
+    credentialSecret: false,
+    credentialType: "password",
+  });
+  head = commit();
+  expect(await preview(head)).toMatchObject({
+    code: 0,
+    result: { readiness: { ready: true } },
+  });
+});
 
 it("previews a connector's required no-brand registration without changing other entries", async () => {
   makeNewConnector();
