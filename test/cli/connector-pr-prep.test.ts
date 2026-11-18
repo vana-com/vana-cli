@@ -46,20 +46,37 @@ function writeConnector(
   otherVersion = "1.0.0",
   metadata: {
     stream?: Record<string, unknown>;
+    brand?: { icon: string };
+    setupFields?: {
+      name: string;
+      label: string;
+      type: string;
+      secret: boolean;
+      env: string[];
+    }[];
     credentialEnv?: string;
+    credentialSecret?: boolean;
+    credentialType?: string;
     reasonMessages?: Record<string, string>;
   } = {},
 ) {
   const manifest = {
     connector_key: "example",
     version,
+    capabilities: { public_listing: { tier: "development" } },
     reason_display_messages: metadata.reasonMessages,
+    brand: metadata.brand,
     streams: [{ name: "items", required: true, ...metadata.stream }],
     setup: {
       credential_capture: {
         kind: "personal_access_token",
         fields: [
-          { secret: true, env: [metadata.credentialEnv ?? "SYNTHETIC_TOKEN"] },
+          {
+            secret: metadata.credentialSecret ?? true,
+            type: metadata.credentialType,
+            env: [metadata.credentialEnv ?? "SYNTHETIC_TOKEN"],
+          },
+          ...(metadata.setupFields ?? []),
         ],
       },
     },
@@ -115,6 +132,44 @@ function reviewEvidence(commit: string) {
   return {
     kind: "synthetic",
     commit,
+    omissions:
+      "Synthetic fixture covers items only; no other provider data is claimed.",
+    conformance: {
+      schema: "pdpp.conformance-report/1",
+      base_revision: base,
+      connector: "example",
+      tier: "development",
+      mode: "full",
+      isKnownScaffold: false,
+      subject: {
+        revision: commit,
+        clean: true,
+        source_digest: "a".repeat(64),
+        declaration_digest: "b".repeat(64),
+      },
+      steps: [
+        "manifest",
+        "tests",
+        "pilot fixture",
+        "evidence",
+        "coverage",
+        "shared helpers",
+        "semantics",
+        "mock mutation",
+      ].map((name) => ({
+        name,
+        verdict: name === "evidence" ? "UNKNOWN" : "PASS",
+        detail:
+          name === "evidence"
+            ? "No author replay claim"
+            : "Passed synthetic fixture check",
+        required_for_review: ["manifest", "tests", "coverage"].includes(name),
+      })),
+    },
+    dispositions: {
+      evidence:
+        "Development tier; this synthetic fixture has no author-account claim.",
+    },
     checkedAt: "2026-11-11T00:00:00Z",
     environment: "Node 24.22.1, synthetic fixture",
     checks: [
@@ -137,12 +192,19 @@ function reviewEvidence(commit: string) {
 }
 
 async function preview(
-  evidenceCommit: string,
+  evidenceCommit: string | Record<string, unknown>,
   command = "prepare-pr",
   ...args: string[]
 ) {
   const evidence = path.join(root, "synthetic.json");
-  writeFileSync(evidence, JSON.stringify(reviewEvidence(evidenceCommit)));
+  writeFileSync(
+    evidence,
+    JSON.stringify(
+      typeof evidenceCommit === "string"
+        ? reviewEvidence(evidenceCommit)
+        : evidenceCommit,
+    ),
+  );
   const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
   const code = await runCli([
     "node",
@@ -205,6 +267,123 @@ it("rejects evidence for another commit without emitting a patch", async () => {
   expect(result.error.code).toBe("stale_evidence");
   expect(result).not.toHaveProperty("diff");
 });
+
+it("blocks a complete synthetic envelope with no upstream report before GitHub writes", async () => {
+  const { writes } = githubFixture();
+  const evidence: Record<string, unknown> = reviewEvidence(head);
+  delete evidence.conformance;
+  const { code, result } = await preview(evidence, "submit-pr");
+  expect(code).toBe(1);
+  expect(result.error.code).toBe("submission_not_ready");
+  expect(existsSync(writes)).toBe(false);
+});
+
+it("keeps an explained Development evidence gap visible without blocking review", async () => {
+  const { code, result } = await preview(head);
+  expect(code).toBe(0);
+  expect(result.readiness).toMatchObject({
+    ready: true,
+    tier: "development",
+    accountEvidence: { status: "none" },
+  });
+  expect(result.prBody).toContain("evidence: UNKNOWN");
+  expect(result.prBody).toContain(
+    "Development tier; this synthetic fixture has no author-account claim.",
+  );
+});
+
+it.each([
+  "revision",
+  "base",
+  "dirty",
+  "mode",
+  "tier",
+  "connector",
+  "required",
+  "unexplained",
+])("withholds review readiness for %s report drift", async (change) => {
+  const evidence = reviewEvidence(head);
+  if (change === "revision") evidence.conformance.subject.revision = base;
+  // A fork main can contain the proposed connector; its legacy policy is not upstream policy.
+  if (change === "base") evidence.conformance.base_revision = head;
+  if (change === "dirty") evidence.conformance.subject.clean = false;
+  if (change === "mode") evidence.conformance.mode = "static";
+  if (change === "tier") evidence.conformance.tier = "preview";
+  if (change === "connector") evidence.conformance.connector = "other";
+  if (change === "required") {
+    evidence.conformance.steps.find(
+      (step) => step.name === "coverage",
+    )!.verdict = "UNKNOWN";
+    Object.assign(evidence.dispositions, {
+      coverage: "Would prefer to add the driver later.",
+    });
+  }
+  if (change === "unexplained")
+    delete (evidence.dispositions as Record<string, string>).evidence;
+  const { code, result } = await preview(evidence);
+  expect(code).toBe(0);
+  expect(result.readiness.ready).toBe(false);
+  expect(result.readiness.gaps.length).toBeGreaterThan(0);
+  if (change === "base")
+    expect(result.readiness.gaps).toContain(
+      "Run conformance with CONFORMANCE_BASE_REF set to the submission base commit.",
+    );
+});
+
+it.each([false, true])(
+  "reports captured claim binding accurately when captured digests are stale: %s",
+  async (stale) => {
+    const claim = {
+      schema: "pdpp.connector-claim/1",
+      connector: "example",
+      claim: "diagnostic_replay",
+      captured_at: "2026-11-18T00:00:00Z",
+      verified_at: "2026-11-18T00:01:00Z",
+      captured_with: {
+        source_digest: (stale ? "c" : "a").repeat(64),
+        declaration_digest: "b".repeat(64),
+      },
+      verified_subject: {
+        source_digest: "a".repeat(64),
+        declaration_digest: "b".repeat(64),
+      },
+      runs: 2,
+      coverage: [
+        "empty_state_run",
+        "state_seeded_second_run_with_changed_requests",
+      ],
+      drivers: ["recorded-http"],
+      limitations: ["process-local network isolation"],
+      scenario_path: "private-account-scenario.json",
+    };
+    mkdirSync(path.join(checkout, "connectors/example/evidence"));
+    writeFileSync(
+      path.join(checkout, "connectors/example/evidence/claim.json"),
+      JSON.stringify(claim),
+    );
+    head = commit();
+    const evidence = reviewEvidence(head);
+    evidence.conformance.steps.find(
+      (step) => step.name === "evidence",
+    )!.verdict = "PASS";
+    delete (evidence.dispositions as Record<string, string>).evidence;
+    const { code, result } = await preview(evidence);
+    expect(code).toBe(0);
+    expect(result.readiness.accountEvidence.status).toBe(
+      stale ? "stale" : "bound",
+    );
+    expect(result.readiness.ready).toBe(!stale);
+    if (!stale) {
+      expect(result.prBody).toContain(
+        "Author replay claim: bound to this submitted source and manifest.",
+      );
+      expect(result.prBody).toContain("process-local network isolation");
+    }
+    expect(result.prBody).not.toContain(
+      "Live provider behavior and Vana app availability remain unverified.",
+    );
+  },
+);
 
 it("rejects another connector's change in the shared implementation index", async () => {
   writeConnector("1.0.1", "1.0.1");
@@ -414,6 +593,7 @@ withShellFixtures(
     expect(fixture.refs()).toBe("");
     expect(existsSync(fixture.receipt)).toBe(false);
   },
+  15_000,
 );
 
 withShellFixtures.each(["no loss", "response", "and-lookup"])(
@@ -471,6 +651,7 @@ withShellFixtures.each(["no loss", "response", "and-lookup"])(
     expect(readFileSync(fixture.receipt, "utf8")).toBe(saved);
     expect(fixture.refs()).toBe(head);
   },
+  15_000,
 );
 
 it("refuses to publish a commit range whose intermediate contents were absent from the preview", async () => {
@@ -509,6 +690,7 @@ const coverageHeader =
   "export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set([\n";
 const selectedCoverageGap =
   '\t// Development collector fixture. Shared driver is pending.\n\t"example.items",\n';
+const brandFile = "scripts/brand-icon-fleet.test.mjs";
 const rosterHeader =
   "export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {\n";
 const awaitListHeader =
@@ -562,6 +744,12 @@ function writeRegistrationFixture(added: boolean) {
     publishHeader +
       (added ? '    ["example", "example"],\n' : "") +
       '    ["other", "other"],\n  ],\n);\n',
+  );
+  writeFileSync(
+    path.join(checkout, brandFile),
+    "const CONNECTORS_WITHOUT_A_BRAND_MARK = new Set([" +
+      (added ? '"example.json", ' : "") +
+      '"other.json"]);\nexport const guard = true;\n',
   );
   const consent = path.join(checkout, consentAggregate);
   const secret = path.join(checkout, staticSecret);
@@ -660,6 +848,91 @@ function registerExampleDriver() {
       .replace(selectedCoverageGap, ""),
   );
 }
+
+it.each(["match", "wrong environment", "extra field"])(
+  "validates non-secret setup mappings: %s",
+  async (mode) => {
+    makeNewConnector();
+    writeConnector("0.1.0", "1.0.0", {
+      setupFields: [
+        {
+          name: "base_url",
+          label: "API origin",
+          type: "text",
+          secret: false,
+          env: ["EXAMPLE_BASE_URL"],
+        },
+      ],
+    });
+    const target = path.join(checkout, staticSecret);
+    writeFileSync(
+      target,
+      readFileSync(target, "utf8").replace(
+        '		secretEnvVars: ["SYNTHETIC_TOKEN"],\n',
+        '		secretEnvVars: ["SYNTHETIC_TOKEN"],\n		setupFieldEnvVars: {\n			base_url: ["' +
+          (mode === "wrong environment" ? "OTHER_URL" : "EXAMPLE_BASE_URL") +
+          '"],\n' +
+          (mode === "extra field"
+            ? '			unexpected: ["UNDECLARED_FIELD"],\n'
+            : "") +
+          "		},\n",
+      ),
+    );
+    head = commit();
+    const { code, result } = await preview(head);
+    expect(code).toBe(mode === "match" ? 0 : 1);
+    if (mode === "match") expect(result.readiness.ready).toBe(true);
+    else expect(result.error.code).toBe("invalid_connector_registration");
+  },
+);
+
+it("treats a password field as secret when deriving the static registry", async () => {
+  makeNewConnector();
+  writeConnector("0.1.0", "1.0.0", {
+    credentialSecret: false,
+    credentialType: "password",
+  });
+  head = commit();
+  expect(await preview(head)).toMatchObject({
+    code: 0,
+    result: { readiness: { ready: true } },
+  });
+});
+
+it("previews a connector's required no-brand registration without changing other entries", async () => {
+  makeNewConnector();
+  const { code, result } = await preview(head);
+  expect(code).toBe(0);
+  expect(result.readiness.ready).toBe(true);
+  expect(result.files).toContain(brandFile);
+});
+
+it("rejects a no-brand exemption when the selected manifest declares a brand", async () => {
+  makeNewConnector();
+  writeConnector("0.1.0", "1.0.0", { brand: { icon: "icon.svg" } });
+  head = commit();
+  expect(await preview(head)).toMatchObject({
+    code: 1,
+    result: { error: { code: "invalid_connector_registration" } },
+  });
+});
+
+it("removes only the selected exemption when an existing connector gains a brand", async () => {
+  git("checkout", "--quiet", "--detach", base);
+  writeRegistrationFixture(true);
+  base = commit();
+  writeConnector("1.0.1", "1.0.0", { brand: { icon: "icon.svg" } });
+  const target = path.join(checkout, brandFile);
+  writeFileSync(
+    target,
+    readFileSync(target, "utf8").replace('"example.json", ', ""),
+  );
+  head = commit();
+  expect(await preview(head)).toMatchObject({
+    code: 0,
+    result: { readiness: { ready: true } },
+  });
+});
 
 it("previews adding coverage for an existing connector and removing its exemption", async () => {
   git("checkout", "--quiet", "--detach", base);
@@ -1028,9 +1301,8 @@ it("keeps failed and skipped checks visible and safely quotes review output", as
   expect(result.prBody).toContain(
     "`````text\n````\nfailed on the documented baseline\n````\n`````",
   );
-  expect(result.evidenceGaps).toContain(
-    "Live provider behavior and Vana app availability remain unverified.",
-  );
+  expect(result.readiness.accountEvidence.status).toBe("none");
+  expect(result.prBody).not.toContain("Vana app availability");
 });
 
 it("rejects evidence that cannot fit into the public PR description", async () => {
@@ -1051,6 +1323,30 @@ it("rejects evidence that cannot fit into the public PR description", async () =
 });
 
 it.each([
+  [
+    "a different connector's no-brand entry",
+    brandFile,
+    '"other.json"',
+    '"unrelated.json"',
+  ],
+  [
+    "duplicate no-brand entries",
+    brandFile,
+    '"example.json",',
+    '"example.json", "example.json",',
+  ],
+  [
+    "executable no-brand registration",
+    brandFile,
+    '"example.json",',
+    "readProcessEnv(),",
+  ],
+  [
+    "code outside the no-brand list",
+    brandFile,
+    "guard = true",
+    "guard = false",
+  ],
   [
     "a generated credential not declared by the connector",
     staticSecret,

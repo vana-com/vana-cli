@@ -11,12 +11,18 @@ import {
   submitConnectorPr,
 } from "./connector-pr-submit.js";
 import { isNewerVersion } from "./update-check.js";
+import {
+  conformanceReportSchema,
+  dispositionSchema,
+  submissionReadiness,
+} from "./connector-readiness.js";
 
 const INDEX_PATH = "connector-implementation-index.json";
 const LIBRARY_METADATA =
   "packages/polyfill-connectors/src/manifest-library-metadata.json";
 const GENERATED_ROOT = "packages/polyfill-connectors/src/generated/";
 const CONSENT_AGGREGATE = GENERATED_ROOT + "consent-time-fields.generated.ts";
+const BRAND_MARK_TEST = "scripts/brand-icon-fleet.test.mjs";
 const MANIFEST_COUNT_TEST =
   "packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts";
 const COVERAGE_DRIVERS =
@@ -83,7 +89,7 @@ const registrations = new Map<string, RegistrationRule>([
     {
       header:
         /^export const GENERATED_STATIC_SECRET_REGISTRY: Readonly<\n\tRecord<string, GeneratedStaticSecretDescriptor>\n> = Object\.freeze\(\{\n/m,
-      row: /^\t(?<generatedKey>[a-z0-9_]+|"[a-z0-9-]+"): \{\n\t\tcredentialKind: "(?<kind>[a-z_]+)",\n\t\tsecretEnvVars: \[(?<env>"[A-Z][A-Z0-9_]*"(?:, "[A-Z][A-Z0-9_]*")*)\],\n\t\},\n/gm,
+      row: /^\t(?<generatedKey>[a-z0-9_]+|"[a-z0-9-]+"): \{\n\t\tcredentialKind: "(?<kind>[a-z_]+)",\n\t\tsecretEnvVars: \[(?<env>"[A-Z][A-Z0-9_]*"(?:, "[A-Z][A-Z0-9_]*")*)\],\n(?<setup>\t\tsetupFieldEnvVars: \{\n(?:\t\t\t(?:[A-Za-z_][A-Za-z0-9_]*|"[^"\\\r\n]+"): \["[A-Z][A-Z0-9_]*"(?:, "[A-Z][A-Z0-9_]*")*\],\n)+\t\t\},\n)?\t\},\n/gm,
       single: true,
       generated: "secret",
     },
@@ -140,6 +146,9 @@ const evidenceSchema = z.strictObject({
     })
     .optional(),
   storedData: evidenceText.optional(),
+  omissions: evidenceText.optional(),
+  conformance: conformanceReportSchema.optional(),
+  dispositions: dispositionSchema.optional(),
 });
 
 const manifestSchema = z.looseObject({
@@ -220,6 +229,7 @@ function registrationFile(file: string, key: string): boolean {
     file === COVERAGE_DRIVERS ||
     file === LIBRARY_METADATA ||
     file === MANIFEST_COUNT_TEST ||
+    file === BRAND_MARK_TEST ||
     file === consentSlicePath(key)
   );
 }
@@ -262,6 +272,8 @@ function validGeneratedRow(
           kind: z.string(),
           fields: z.array(
             z.looseObject({
+              name: z.string().optional(),
+              type: z.string().optional(),
               secret: z.boolean().optional(),
               env: z.array(z.string()).optional(),
             }),
@@ -272,6 +284,31 @@ function validGeneratedRow(
     .safeParse(manifest);
   if (!capture.success) return false;
   const credential = capture.data.setup.credential_capture;
+  const isSecret = (field: (typeof credential.fields)[number]) =>
+    field.secret === true || field.type?.trim().toLowerCase() === "password";
+  const setupFields = credential.fields.filter((field) => !isSecret(field));
+  if (
+    setupFields.some((field) => !field.name || !field.env?.length) ||
+    new Set(setupFields.map((field) => field.name)).size !== setupFields.length
+  )
+    return false;
+  const expectedSetup = Object.fromEntries(
+    setupFields.map((field) => [field.name, field.env]),
+  );
+  const setupRows = [
+    ...(groups.setup ?? "").matchAll(
+      /^\t\t\t(?<field>[A-Za-z_][A-Za-z0-9_]*|"[^"\\\r\n]+"): \[(?<env>"[A-Z][A-Z0-9_]*"(?:, "[A-Z][A-Z0-9_]*")*)\],\n/gm,
+    ),
+  ];
+  const actualSetup = setupRows.map(({ groups }) => [
+    groups!.field.startsWith('"') ? JSON.parse(groups!.field) : groups!.field,
+    JSON.parse("[" + groups!.env + "]"),
+  ]);
+  if (
+    new Set(actualSetup.map(([name]) => name)).size !== actualSetup.length ||
+    !isDeepStrictEqual(Object.fromEntries(actualSetup), expectedSetup)
+  )
+    return false;
   return (
     groups.kind === credential.kind &&
     isDeepStrictEqual(
@@ -279,7 +316,7 @@ function validGeneratedRow(
       [
         ...new Set(
           credential.fields
-            .filter((field) => field.secret)
+            .filter(isSecret)
             .flatMap((field) => field.env ?? []),
         ),
       ].sort(),
@@ -408,6 +445,48 @@ function validCoverageRegistration(
   });
 }
 
+function validBrandRegistration(
+  before: string,
+  after: string,
+  key: string,
+  hasBrand: boolean,
+): boolean {
+  const declaration =
+    /^const CONNECTORS_WITHOUT_A_BRAND_MARK = new Set\((\[[\s\S]*?\])\);$/m;
+  const parse = (source: string) => {
+    const match = declaration.exec(source);
+    if (
+      !match ||
+      !/^\[\s*(?:"[a-z0-9_]+\.json"\s*(?:,\s*"[a-z0-9_]+\.json"\s*)*,?\s*)?\]$/.test(
+        match[1],
+      )
+    )
+      return null;
+    const entries: string[] = JSON.parse(match[1].replace(/,(\s*\])$/, "$1"));
+    if (new Set(entries).size !== entries.length) return null;
+    return {
+      entries,
+      rest:
+        source.slice(0, match.index) +
+        source.slice(match.index + match[0].length),
+    };
+  };
+  const original = parse(before);
+  const updated = parse(after);
+  if (!original || !updated) return false;
+  const selected = key + ".json";
+  return (
+    original.rest === updated.rest &&
+    updated.entries.includes(selected) === !hasBrand &&
+    original.entries.includes(selected) !==
+      updated.entries.includes(selected) &&
+    isDeepStrictEqual(
+      original.entries.filter((entry) => entry !== selected),
+      updated.entries.filter((entry) => entry !== selected),
+    )
+  );
+}
+
 function validConnectorRegistration(
   git: ReturnType<typeof localGit>,
   file: string,
@@ -458,6 +537,14 @@ function validConnectorRegistration(
   }
   if (file === COVERAGE_DRIVERS) {
     return validCoverageRegistration(git, key, manifest, before, after, head);
+  }
+  if (file === BRAND_MARK_TEST) {
+    return validBrandRegistration(
+      before,
+      after,
+      key,
+      manifest.brand !== undefined,
+    );
   }
   if (file === MANIFEST_COUNT_TEST) {
     const countLine = /^\tassert\.equal\(names\.length, (\d+)\);$/m;
@@ -755,13 +842,26 @@ function prepare(key: string, options: PrepOptions) {
       ? []
       : ["Missing the effect on existing records, IDs and cursors."]),
   ];
+  const claimPath = prefix + "evidence/claim.json";
+  const readiness = submissionReadiness({
+    key,
+    head,
+    base,
+    manifest: current,
+    report: verification?.conformance,
+    omissions: verification?.omissions,
+    dispositions: verification?.dispositions,
+    claimText: git("ls-tree", head, "--", claimPath)
+      ? git("show", head + ":" + claimPath)
+      : null,
+  });
   const evidenceGaps = [
     ...(verification ? [] : ["No verification summary supplied."]),
     ...reviewGaps,
     ...(verification?.checks
       .filter((check) => check.result !== "passed")
       .map((check) => check.name + ": " + check.result) ?? []),
-    "Live provider behavior and Vana app availability remain unverified.",
+    ...readiness.gaps,
   ];
   const prBody = [
     "## What this does",
@@ -776,6 +876,53 @@ function prepare(key: string, options: PrepOptions) {
     "Change: " + (previous ? "Connector update" : "New connector"),
     "Streams: " + current.streams.map((stream) => stream.name).join(", "),
     "",
+    "## Review readiness",
+    "",
+    "Proposed tier: " + (readiness.tier ?? "not declared"),
+    readiness.ready
+      ? "Upstream review requirements are satisfied; maintainers decide approval and promotion."
+      : "Not ready for substantive review. Resolve the findings below.",
+    "",
+    ...(verification?.omissions
+      ? ["Scope omissions", "", codeBlock(verification.omissions, "text"), ""]
+      : []),
+    ...(verification?.conformance
+      ? [
+          "Upstream conformance (" +
+            (verification.conformance.mode ?? "unknown mode") +
+            ")",
+          "",
+          codeBlock(
+            verification.conformance.steps
+              .map(
+                (step) =>
+                  step.name +
+                  ": " +
+                  step.verdict +
+                  (step.required_for_review ? " (required)" : "") +
+                  (step.verdict === "PASS"
+                    ? ""
+                    : "\n  " +
+                      step.detail +
+                      (step.nextAction ? "\n  Next: " + step.nextAction : "") +
+                      (verification.dispositions?.[step.name]
+                        ? "\n  Reason: " + verification.dispositions[step.name]
+                        : "")),
+              )
+              .join("\n"),
+            "text",
+          ),
+          "",
+        ]
+      : []),
+    ...(readiness.accountEvidence.status === "bound"
+      ? [
+          "Author replay claim: bound to this submitted source and manifest.",
+          "",
+          codeBlock(JSON.stringify(readiness.accountEvidence, null, 2), "json"),
+          "",
+        ]
+      : ["Author replay claim: " + readiness.accountEvidence.status + ".", ""]),
     "## How it was verified",
     "",
     ...(verification
@@ -863,6 +1010,7 @@ function prepare(key: string, options: PrepOptions) {
     verification,
     evidenceGaps,
     reviewGaps,
+    readiness,
     prBody,
     diff: git(
       "diff",
@@ -918,6 +1066,13 @@ function prepareSubmission(
     throw new PrepError(
       "review_evidence_required",
       preview.reviewGaps.join(" ") +
+        " Read vana skills show create-connector --json.",
+    );
+  }
+  if (!preview.readiness.ready) {
+    throw new PrepError(
+      "submission_not_ready",
+      preview.readiness.gaps.join(" ") +
         " Read vana skills show create-connector --json.",
     );
   }
