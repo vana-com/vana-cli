@@ -11,6 +11,11 @@ import {
   submitConnectorPr,
 } from "./connector-pr-submit.js";
 import { isNewerVersion } from "./update-check.js";
+import {
+  conformanceReportSchema,
+  dispositionSchema,
+  submissionReadiness,
+} from "./connector-readiness.js";
 
 const INDEX_PATH = "connector-implementation-index.json";
 const LIBRARY_METADATA =
@@ -140,6 +145,9 @@ const evidenceSchema = z.strictObject({
     })
     .optional(),
   storedData: evidenceText.optional(),
+  omissions: evidenceText.optional(),
+  conformance: conformanceReportSchema.optional(),
+  dispositions: dispositionSchema.optional(),
 });
 
 const manifestSchema = z.looseObject({
@@ -755,13 +763,26 @@ function prepare(key: string, options: PrepOptions) {
       ? []
       : ["Missing the effect on existing records, IDs and cursors."]),
   ];
+  const claimPath = prefix + "evidence/claim.json";
+  const readiness = submissionReadiness({
+    key,
+    head,
+    base,
+    manifest: current,
+    report: verification?.conformance,
+    omissions: verification?.omissions,
+    dispositions: verification?.dispositions,
+    claimText: git("ls-tree", head, "--", claimPath)
+      ? git("show", head + ":" + claimPath)
+      : null,
+  });
   const evidenceGaps = [
     ...(verification ? [] : ["No verification summary supplied."]),
     ...reviewGaps,
     ...(verification?.checks
       .filter((check) => check.result !== "passed")
       .map((check) => check.name + ": " + check.result) ?? []),
-    "Live provider behavior and Vana app availability remain unverified.",
+    ...readiness.gaps,
   ];
   const prBody = [
     "## What this does",
@@ -776,6 +797,53 @@ function prepare(key: string, options: PrepOptions) {
     "Change: " + (previous ? "Connector update" : "New connector"),
     "Streams: " + current.streams.map((stream) => stream.name).join(", "),
     "",
+    "## Review readiness",
+    "",
+    "Proposed tier: " + (readiness.tier ?? "not declared"),
+    readiness.ready
+      ? "Upstream review requirements are satisfied; maintainers decide approval and promotion."
+      : "Not ready for substantive review. Resolve the findings below.",
+    "",
+    ...(verification?.omissions
+      ? ["Scope omissions", "", codeBlock(verification.omissions, "text"), ""]
+      : []),
+    ...(verification?.conformance
+      ? [
+          "Upstream conformance (" +
+            (verification.conformance.mode ?? "unknown mode") +
+            ")",
+          "",
+          codeBlock(
+            verification.conformance.steps
+              .map(
+                (step) =>
+                  step.name +
+                  ": " +
+                  step.verdict +
+                  (step.required_for_review ? " (required)" : "") +
+                  (step.verdict === "PASS"
+                    ? ""
+                    : "\n  " +
+                      step.detail +
+                      (step.nextAction ? "\n  Next: " + step.nextAction : "") +
+                      (verification.dispositions?.[step.name]
+                        ? "\n  Reason: " + verification.dispositions[step.name]
+                        : "")),
+              )
+              .join("\n"),
+            "text",
+          ),
+          "",
+        ]
+      : []),
+    ...(readiness.accountEvidence.status === "bound"
+      ? [
+          "Author replay claim: bound to this submitted source and manifest.",
+          "",
+          codeBlock(JSON.stringify(readiness.accountEvidence, null, 2), "json"),
+          "",
+        ]
+      : ["Author replay claim: " + readiness.accountEvidence.status + ".", ""]),
     "## How it was verified",
     "",
     ...(verification
@@ -863,6 +931,7 @@ function prepare(key: string, options: PrepOptions) {
     verification,
     evidenceGaps,
     reviewGaps,
+    readiness,
     prBody,
     diff: git(
       "diff",
@@ -918,6 +987,13 @@ function prepareSubmission(
     throw new PrepError(
       "review_evidence_required",
       preview.reviewGaps.join(" ") +
+        " Read vana skills show create-connector --json.",
+    );
+  }
+  if (!preview.readiness.ready) {
+    throw new PrepError(
+      "submission_not_ready",
+      preview.readiness.gaps.join(" ") +
         " Read vana skills show create-connector --json.",
     );
   }

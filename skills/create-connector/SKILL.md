@@ -25,6 +25,12 @@ Reuse completed discovery from the current task. Otherwise check both
 A catalog failure is not evidence of an unsupported provider. Use an existing
 implementation when it satisfies the requested data goal.
 
+For a submission-only request, continue with the existing implementation and
+the submission steps below. Confirm its directory, revision and streams against
+what the person approved or tested. Explain a scope difference before changing
+it. A submission request does not require rebuilding or recollecting a working
+connector.
+
 Start with the instructions bundled in the installed Vana CLI. This command
 works offline without installing an agent skill or Factory.
 
@@ -124,9 +130,25 @@ separate work, not a side effect of a local test.
 
 When the builder explicitly asks to submit a new connector or an improvement,
 run the relevant checks from the upstream checkout's authoring guide, including
-its conformance report. Record the results and open findings for the final
-commit. The submission commands read the evidence file without executing its
-commands.
+its full conformance report. Choose the proposed listing tier using AUTHORING.md
+and the connector checklist. Read every finding even when conformance exits zero;
+Factory's static/fixture pass alone does not establish review readiness. Keep
+repairing known gaps locally before asking a maintainer to review.
+
+Finish code, manifest, formatting, synthetic fixtures and required registrations
+before final account evidence. Use canonical helpers and protocol vectors; prove
+actual retry classification, accepted-record coverage, checkpoint preservation
+and deletions where the source supports them. Reuse an existing bound claim when
+its captured source and manifest digests still match. If the chosen tier needs a
+new author claim and account access is authorized, scenario-record performs two
+provider runs. Do that after implementation is settled. An old capture remains
+useful for offline diagnosis, but replaying changed code does not restore BOUND:
+upstream compares captured_with, not verified_subject. Changed source or manifest
+needs a new capture for a bound claim. Commit only the public claim, never the
+account scenario or raw captures.
+
+Record the final checks after that commit. The submission commands read reviewed
+evidence without executing its commands.
 
 1. Keep one signed-off commit directly on the reviewed upstream main revision.
    Change the selected connector and its generated implementation-index entry.
@@ -141,12 +163,31 @@ commands.
    Add the connector's entry to `CONNECTOR_DRIVERS` with its tested streams
    and `run: async () => (await import("../<directory>/coverage-driver.ts")).runCoverageDriver()`.
    Remove any existing coverage exemption that the driver replaces.
-2. Save reviewed synthetic evidence outside the connector commit using the
+2. Run `CONFORMANCE_BASE_REF=<upstream-main-commit> npm run conformance -- <directory> --json` on the clean final commit and
+   save the JSON outside the checkout. A current Factory result may already
+   carry it at `evidence.conformance`; reuse it only if its subject names the
+   same clean final commit, its `base_revision` matches `--base`, and its mode is `full`. A static CI report is partial.
+   The upstream report marks `required_for_review` for the manifest's tier.
+   Required findings must pass. For every other non-PASS step, put a specific
+   reason in `dispositions`, keyed by its exact step name. Development can
+   honestly omit an author claim; non-HTTP connectors can explain their mutation
+   exemption using `* @conformance-no-http <reason>` in the entrypoint's leading
+   comment and the same reason in the PR. An optional network binding is not
+   an exemption. Do not fabricate PASS results or waive required findings.
+   Save reviewed synthetic evidence outside the connector commit using the
    example below. Replace the commit, date, commands, results, source and
-   record with observed values. This content becomes public with the PR.
+   record with observed values. Add the complete generated report as
+   `conformance` and describe omitted data in `omissions` (or state none).
+   This content becomes public with the PR. Do not manually reconstruct the
+   report's steps, subject or requirements.
 3. Run `vana connectors prepare-pr <directory> --checkout /path/to/data-connectors --base <upstream-main-commit> --head <connector-commit> --summary "<change and reason>" --evidence /path/to/reviewed-evidence.json --json`.
    Review the full committed diff and PR description. Older evidence summaries
    remain previewable, with missing review evidence listed.
+   `reviewGaps` describes missing envelope fields; `readiness.ready` describes
+   upstream review requirements. Resolve `readiness.gaps` before submitting.
+   The preview reads any public replay claim from this commit and states its
+   actual binding and limitations. App availability is a separate claim only
+   when the requested outcome includes it.
 4. Sign in with `gh auth login --hostname github.com` if needed. The builder
    needs a writable public fork of `PDP-Connect/data-connectors`. A GitHub data
    connection does not select the account used to submit code.
@@ -172,6 +213,10 @@ An example evidence file for a new connector follows.
   "commit": "<full connector commit SHA>",
   "checkedAt": "2026-11-11T00:00:00Z",
   "environment": "Node 24.22.1, Linux, synthetic provider fixture",
+  "omissions": "Collects items only. The provider's account administration data is outside this connector's scope.",
+  "dispositions": {
+    "evidence": "Development tier; no author-account replay claim is included."
+  },
   "checks": [
     {
       "name": "Synthetic collection and schema test",
@@ -188,6 +233,22 @@ An example evidence file for a new connector follows.
   "storedData": "Initial upstream connector. Local test records are unchanged. IDs use the source item ID; the first collection starts without a cursor."
 }
 ```
+
+Attach the generated report to that envelope, preserving it unchanged:
+
+```bash
+node --input-type=module - /path/to/reviewed-evidence.json /path/to/conformance.json <<'JS'
+import { readFileSync, writeFileSync } from "node:fs";
+const [evidencePath, reportPath] = process.argv.slice(2);
+const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+evidence.conformance = JSON.parse(readFileSync(reportPath, "utf8"));
+writeFileSync(evidencePath, JSON.stringify(evidence, null, 2) + "\n");
+JS
+```
+
+Keep only dispositions for findings the current report leaves open. A reason
+cannot override a required finding. Supported-tier promotion remains a maintainer
+decision; a report does not manufacture a maintainer's account run.
 
 For an update, add `sample.before` with the old output for the same input, or
 `null` if no record was emitted. Explain existing-record effects in `storedData`,
