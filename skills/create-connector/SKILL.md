@@ -185,10 +185,17 @@ evidence without executing its commands.
    Add the connector's entry to `CONNECTOR_DRIVERS` with its tested streams
    and `run: async () => (await import("../<directory>/coverage-driver.ts")).runCoverageDriver()`.
    Remove any existing coverage exemption that the driver replaces.
-2. Run `CONFORMANCE_BASE_REF=<upstream-main-commit> npm run conformance -- <directory> --json` on the clean final commit and
+2. Run `CONFORMANCE_BASE_REF=<upstream-main-commit> npm run conformance -- <directory> --submission-pilot --json` on the clean final commit and
    save the JSON outside the checkout. A current Factory result may already
    carry it at `evidence.conformance`; reuse it only if its subject names the
-   same clean final commit, its `base_revision` matches `--base`, and its mode is `full`. A static CI report is partial.
+   same clean final commit, its `base_revision` matches `--base`, and its mode is `full`. A static CI report is partial. For manifests declaring a required network binding and no other binding kinds, submission-pilot reports must include the four
+   `submission refresh`, `submission deletions`, `submission text`, and
+   `submission counts` findings. Commit the reviewed synthetic fixture at
+   `connectors/<directory>/fixtures/submission-pilot.json` using the upstream
+   `packages/polyfill-connectors/docs/submission-pilot.md` contract. The shared
+   runner checks actual START/DONE output; passing self-authored tests alone
+   cannot replace these findings. An inapplicable capability remains a visible
+   advisory requiring a specific disposition, never a fabricated pass.
    The upstream report marks `required_for_review` for the manifest's tier.
    Required findings must pass. For every other non-PASS step, put a specific
    reason in `dispositions`, keyed by its exact step name. Development can

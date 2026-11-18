@@ -171,6 +171,23 @@ export function submissionReadiness(input: {
   const tier = manifest.success
     ? manifest.data.capabilities.public_listing.tier
     : null;
+  const bindingManifest = z
+    .object({
+      runtime_requirements: z.object({
+        bindings: z.record(
+          z.string(),
+          z.object({ kind: z.string().optional(), required: z.boolean() }),
+        ),
+      }),
+    })
+    .safeParse(input.manifest);
+  const bindings = bindingManifest.success
+    ? Object.entries(bindingManifest.data.runtime_requirements.bindings)
+    : [];
+  const apiPilot =
+    bindings.some(
+      ([key, value]) => (value.kind ?? key) === "network" && value.required,
+    ) && bindings.every(([key, value]) => (value.kind ?? key) === "network");
   const gaps: string[] = [];
   if (!tier) gaps.push("Choose the listing tier in the manifest.");
   if (!input.omissions)
@@ -216,9 +233,19 @@ export function submissionReadiness(input: {
       "shared helpers",
       "semantics",
       "mock mutation",
+      ...(apiPilot
+        ? [
+            "submission refresh",
+            "submission deletions",
+            "submission text",
+            "submission counts",
+          ]
+        : []),
     ])
       if (!report.steps.some((step) => step.name === required))
-        gaps.push(`The full conformance report is missing ${required}.`);
+        gaps.push(
+          `The full conformance report is missing ${required}. Run conformance with --submission-pilot.`,
+        );
     for (const step of report.steps) {
       if (step.required_for_review === undefined)
         gaps.push(
