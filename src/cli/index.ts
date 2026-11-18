@@ -110,6 +110,7 @@ import {
 import { CliExitCode } from "../core/exit-codes.js";
 import { registerAppCommands } from "./app/index.js";
 import { registerConnectorBuildCommands } from "./connector-build.js";
+import { registerConnectorPrCommands } from "./connector-pr-prep.js";
 import {
   checkRegisteredServers,
   lookupRegisteredServers,
@@ -616,7 +617,7 @@ Examples:
 
   const connectors = program
     .command("connectors")
-    .description("Build and register local Collection Profile connectors");
+    .description("Build, register, and submit Collection Profile connectors");
   connectors.addHelpText(
     "after",
     `
@@ -635,6 +636,7 @@ Examples:
   });
 
   registerConnectorBuildCommands(connectors, () => parsedOptions);
+  registerConnectorPrCommands(connectors, () => parsedOptions);
 
   connectors
     .command("add <key>")
