@@ -138,7 +138,16 @@ repairing known gaps locally before asking a maintainer to review.
 Finish code, manifest, formatting, synthetic fixtures and required registrations
 before final account evidence. Use canonical helpers and protocol vectors; prove
 actual retry classification, accepted-record coverage, checkpoint preservation
-and deletions where the source supports them. Reuse an existing bound claim when
+and deletions where the source supports them. A mutable source deletion must
+reach a RECORD with `op: "delete"` and the original key via `isTombstone`; an
+`is_deleted` field alone still upserts. Test actual forbidden C0/C1 source
+controls and literal escape sequences against the public canonical codec/vectors,
+with declared encoding or supported blobs. The runtime validates text; it does
+not encode provider input for you. Keep provider-input validation separate from
+emitted-record validation. The public codec/reference vectors are
+`connectors/anthropic/safe-escape.ts` and
+`connectors/anthropic/safe-escape-vectors.json`; preserve full content rather than
+truncating or sanitizing it. Reuse an existing bound claim when
 its captured source and manifest digests still match. If the chosen tier needs a
 new author claim and account access is authorized, scenario-record performs two
 provider runs. Do that after implementation is settled. An old capture remains
@@ -154,6 +163,9 @@ evidence without executing its commands.
    Change the selected connector and its generated implementation-index entry.
    For a new connector, put its required conformance roster, sequential-await
    and publication inventory entries first in their upstream declarations.
+   If no legitimate brand mark exists, add only this connector to upstream's
+   `CONNECTORS_WITHOUT_A_BRAND_MARK` list and omit `brand`; preserve every other
+   entry and the test code. Remove that exemption when adding a legitimate mark.
    Update the manifest count by one. New connectors need a unique key,
    manifest and `index.ts`. Updates need a higher manifest version.
    Regenerate the affected consent, credential, and package manifest metadata

@@ -255,7 +255,7 @@ describe("connector build subprocess policy", () => {
       'npm install --prefix "$VANA_FACTORY_TOOLS" --ignore-scripts --no-audit --no-fund https://github.com/vana-com/vana-cli/releases/download/v0.47.0/vana-factory-core-0.0.7.tgz',
     );
     expect(output.value.instructions).toContain(
-      "dd63101c8e386629cb2d4a5e14bb95fb54a8759ed574e393ecc64185b33876a8",
+      "107bdd0dbad63ab71a48ad3fe3ca70e058c146aae8c956a62186dde2f1471983",
     );
     expect(output.value.instructions).toContain(
       'export VANA_FACTORY_TOOLS="${VANA_HOME:-$HOME/.vana}/factory-tools"',

@@ -46,6 +46,7 @@ function writeConnector(
   otherVersion = "1.0.0",
   metadata: {
     stream?: Record<string, unknown>;
+    brand?: { icon: string };
     credentialEnv?: string;
     reasonMessages?: Record<string, string>;
   } = {},
@@ -55,6 +56,7 @@ function writeConnector(
     version,
     capabilities: { public_listing: { tier: "development" } },
     reason_display_messages: metadata.reasonMessages,
+    brand: metadata.brand,
     streams: [{ name: "items", required: true, ...metadata.stream }],
     setup: {
       credential_capture: {
@@ -672,6 +674,7 @@ const coverageHeader =
   "export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set([\n";
 const selectedCoverageGap =
   '\t// Development collector fixture. Shared driver is pending.\n\t"example.items",\n';
+const brandFile = "scripts/brand-icon-fleet.test.mjs";
 const rosterHeader =
   "export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {\n";
 const awaitListHeader =
@@ -725,6 +728,12 @@ function writeRegistrationFixture(added: boolean) {
     publishHeader +
       (added ? '    ["example", "example"],\n' : "") +
       '    ["other", "other"],\n  ],\n);\n',
+  );
+  writeFileSync(
+    path.join(checkout, brandFile),
+    "const CONNECTORS_WITHOUT_A_BRAND_MARK = new Set([" +
+      (added ? '"example.json", ' : "") +
+      '"other.json"]);\nexport const guard = true;\n',
   );
   const consent = path.join(checkout, consentAggregate);
   const secret = path.join(checkout, staticSecret);
@@ -823,6 +832,41 @@ function registerExampleDriver() {
       .replace(selectedCoverageGap, ""),
   );
 }
+
+it("previews a connector's required no-brand registration without changing other entries", async () => {
+  makeNewConnector();
+  const { code, result } = await preview(head);
+  expect(code).toBe(0);
+  expect(result.readiness.ready).toBe(true);
+  expect(result.files).toContain(brandFile);
+});
+
+it("rejects a no-brand exemption when the selected manifest declares a brand", async () => {
+  makeNewConnector();
+  writeConnector("0.1.0", "1.0.0", { brand: { icon: "icon.svg" } });
+  head = commit();
+  expect(await preview(head)).toMatchObject({
+    code: 1,
+    result: { error: { code: "invalid_connector_registration" } },
+  });
+});
+
+it("removes only the selected exemption when an existing connector gains a brand", async () => {
+  git("checkout", "--quiet", "--detach", base);
+  writeRegistrationFixture(true);
+  base = commit();
+  writeConnector("1.0.1", "1.0.0", { brand: { icon: "icon.svg" } });
+  const target = path.join(checkout, brandFile);
+  writeFileSync(
+    target,
+    readFileSync(target, "utf8").replace('"example.json", ', ""),
+  );
+  head = commit();
+  expect(await preview(head)).toMatchObject({
+    code: 0,
+    result: { readiness: { ready: true } },
+  });
+});
 
 it("previews adding coverage for an existing connector and removing its exemption", async () => {
   git("checkout", "--quiet", "--detach", base);
@@ -1213,6 +1257,30 @@ it("rejects evidence that cannot fit into the public PR description", async () =
 });
 
 it.each([
+  [
+    "a different connector's no-brand entry",
+    brandFile,
+    '"other.json"',
+    '"unrelated.json"',
+  ],
+  [
+    "duplicate no-brand entries",
+    brandFile,
+    '"example.json",',
+    '"example.json", "example.json",',
+  ],
+  [
+    "executable no-brand registration",
+    brandFile,
+    '"example.json",',
+    "readProcessEnv(),",
+  ],
+  [
+    "code outside the no-brand list",
+    brandFile,
+    "guard = true",
+    "guard = false",
+  ],
   [
     "a generated credential not declared by the connector",
     staticSecret,

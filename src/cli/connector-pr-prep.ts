@@ -22,6 +22,7 @@ const LIBRARY_METADATA =
   "packages/polyfill-connectors/src/manifest-library-metadata.json";
 const GENERATED_ROOT = "packages/polyfill-connectors/src/generated/";
 const CONSENT_AGGREGATE = GENERATED_ROOT + "consent-time-fields.generated.ts";
+const BRAND_MARK_TEST = "scripts/brand-icon-fleet.test.mjs";
 const MANIFEST_COUNT_TEST =
   "packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts";
 const COVERAGE_DRIVERS =
@@ -228,6 +229,7 @@ function registrationFile(file: string, key: string): boolean {
     file === COVERAGE_DRIVERS ||
     file === LIBRARY_METADATA ||
     file === MANIFEST_COUNT_TEST ||
+    file === BRAND_MARK_TEST ||
     file === consentSlicePath(key)
   );
 }
@@ -416,6 +418,48 @@ function validCoverageRegistration(
   });
 }
 
+function validBrandRegistration(
+  before: string,
+  after: string,
+  key: string,
+  hasBrand: boolean,
+): boolean {
+  const declaration =
+    /^const CONNECTORS_WITHOUT_A_BRAND_MARK = new Set\((\[[\s\S]*?\])\);$/m;
+  const parse = (source: string) => {
+    const match = declaration.exec(source);
+    if (
+      !match ||
+      !/^\[\s*(?:"[a-z0-9_]+\.json"\s*(?:,\s*"[a-z0-9_]+\.json"\s*)*,?\s*)?\]$/.test(
+        match[1],
+      )
+    )
+      return null;
+    const entries: string[] = JSON.parse(match[1].replace(/,(\s*\])$/, "$1"));
+    if (new Set(entries).size !== entries.length) return null;
+    return {
+      entries,
+      rest:
+        source.slice(0, match.index) +
+        source.slice(match.index + match[0].length),
+    };
+  };
+  const original = parse(before);
+  const updated = parse(after);
+  if (!original || !updated) return false;
+  const selected = key + ".json";
+  return (
+    original.rest === updated.rest &&
+    updated.entries.includes(selected) === !hasBrand &&
+    original.entries.includes(selected) !==
+      updated.entries.includes(selected) &&
+    isDeepStrictEqual(
+      original.entries.filter((entry) => entry !== selected),
+      updated.entries.filter((entry) => entry !== selected),
+    )
+  );
+}
+
 function validConnectorRegistration(
   git: ReturnType<typeof localGit>,
   file: string,
@@ -466,6 +510,14 @@ function validConnectorRegistration(
   }
   if (file === COVERAGE_DRIVERS) {
     return validCoverageRegistration(git, key, manifest, before, after, head);
+  }
+  if (file === BRAND_MARK_TEST) {
+    return validBrandRegistration(
+      before,
+      after,
+      key,
+      manifest.brand !== undefined,
+    );
   }
   if (file === MANIFEST_COUNT_TEST) {
     const countLine = /^\tassert\.equal\(names\.length, (\d+)\);$/m;
