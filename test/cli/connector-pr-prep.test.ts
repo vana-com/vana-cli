@@ -47,6 +47,7 @@ function writeConnector(
   metadata: {
     stream?: Record<string, unknown>;
     brand?: { icon: string };
+    bindings?: Record<string, { kind?: string; required: boolean }>;
     setupFields?: {
       name: string;
       label: string;
@@ -64,6 +65,9 @@ function writeConnector(
     connector_key: "example",
     version,
     capabilities: { public_listing: { tier: "development" } },
+    runtime_requirements: {
+      bindings: metadata.bindings ?? { network: { required: true } },
+    },
     reason_display_messages: metadata.reasonMessages,
     brand: metadata.brand,
     streams: [{ name: "items", required: true, ...metadata.stream }],
@@ -156,6 +160,10 @@ function reviewEvidence(commit: string) {
         "shared helpers",
         "semantics",
         "mock mutation",
+        "submission refresh",
+        "submission deletions",
+        "submission text",
+        "submission counts",
       ].map((name) => ({
         name,
         verdict: name === "evidence" ? "UNKNOWN" : "PASS",
@@ -229,6 +237,72 @@ async function preview(
   stdout.mockRestore();
   return { code, result };
 }
+
+const nonApiCases: {
+  name: string;
+  bindings: Record<string, { kind?: string; required: boolean }>;
+}[] = [
+  { name: "export", bindings: { filesystem: { required: true } } },
+  {
+    name: "browser",
+    bindings: { browser: { required: true }, network: { required: true } },
+  },
+  { name: "optional network", bindings: { network: { required: false } } },
+];
+it.each(nonApiCases)(
+  "preserves existing $name submission without API-pilot findings",
+  async ({ bindings }) => {
+    writeConnector("1.0.1", "1.0.0", { bindings });
+    head = commit();
+    const evidence = reviewEvidence(head);
+    evidence.conformance.steps = evidence.conformance.steps.filter(
+      (step) => !step.name.startsWith("submission "),
+    );
+    const { result } = await preview(evidence);
+    expect(result.readiness.ready).toBe(true);
+  },
+);
+
+it.each([false, true])(
+  "blocks an API pilot without behavioral findings (named binding: %s)",
+  async (named) => {
+    if (named) {
+      writeConnector("1.0.1", "1.0.0", {
+        bindings: { provider: { kind: "network", required: true } },
+      });
+      head = commit();
+    }
+    const evidence = reviewEvidence(head);
+    evidence.conformance.steps = evidence.conformance.steps.filter(
+      (step) => !step.name.startsWith("submission "),
+    );
+    const output = await preview(evidence);
+    expect(output.result.readiness.ready).toBe(false);
+    expect(output.result.readiness.gaps.join(" ")).toContain(
+      "submission refresh",
+    );
+  },
+);
+
+it.each([
+  "submission refresh",
+  "submission deletions",
+  "submission text",
+  "submission counts",
+])("a pilot failure cannot be waived by a disposition: %s", async (name) => {
+  const evidence = reviewEvidence(head);
+  const step = evidence.conformance.steps.find((step) => step.name === name)!;
+  step.verdict = "FAIL";
+  step.required_for_review = true;
+  Object.assign(evidence.dispositions, {
+    [name]: "Leave this broken behavior for later.",
+  });
+  const { result } = await preview(evidence);
+  expect(result.readiness.ready).toBe(false);
+  expect(result.readiness.gaps).toContain(
+    `Upstream ${name} must pass for the proposed tier.`,
+  );
+});
 
 it("previews the committed change and evidence without including or modifying dirty files", async () => {
   const entry = path.join(checkout, "connectors/example/index.ts");
