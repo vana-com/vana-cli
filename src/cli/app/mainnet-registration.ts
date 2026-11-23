@@ -1,8 +1,10 @@
+import path from "node:path";
 import { createGatewayClient, type Builder } from "@opendatalabs/vana-sdk";
 import { privateKeyToAccount } from "viem/accounts";
 import type { ResolvedAppKey } from "../../core/app-key.js";
 import { readAppProfile, saveAppProfile } from "../../core/app-profile.js";
 import { resolveNetwork, type ResolvedNetwork } from "../../core/network.js";
+import { getVanaHome } from "../../core/paths.js";
 import {
   createAppRegistrationStore,
   type StoredAppRegistration,
@@ -39,8 +41,31 @@ class RegistrationError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    readonly remedy?: string,
   ) {
     super(message);
+  }
+}
+
+/**
+ * Account rejections that a rerun of the same command cannot change: bad
+ * requests, refused ownership and conflicting rows. A 409
+ * builder_not_registered only means Account's chain read is behind.
+ */
+function isPermanentAssociationFailure(
+  status: number,
+  accountCode: string | null,
+): boolean {
+  if (status === 400 || status === 403) return true;
+  return status === 409 && accountCode !== "builder_not_registered";
+}
+
+async function accountErrorCode(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as { error?: { code?: unknown } };
+    return typeof body.error?.code === "string" ? body.error.code : null;
+  } catch {
+    return null;
   }
 }
 
@@ -290,11 +315,27 @@ export async function runMainnetRegistration(
         "confirmation_required",
         "Account authentication expired after gateway registration. Sign in and resume.",
       );
-    if (!response.ok)
+    if (!response.ok) {
+      const accountCode = await accountErrorCode(response);
+      if (accountCode === "forbidden_client")
+        throw new RegistrationError(
+          "confirmation_required",
+          "Vana Account does not accept this sign-in for app registration. Sign in from the CLI and rerun.",
+        );
+      if (isPermanentAssociationFailure(response.status, accountCode)) {
+        const refused = accountCode ?? `HTTP ${response.status}`;
+        const journal = path.join(getVanaHome(), "app", "registration.json");
+        throw new RegistrationError(
+          accountCode ?? "association_refused",
+          `Mainnet is registered, but Vana Account refused the association (${refused}). Rerunning will not change this.`,
+          `Send the app address and "${refused}" to the Vana team. To register a different app on this machine meanwhile, remove ${journal}.`,
+        );
+      }
       throw new RegistrationError(
         "not_ready",
-        "Mainnet is registered; Account association is unconfirmed. Rerun to finish it.",
+        `Mainnet is registered; Account association is unconfirmed (${accountCode ?? `HTTP ${response.status}`}). Rerun to finish it.`,
       );
+    }
     const targetOwnership = await ownership("mainnet", source.subject);
     if (targetOwnership.ownership !== "owned")
       throw new RegistrationError(
@@ -325,9 +366,10 @@ export async function runMainnetRegistration(
       return fail(
         error.code,
         error.message,
-        error.code === "confirmation_required"
-          ? "vana login, then rerun the same vana app register command"
-          : undefined,
+        error.remedy ??
+          (error.code === "confirmation_required"
+            ? "vana login, then rerun the same vana app register command"
+            : undefined),
       );
     return fail(
       "not_ready",
