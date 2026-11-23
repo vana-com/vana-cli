@@ -423,7 +423,14 @@ export async function runCli(argv = process.argv): Promise<number> {
   const program = new Command();
   program
     .name("vana")
-    .description("Connect sources, collect data, and inspect it locally.")
+    .description(
+      `Connect sources, collect data, and inspect it locally.
+
+Agent workflows (read first; no installation required):
+  vana skills show connect-data --json       Collect data
+  vana skills show create-connector --json   Build a connector
+  vana skills show builder --json            Build an app`,
+    )
     .version(cliVersion, "-v, --version", "Print CLI version")
     .showSuggestionAfterError(true)
     .addHelpText(
@@ -446,11 +453,6 @@ Server:
 Connectors:
   vana connectors add <key> --from <dir>   Register a local Collection Profile connector
   vana connectors list                     Show registered local connectors
-
-Agent quick start:
-  vana skills show connect-data --json    Read collection instructions; no skill installation needed
-  vana skills show create-connector --json   Read connector authoring instructions
-  vana skills show builder --json         Read app integration and verification instructions
 
 Agent setup (optional):
   vana mcp               Start MCP server (for Claude Code, Cursor, etc.)
@@ -1266,7 +1268,7 @@ Examples:
 
   const skill = program
     .command("skills")
-    .description("Manage agent skills")
+    .description("Read bundled agent workflows or optionally install skills")
     .option("--json", "Output as JSON");
   skill.addHelpText(
     "after",

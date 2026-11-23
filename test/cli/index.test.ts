@@ -1996,6 +1996,11 @@ describe("runCli", () => {
     expect(stdout).toContain(
       "Connect sources, collect data, and inspect it locally.",
     );
+    // Agents commonly inspect only the opening help before choosing a path.
+    const introduction = stdout.slice(0, stdout.indexOf("Options:"));
+    for (const workflow of ["connect-data", "create-connector", "builder"]) {
+      expect(introduction).toContain(`vana skills show ${workflow} --json`);
+    }
     expect(stdout).toContain("version");
     expect(stdout).toContain("doctor");
     expect(stdout).toContain("vana logs");
