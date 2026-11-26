@@ -212,6 +212,35 @@ afterEach(async () => {
 });
 
 describe("connector build subprocess policy", () => {
+  it("preserves upstream findings on a passed local check instead of hiding unresolved readiness", async () => {
+    await profile();
+    const result = pass();
+    const report = {
+      connector: "example_export",
+      isKnownScaffold: false,
+      steps: [
+        {
+          name: "coverage",
+          verdict: "UNKNOWN",
+          detail: "Coverage not exercised",
+          nextAction: "Add a driver",
+        },
+      ],
+    };
+    await configure({
+      result: {
+        ...result,
+        evidence: { ...result.evidence, conformance: report },
+      },
+    });
+    const output = await run(["check", "--job", id]);
+    expect(output.code, JSON.stringify(output.value)).toBe(0);
+    expect(output.value).toMatchObject({
+      status: "checks_passed",
+      evidence: { conformance: report },
+    });
+  });
+
   it("prints bundled instructions without resolving Factory or reading a request", async () => {
     vi.stubEnv("VANA_FACTORY_BUILD", "invalid shell text");
     const output = await run(["build", "--instructions"]);
@@ -223,10 +252,10 @@ describe("connector build subprocess policy", () => {
     expect(output.value.instructions).toContain("static_and_fixture");
     expect(output.value.instructions).toContain("VANA_FACTORY_BUILD");
     expect(output.value.instructions).toContain(
-      'npm install --prefix "$VANA_FACTORY_TOOLS" --ignore-scripts --no-audit --no-fund https://github.com/vana-com/vana-cli/releases/download/v0.47.0/vana-factory-core-0.0.6.tgz',
+      'npm install --prefix "$VANA_FACTORY_TOOLS" --ignore-scripts --no-audit --no-fund https://github.com/vana-com/vana-cli/releases/download/v0.47.0/vana-factory-core-0.0.7.tgz',
     );
     expect(output.value.instructions).toContain(
-      "c580f6c0feeeee3bc5624c6fc449d72edb86f2eede989cb45c4688800a54a8a0",
+      "56d7077958bd58c1ae8b020ff350f40fdbac52af20be7c413ac295395640049b",
     );
     expect(output.value.instructions).toContain(
       'export VANA_FACTORY_TOOLS="${VANA_HOME:-$HOME/.vana}/factory-tools"',

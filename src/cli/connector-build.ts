@@ -14,6 +14,7 @@ import { CliExitCode } from "../core/exit-codes.js";
 import { getVanaHome } from "../core/paths.js";
 import { readLocalProfile } from "../pdpp/local.js";
 import { CONNECTOR_BUILD_INSTRUCTIONS } from "./connector-build-instructions.js";
+import { conformanceReportSchema } from "./connector-readiness.js";
 
 const MAX_RESULT_BYTES = 256 * 1024;
 const key = z.string().regex(/^[a-z][a-z0-9_-]{0,79}$/);
@@ -186,6 +187,7 @@ const jobSchema = z.discriminatedUnion("status", [
               (items) => JSON.stringify(items) === JSON.stringify(checkNames),
             ),
           scope: z.literal("static_and_fixture"),
+          conformance: conformanceReportSchema.optional(),
         })
         .strict(),
       liveVerification: z.literal("pending"),
@@ -513,6 +515,12 @@ async function run(
     const parsed = jobSchema.safeParse(result.value);
     if (!parsed.success) throw protocolError();
     const job = parsed.data;
+    if (
+      job.status === "checks_passed" &&
+      job.evidence.conformance &&
+      job.evidence.conformance.connector !== job.collectionContext.directoryKey
+    )
+      throw protocolError();
     const canonicalStateDirectory = await realpath(stateDirectory).catch(
       () => undefined,
     );
@@ -579,6 +587,21 @@ async function run(
         process.stdout.write(
           "Static and fixture checks passed. The explicit connect action verifies its actual run before local save and ingestion. Server readback is not performed.\n",
         );
+      if (job.status === "checks_passed") {
+        const report = job.evidence.conformance;
+        if (!report)
+          process.stdout.write(
+            "No structured conformance report was returned. Run and read upstream conformance before submission.\n",
+          );
+        else
+          for (const step of report.steps.filter(
+            (step) => step.verdict !== "PASS",
+          )) {
+            process.stdout.write(
+              `Upstream ${step.name}: ${step.verdict}${step.required_for_review ? " (required for review)" : ""}. ${step.detail}\n${step.nextAction ? "Next: " + step.nextAction + "\n" : ""}`,
+            );
+          }
+      }
       if (handoffError) process.stderr.write(`${handoffError.message}\n`);
       for (const [name, action] of Object.entries(actions)) {
         process.stdout.write(

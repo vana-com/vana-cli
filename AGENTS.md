@@ -136,7 +136,10 @@ pnpm cli -- <args>  # run the built CLI
   `src/cli/server-start.ts`) and the supervisor gives up with a
   `server-failed` / `restart-limit` event. It holds the data dir's lock
   across restarts, so `vana server stop` (SIGTERM to the lock's pid) always
-  finds it and nothing restarts after a stop. It does not survive a reboot:
+  finds it. A stop during restart backoff holds, but a stop that arrives while
+  the restart is looking for a free port can still launch one replacement
+  server, which the next loop then stops (tracked in
+  [BUI-1011](https://linear.app/vana-team/issue/BUI-1011)). It does not survive a reboot:
   never add a LaunchAgent, endpoint security flags those. A server killed
   hard leaves its frpc running (reparented to init); the CLI owns that
   frpc's lifetime, matched by `-c <dataDir>/tunnel/frpc.toml`, and stops it
