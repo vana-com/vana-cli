@@ -1,9 +1,9 @@
-# Private connector handoff to Desktop (local implementation)
+# Private connector handoff to Desktop
 
-This same-Mac development path packages a new Collection Profile connector
+This same-Mac workflow packages a new Collection Profile connector
 through the public data-connectors artifact builder. It does not publish, upload,
-sign or approve the connector. It requires the matching Desktop implementation;
-released Desktop versions without this capability cannot import the handoff.
+sign or approve the connector. Use Desktop 1.89.0 or later. Confirm that your CLI
+includes this workflow with `vana connectors desktop --help`.
 
 Author and check the connector with the existing Factory workflow first:
 
@@ -18,8 +18,9 @@ installed, a real Node 24 executable, and GNU tar. On macOS the CLI discovers
 entry. BSD tar is rejected. The command never installs tools or changes the
 upstream checkout.
 
-The locally verified candidate uses dev Account and Moksha on the same Mac in both CLI
-and the matching Desktop build. Sign in with `VANA_ENV=dev vana login`. Package a new source name
+Keep CLI and Desktop on the same Account, service environment and network.
+The examples below use dev Account and Moksha: sign in with
+`VANA_ENV=dev vana login`. Package a new source name
 and the intended streams explicitly. The profile's `connector_key` stays in
 kebab case, while the final path segment of `source.id` and selected stream names
 must form SDK scopes using lowercase letters, digits and underscores (for example
@@ -76,7 +77,7 @@ VANA_ENV=dev vana app register --network moksha \
 
 Use that same app key for its permission request and later reads. Do not create
 a replacement app to recover a pending claim. Mainnet availability is a separate
-production rollout; this guide does not imply it is ready.
+network: use `--network mainnet` with production Account in both apps.
 
 After the CLI prepares the snapshot, Desktop Sources discovers it for the same Account and network even if no link was opened. The CLI link is a shortcut to the same review:
 
@@ -86,7 +87,23 @@ After the CLI prepares the snapshot, Desktop Sources discovers it for the same A
 4. Read and save the response in the app before acknowledging the request. The approval page returns to the app after acknowledgement. An enabled snapshot alone does not prove that data was imported or delivered.
 5. After editing the connector, repeat packaging. Sources shows **Review update** on the existing source row with the active and proposed versions. Choose **Update and import**, then refresh the app through its existing still-valid grant. A public connector release is not required between edits.
 
-For this release candidate the verified service path is Account dev and Moksha on the same Mac. Use `VANA_ENV=dev` consistently for login, handoff and resume, and select Moksha in Desktop. The CLI release must include `vana connectors desktop --help`; released 0.48.2 alone does not contain this new command. The first public CLI/Desktop version pair must be recorded in the release notes when those artifacts are published. Mainnet release acceptance remains gated on the production Account schema rollout and the fee-eligible server runtime.
+For production, sign in with production Account and select Mainnet in Desktop.
+Keep `VANA_ENV=production` consistent for login, handoff and resume, and pass
+`--network mainnet` explicitly. Packaging still returns an approval-required
+outcome; it does not enable the connector or grant your app access.
+
+```sh
+VANA_ENV=production vana login
+VANA_ENV=production vana connectors desktop my_source \
+  --from /absolute/path/to/data-connectors \
+  --streams items,profile --node /absolute/path/to/node24 \
+  --network mainnet --json --no-input
+```
+
+Desktop 1.89.0's released runtime passed production Mainnet HTTP and MCP own-app
+reads without payment. An approved grant is still required, and reads by an app
+owned by a different person remain subject to payment. The same-Mac private
+review/import path was separately verified on dev Account and Moksha.
 
 ## Recover without replacing your identity
 
@@ -155,6 +172,5 @@ Mobile distribution or service configuration is part of packaging.
 Report CLI/Desktop handoff problems at
 https://github.com/vana-com/vana-cli/issues, including CLI/Desktop versions,
 source ID, selected network and the visible failure. Keep credentials and raw
-provider data out of the report. The tested development route in this guide
-is dev Account + Moksha + same-Mac Desktop; Mobile, cross-device code delivery
-and public connector submission are outside this first release.
+provider data out of the report. Mobile, cross-device code delivery and public
+connector submission are outside this workflow.
